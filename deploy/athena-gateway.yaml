@@ -1,0 +1,123 @@
+# Athena Audio Gateway — sample configuration
+#
+# Copy to /etc/athena-gateway/config.yaml and edit. Every key here maps to a
+# CLI flag of the same name; flags override this file, and environment
+# variables (SKYEYE_*) sit between the two.
+#
+# Governing decision: ADR 0014 in pcorajr/project-athena.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ATHENA COMMAND CHANNEL
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The single frequency Athena listens on. Must end in AM or FM — unlike
+# upstream's frequency parsing, a missing or unknown suffix is a startup error
+# rather than a silent default, because a typo would produce a channel that
+# never matches while the gateway still looked healthy.
+#
+# Choose a frequency your airframe can actually tune. The F-16 covers
+# 225.000–399.975 on COM1 and 108.000–151.975 on COM2; the F-4E primary radio
+# is limited to 225.0–399.95 AM. Tuning away from this frequency is the pilot's
+# opt-out — no software action required.
+athena-command-frequency: 30.0FM
+
+# The exact SRS client name permitted to issue commands. Case-sensitive.
+# Every other transmitter on this frequency is discarded before speech
+# recognition runs, so no transcript is produced for them.
+athena-pilot-name: Prometheus
+
+# Hermes text bridge. Setting this replaces the GCI controller lane: the
+# gateway sends transcripts and speaks Hermes's reply verbatim.
+#
+# LEAVE THIS COMMENTED OUT for receive-only validation. Without it the gateway
+# still admits, transcribes, and logs — it simply has nobody to ask.
+# Requires athena-command-frequency and athena-pilot-name to be set.
+#athena-hermes-endpoint: http://127.0.0.1:8080/athena/radio
+
+# Bound on a single Hermes exchange. Never retried: a stale answer to a pilot
+# who has moved on is worse than silence.
+#athena-hermes-timeout: 10s
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SAFETY
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Suppresses all SRS transmission. Keep this TRUE until issue #181's live
+# transmit gate has been satisfied.
+#
+# Note: upstream v1.10.0 shipped with this flag wired to config but never
+# passed to the SRS client, so it did nothing. Fixed in this fork (d15490d,
+# cherry-picked from upstream ab0d024). Verify with `skyeye --version` that you
+# are running v1.10.0-10 or later.
+mute: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SRS
+# ─────────────────────────────────────────────────────────────────────────────
+
+# External AWACS Mode must be enabled on the SRS server with a password set.
+# SR-Server.exe shows "ON" next to External AWACS Mode when configured.
+srs-server-address: 10.90.10.78:5002
+srs-eam-password: CHANGEME
+
+# Frequencies the underlying SRS client tunes. Include the Athena command
+# frequency; the admission gate filters within what SRS delivers.
+srs-frequencies: 30.0FM
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TELEMETRY
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Tacview real-time telemetry. Enable in DCS under
+# OPTIONS → SPECIAL → Tacview → Real-Time Telemetry.
+#
+# This is a SkyEye startup dependency, not an Athena one: Athena's facts arrive
+# through Hermes tools, not through SkyEye's radar. It is required for the
+# process to start.
+telemetry-address: 10.90.10.78:42674
+#telemetry-password: CHANGEME
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPEECH RECOGNITION
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Local recognition on GPU keeps all audio on the LAN. Requires the Vulkan
+# build; see docs/deployment/linux/gpu.md.
+recognizer: openai-whisper-local
+whisper-model: /opt/athena-gateway/models/ggml-small.en.bin
+
+# Cloud alternative. Sends audio to a third party — a privacy decision, not
+# just a performance one. Do not enable without deciding that deliberately.
+#recognizer: openai-whisper-api
+#openai-api-key: CHANGEME
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IDENTITY
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Appears in the SRS client list and in-game transmission overlay.
+callsign: Athena
+
+# Which coalition the gateway serves.
+coalition: blue
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GCI FEATURES — disabled
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# When athena-hermes-endpoint is set the GCI goroutines are never started, so
+# these are inert. They are pinned off anyway so a config read makes the intent
+# obvious and a future upstream default cannot quietly turn them on.
+auto-picture: false
+threat-monitoring: false
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────────────────────────────────────
+
+log-level: info
+log-format: json
+
+# Transcript logging is OFF by default. Turning it on writes what the pilot
+# said into the system journal.
+#enable-transcription-logging: false

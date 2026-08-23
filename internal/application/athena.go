@@ -10,6 +10,33 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// athenaObserveOnly consumes transcripts and discards them.
+//
+// This runs when an Athena command channel is configured but no Hermes bridge
+// is: the gateway admits, transcribes, and logs, but has nobody to ask and
+// nothing to say. It exists so receive-only validation can exercise the SRS
+// connection, admission gate, and speech recognition without the GCI brain
+// running behind it.
+//
+// It must consume from the channel rather than leaving it unread, or the
+// recognition goroutine would block once the buffer filled.
+func (*Application) athenaObserveOnly(ctx context.Context, in <-chan Message[string]) {
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info().Msg("stopping Athena observe-only routine due to context cancellation")
+			return
+		case message := <-in:
+			// The transcript itself is not logged here. Whether transcripts may
+			// be recorded at all is a separate operator decision governed by
+			// enable-transcription-logging.
+			log.Info().
+				Str("transmissionID", traces.GetTraceID(message.Context)).
+				Msg("admitted transmission transcribed; no Hermes bridge configured, transmitting nothing")
+		}
+	}
+}
+
 // athenaCommandLane replaces the GCI controller lane (parse -> control ->
 // compose) when Athena is configured.
 //

@@ -412,15 +412,28 @@ func (a *Application) Run(ctx context.Context, cancel context.CancelFunc, wg *sy
 		})
 	}
 
-	if a.hermesBridge != nil {
-		// Athena command lane. The Gateway does not interpret the transcript:
-		// it hands text to Hermes and synthesizes the reply verbatim. The GCI
-		// parse/control/compose lane is not started at all, so no brevity
-		// parser, radar scope, or GCI controller can produce a transmission.
-		log.Info().Msg("starting Athena command lane routine")
-		wg.Go(func() {
-			a.athenaCommandLane(ctx, rxTextChan, txTextChan)
-		})
+	if a.admissionGate != nil {
+		// Athena mode. The GCI parse/control/compose lane is never started, so
+		// no brevity parser, radar scope, or GCI controller exists to originate
+		// a transmission.
+		//
+		// This keys off the admission gate rather than the Hermes bridge on
+		// purpose. Configuring an Athena command channel means "this is an
+		// Athena gateway", not "this is a GCI bot with a filter". Keying off the
+		// bridge instead left a gap: a gateway configured for receive-only
+		// validation still ran the full GCI brain and would broadcast an AWACS
+		// sunrise announcement on connect.
+		if a.hermesBridge != nil {
+			log.Info().Msg("starting Athena command lane routine")
+			wg.Go(func() {
+				a.athenaCommandLane(ctx, rxTextChan, txTextChan)
+			})
+		} else {
+			log.Info().Msg("starting Athena observe-only routine; no Hermes bridge configured")
+			wg.Go(func() {
+				a.athenaObserveOnly(ctx, rxTextChan)
+			})
+		}
 	} else {
 		log.Info().Msg("starting request parsing routine")
 		wg.Go(func() {

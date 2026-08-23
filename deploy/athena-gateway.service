@@ -1,0 +1,61 @@
+[Unit]
+Description=Athena Audio Gateway (SRS command channel)
+Documentation=https://github.com/pcorajr/athena-audio-gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=athena-gateway
+Group=athena-gateway
+WorkingDirectory=/opt/athena-gateway
+ExecStart=/opt/athena-gateway/bin/skyeye --config-file=/etc/athena-gateway/config.yaml
+
+# The gateway is an ordinary SRS client. Restarting it cannot disrupt DCS or
+# the pilot's own radios, so restart freely -- but back off, because the usual
+# cause of a crash loop is SRS being unreachable, and hammering it does not
+# help.
+Restart=always
+RestartSec=30
+
+# Hardening. The gateway needs the network, its model file, and nothing else.
+# It writes no files at runtime: audio is held in memory only and never
+# persisted (ADR 0014).
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# Read-only access to the config and model. No writable paths are granted; if a
+# future change needs one, add it explicitly rather than relaxing
+# ProtectSystem.
+ReadOnlyPaths=/etc/athena-gateway
+ReadOnlyPaths=/opt/athena-gateway
+
+# GPU access for local Whisper via Vulkan. Remove this line when using cloud
+# speech recognition.
+DeviceAllow=/dev/dri rw
+SupplementaryGroups=video render
+
+# Journal only. Transcript logging is off by default; enabling it writes what
+# the pilot said into the journal.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

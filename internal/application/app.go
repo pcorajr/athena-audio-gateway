@@ -90,6 +90,62 @@ type Application struct {
 
 // NewApplication constructs a new Application.
 func NewApplication(config conf.Configuration) (*Application, error) {
+	// Athena configuration is validated before any network connection is
+	// attempted. A misconfigured command channel must be a startup error the
+	// operator sees immediately, not something discovered only after SRS
+	// happens to be reachable.
+	// Athena command-channel gate. Constructed only when the operator has
+	// configured both a command frequency and a pilot name; absent that, the
+	// application behaves as upstream SkyEye. Validation is fail-closed: a
+	// partially configured gate is a startup error, never a silently open
+	// channel. See ADR 0014.
+	var admissionGate *admission.Gate
+	if config.AthenaCommandFrequencyHz != 0 || config.AthenaPilotName != "" {
+		gateConfig := admission.DefaultConfig()
+		gateConfig.FrequencyHz = config.AthenaCommandFrequencyHz
+		gateConfig.PilotName = config.AthenaPilotName
+		if config.AthenaCommandModulation != nil {
+			gateConfig.Modulation = *config.AthenaCommandModulation
+		}
+		gate, gateErr := admission.NewGate(gateConfig)
+		if gateErr != nil {
+			return nil, fmt.Errorf("failed to construct application: %w", gateErr)
+		}
+		admissionGate = gate
+		log.Info().
+			Uint64("frequencyHz", gateConfig.FrequencyHz).
+			Stringer("modulation", gateConfig.Modulation).
+			Str("pilot", gateConfig.PilotName).
+			Msg("Athena command-channel admission gate enabled")
+	}
+
+	// Hermes text bridge. Only constructed when an endpoint is configured; the
+	// gate and the bridge are independently optional so the gateway can run
+	// receive-only for validation before any Hermes profile exists.
+	var hermesBridge bridge.Client
+	var athenaFrequencyHz uint64
+	athenaModulation := bridge.ModulationFM
+	if config.AthenaHermesEndpoint != "" {
+		if admissionGate == nil {
+			return nil, errors.New(
+				"failed to construct application: athena-hermes-endpoint requires the admission gate to be configured",
+			)
+		}
+		client, bridgeErr := bridge.NewHTTPClient(config.AthenaHermesEndpoint, config.AthenaHermesTimeout)
+		if bridgeErr != nil {
+			return nil, fmt.Errorf("failed to construct application: %w", bridgeErr)
+		}
+		hermesBridge = client
+		gateConfig := admissionGate.Config()
+		athenaFrequencyHz = gateConfig.FrequencyHz
+		if gateConfig.Modulation == admission.ModulationAM {
+			athenaModulation = bridge.ModulationAM
+		}
+		log.Info().
+			Str("endpoint", config.AthenaHermesEndpoint).
+			Msg("Athena command lane enabled; GCI controller lane disabled")
+	}
+
 	starts := make(chan sim.Started)
 	updates := make(chan sim.Updated)
 	fades := make(chan sim.Faded)
@@ -249,58 +305,6 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 	}
 
 	log.Info().Msg("constructing application")
-
-	// Athena command-channel gate. Constructed only when the operator has
-	// configured both a command frequency and a pilot name; absent that, the
-	// application behaves as upstream SkyEye. Validation is fail-closed: a
-	// partially configured gate is a startup error, never a silently open
-	// channel. See ADR 0014.
-	var admissionGate *admission.Gate
-	if config.AthenaCommandFrequencyHz != 0 || config.AthenaPilotName != "" {
-		gateConfig := admission.DefaultConfig()
-		gateConfig.FrequencyHz = config.AthenaCommandFrequencyHz
-		gateConfig.PilotName = config.AthenaPilotName
-		if config.AthenaCommandModulation != nil {
-			gateConfig.Modulation = *config.AthenaCommandModulation
-		}
-		gate, gateErr := admission.NewGate(gateConfig)
-		if gateErr != nil {
-			return nil, fmt.Errorf("failed to construct application: %w", gateErr)
-		}
-		admissionGate = gate
-		log.Info().
-			Uint64("frequencyHz", gateConfig.FrequencyHz).
-			Stringer("modulation", gateConfig.Modulation).
-			Str("pilot", gateConfig.PilotName).
-			Msg("Athena command-channel admission gate enabled")
-	}
-
-	// Hermes text bridge. Only constructed when an endpoint is configured; the
-	// gate and the bridge are independently optional so the gateway can run
-	// receive-only for validation before any Hermes profile exists.
-	var hermesBridge bridge.Client
-	var athenaFrequencyHz uint64
-	athenaModulation := bridge.ModulationFM
-	if config.AthenaHermesEndpoint != "" {
-		if admissionGate == nil {
-			return nil, errors.New(
-				"failed to construct application: athena-hermes-endpoint requires the admission gate to be configured",
-			)
-		}
-		client, bridgeErr := bridge.NewHTTPClient(config.AthenaHermesEndpoint, config.AthenaHermesTimeout)
-		if bridgeErr != nil {
-			return nil, fmt.Errorf("failed to construct application: %w", bridgeErr)
-		}
-		hermesBridge = client
-		gateConfig := admissionGate.Config()
-		athenaFrequencyHz = gateConfig.FrequencyHz
-		if gateConfig.Modulation == admission.ModulationAM {
-			athenaModulation = bridge.ModulationAM
-		}
-		log.Info().
-			Str("endpoint", config.AthenaHermesEndpoint).
-			Msg("Athena command lane enabled; GCI controller lane disabled")
-	}
 
 	app := &Application{
 		callsign:                   config.Callsign,

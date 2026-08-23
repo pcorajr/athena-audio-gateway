@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"math/rand/v2"
 	"os"
 	"os/signal"
 	"reflect"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -28,6 +30,7 @@ import (
 	"github.com/dharmab/skyeye/internal/application"
 	"github.com/dharmab/skyeye/internal/cli"
 	"github.com/dharmab/skyeye/internal/conf"
+	"github.com/dharmab/skyeye/pkg/athena/admission"
 	"github.com/dharmab/skyeye/pkg/coalitions"
 	"github.com/dharmab/skyeye/pkg/encyclopedia"
 	"github.com/dharmab/skyeye/pkg/locations"
@@ -80,6 +83,10 @@ var (
 	discordWebhookToken          string
 	exitAfter                    time.Duration
 	enableTerrainDetection       bool
+	athenaCommandFrequency       string
+	athenaPilotName              string
+	athenaHermesEndpoint         string
+	athenaHermesTimeout          time.Duration
 	locationsFile                string
 	aircraftFile                 string
 )
@@ -141,6 +148,14 @@ func init() {
 	skyeye.Flags().Float64Var(&voiceSpeed, "voice-playback-speed", 1.0, "How quickly the GCI speaks (values below 1.0 are faster and above are slower).")
 	skyeye.Flags().Float64Var(&voiceVolume, "voice-volume", voiceVolumeDefault, fmt.Sprintf("Volume level for audio output (%v = silent, %v = normal)", voiceVolumeMin, voiceVolumeDefault))
 	skyeye.Flags().BoolVar(&mute, "mute", false, "Mute all SRS transmissions. Useful for testing without disrupting play")
+
+	// Athena command channel (see ADR 0014 in pcorajr/project-athena).
+	// Setting these replaces the GCI controller lane with a text exchange
+	// against Hermes. Leaving them unset preserves upstream SkyEye behaviour.
+	skyeye.Flags().StringVar(&athenaCommandFrequency, "athena-command-frequency", "", "Athena command channel frequency, e.g. 30.0FM. Enables the Athena admission gate; requires --athena-pilot-name.")
+	skyeye.Flags().StringVar(&athenaPilotName, "athena-pilot-name", "", "Exact SRS client name permitted to issue Athena commands. All other transmitters are discarded before speech recognition.")
+	skyeye.Flags().StringVar(&athenaHermesEndpoint, "athena-hermes-endpoint", "", "URL of the Hermes text bridge. Replaces the GCI controller lane; requires the Athena admission gate.")
+	skyeye.Flags().DurationVar(&athenaHermesTimeout, "athena-hermes-timeout", 0, "Bound on a single Hermes exchange. Zero uses the bridge default. Never retried.")
 	skyeye.Flags().StringVar(&voiceLockPath, "voice-lock-path", "", "Path to lock file for concurrent text-to-speech when using multiple instances")
 	if runtime.GOOS == "darwin" {
 		skyeye.Flags().BoolVar(&useSystemVoice, "use-system-voice", false, "Use the System Voice chosen in the Spoken Content page in System Settings instead of Samantha.")
@@ -208,6 +223,52 @@ var skyeye = &cobra.Command{
 	),
 	PreRunE: preRun,
 	Run:     run,
+}
+
+// loadAthenaCommandChannel parses the Athena command-channel frequency.
+//
+// Parsing is strict, unlike ParseRadioFrequency: an unrecognized or omitted
+// modulation is fatal rather than silently defaulting to AM. On a command
+// channel a wrong default is worse than a refusal, because it produces a
+// channel that simply never matches and a gateway that appears healthy while
+// ignoring every transmission.
+func loadAthenaCommandChannel() (uint64, *admission.Modulation) {
+	if athenaCommandFrequency == "" {
+		return 0, nil
+	}
+
+	raw := strings.TrimSpace(athenaCommandFrequency)
+	upper := strings.ToUpper(raw)
+
+	var modulation admission.Modulation
+	var numeric string
+	switch {
+	case strings.HasSuffix(upper, "FM"):
+		modulation = admission.ModulationFM
+		numeric = strings.TrimSpace(upper[:len(upper)-2])
+	case strings.HasSuffix(upper, "AM"):
+		modulation = admission.ModulationAM
+		numeric = strings.TrimSpace(upper[:len(upper)-2])
+	default:
+		log.Fatal().
+			Str("input", raw).
+			Msg("--athena-command-frequency must end in AM or FM, e.g. 30.0FM")
+	}
+
+	mhz, err := strconv.ParseFloat(numeric, 64)
+	if err != nil {
+		log.Fatal().Err(err).Str("input", raw).Msg("failed to parse --athena-command-frequency")
+	}
+	if math.IsNaN(mhz) || math.IsInf(mhz, 0) || mhz <= 0 {
+		log.Fatal().Str("input", raw).Msg("--athena-command-frequency must be a real positive number")
+	}
+
+	hz := uint64(math.Round(mhz * 1_000_000))
+	log.Info().
+		Uint64("frequencyHz", hz).
+		Stringer("modulation", modulation).
+		Msg("parsed Athena command channel")
+	return hz, &modulation
 }
 
 func main() {
@@ -432,6 +493,7 @@ func run(_ *cobra.Command, _ []string) {
 	volume := loadVoiceVolume()
 	locs := loadLocations()
 	customAircraft := loadAircraft()
+	athenaFrequencyHz, athenaModulation := loadAthenaCommandChannel()
 
 	config := conf.Configuration{
 		ACMIFile:                     acmiFile,
@@ -456,6 +518,11 @@ func run(_ *cobra.Command, _ []string) {
 		UseSystemVoice:               useSystemVoice,
 		VoiceLock:                    voiceLock,
 		Mute:                         mute,
+		AthenaCommandFrequencyHz:     athenaFrequencyHz,
+		AthenaCommandModulation:      athenaModulation,
+		AthenaPilotName:              athenaPilotName,
+		AthenaHermesEndpoint:         athenaHermesEndpoint,
+		AthenaHermesTimeout:          athenaHermesTimeout,
 		VoiceSpeed:                   voiceSpeed,
 		Volume:                       volume,
 		VoicePauseLength:             voicePauseLength,

@@ -3,6 +3,7 @@ package conf
 import (
 	"time"
 
+	"github.com/dharmab/skyeye/pkg/athena/admission"
 	"github.com/dharmab/skyeye/pkg/coalitions"
 	"github.com/dharmab/skyeye/pkg/encyclopedia"
 	"github.com/dharmab/skyeye/pkg/locations"
@@ -117,6 +118,19 @@ type Configuration struct {
 	// EnableTerrainDetection controls whether terrain detection is used to select a Transverse Mercator projection
 	// for spatial calculations. When disabled, spherical Earth calculations are used instead.
 	EnableTerrainDetection bool
+	// AthenaCommandFrequencyHz is the single frequency on which the Athena
+	// command channel accepts transmissions. Zero disables the Athena
+	// admission gate entirely, in which case the application behaves as
+	// upstream SkyEye. See ADR 0014.
+	AthenaCommandFrequencyHz uint64
+	// AthenaCommandModulation overrides the command-channel modulation. Nil
+	// selects the Athena default of FM. Frequency and modulation are
+	// configuration rather than constants because airframe radio ranges differ.
+	AthenaCommandModulation *admission.Modulation
+	// AthenaPilotName is the exact SRS client name permitted to issue commands
+	// on the Athena command channel. Transmissions from any other client are
+	// discarded before speech recognition.
+	AthenaPilotName string
 }
 
 var DefaultCallsigns = []string{"Sky Eye", "Thunderhead", "Eagle Eye", "Ghost Eye", "Sky Keeper", "Bandog", "Long Caster", "Galaxy"}

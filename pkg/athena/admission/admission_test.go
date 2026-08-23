@@ -36,6 +36,8 @@ func validCandidate() Candidate {
 }
 
 func TestAdmitsConfiguredPilotOnCommandChannel(t *testing.T) {
+	t.Parallel()
+
 	g := newTestGate(t)
 	got := g.Admit(validCandidate())
 	if !got.Admitted {
@@ -49,6 +51,8 @@ func TestAdmitsConfiguredPilotOnCommandChannel(t *testing.T) {
 // The core safety property: everything that is not the exact configured
 // channel + exact configured speaker must be refused.
 func TestRejectsEverythingElse(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name   string
 		mutate func(*Candidate)
@@ -125,6 +129,7 @@ func TestRejectsEverythingElse(t *testing.T) {
 	g := newTestGate(t)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := validCandidate()
 			tc.mutate(&c)
 			got := g.Admit(c)
@@ -141,6 +146,8 @@ func TestRejectsEverythingElse(t *testing.T) {
 // Channel checks must run before identity checks so that traffic on other
 // frequencies is discarded without consulting the speaker at all.
 func TestChannelCheckedBeforeIdentity(t *testing.T) {
+	t.Parallel()
+
 	g := newTestGate(t)
 	c := validCandidate()
 	c.FrequencyHz = 251_000_000
@@ -155,6 +162,8 @@ func TestChannelCheckedBeforeIdentity(t *testing.T) {
 // A reconnect reassigns SRS GUIDs. Because identity is passed per call rather
 // than cached, a resolved name admits and an unresolvable one fails closed.
 func TestIdentityIsResolvedPerCallNotCached(t *testing.T) {
+	t.Parallel()
+
 	g := newTestGate(t)
 
 	before := g.Admit(validCandidate())
@@ -181,6 +190,8 @@ func TestIdentityIsResolvedPerCallNotCached(t *testing.T) {
 }
 
 func TestFrequencyTolerance(t *testing.T) {
+	t.Parallel()
+
 	g := newTestGate(t)
 	tests := []struct {
 		name string
@@ -197,6 +208,7 @@ func TestFrequencyTolerance(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c := validCandidate()
 			c.FrequencyHz = tc.hz
 			if got := g.Admit(c).Admitted; got != tc.want {
@@ -209,6 +221,8 @@ func TestFrequencyTolerance(t *testing.T) {
 // Guards against unsigned underflow when the received frequency is below the
 // configured one.
 func TestFrequencyBelowConfiguredDoesNotUnderflow(t *testing.T) {
+	t.Parallel()
+
 	cfg := testConfig()
 	cfg.FrequencyHz = 1000
 	cfg.FrequencyToleranceHz = 10
@@ -225,6 +239,8 @@ func TestFrequencyBelowConfiguredDoesNotUnderflow(t *testing.T) {
 }
 
 func TestConfigValidation(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name   string
 		mutate func(*Config)
@@ -241,6 +257,7 @@ func TestConfigValidation(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			cfg := testConfig()
 			tc.mutate(&cfg)
 			err := cfg.Validate()
@@ -264,6 +281,8 @@ func TestConfigValidation(t *testing.T) {
 
 // The MVP default must be FM, and no frequency or pilot may be assumed.
 func TestDefaultConfigIsFMAndRequiresOperatorInput(t *testing.T) {
+	t.Parallel()
+
 	d := DefaultConfig()
 	if d.Modulation != ModulationFM {
 		t.Errorf("default modulation = %v, want FM", d.Modulation)
@@ -281,6 +300,8 @@ func TestDefaultConfigIsFMAndRequiresOperatorInput(t *testing.T) {
 
 // Decision strings are logged, so they must never carry content.
 func TestDecisionStringIsContentFree(t *testing.T) {
+	t.Parallel()
+
 	if got := (Decision{Admitted: true}).String(); got != "admitted" {
 		t.Errorf("admitted string = %q", got)
 	}
@@ -291,6 +312,8 @@ func TestDecisionStringIsContentFree(t *testing.T) {
 }
 
 func TestModulationString(t *testing.T) {
+	t.Parallel()
+
 	if ModulationAM.String() != "AM" {
 		t.Errorf("AM string = %q", ModulationAM.String())
 	}
@@ -304,9 +327,11 @@ func TestModulationString(t *testing.T) {
 
 // The gate is consulted from the SRS receive path; concurrent use must be safe.
 func TestGateIsConcurrencySafe(t *testing.T) {
+	t.Parallel()
+
 	g := newTestGate(t)
 	done := make(chan bool, 64)
-	for i := 0; i < 64; i++ {
+	for i := range 64 {
 		go func(i int) {
 			c := validCandidate()
 			if i%2 == 0 {
@@ -316,7 +341,7 @@ func TestGateIsConcurrencySafe(t *testing.T) {
 		}(i)
 	}
 	admitted := 0
-	for i := 0; i < 64; i++ {
+	for range 64 {
 		if <-done {
 			admitted++
 		}

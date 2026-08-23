@@ -6,12 +6,19 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dharmab/skyeye/pkg/athena/admission"
+	"github.com/dharmab/skyeye/pkg/pcm/rate"
 	"github.com/dharmab/skyeye/pkg/simpleradio"
 	"github.com/dharmab/skyeye/pkg/traces"
 	"github.com/rs/zerolog/log"
 )
 
 // recognize runs speech recognition on audio received from SRS and forwards recognized text to the given channel.
+//
+// When an Athena command-channel gate is configured, every transmission is
+// screened before recognition. Rejected transmissions are dropped here, so no
+// transcript is ever produced for them and their audio is released without
+// being read. See ADR 0014 and pkg/athena/admission.
 func (a *Application) recognize(ctx context.Context, out chan<- Message[string]) {
 	for {
 		select {
@@ -19,6 +26,9 @@ func (a *Application) recognize(ctx context.Context, out chan<- Message[string])
 			log.Info().Msg("stopping speech recognition due to context cancellation")
 			return
 		case transmission := <-a.srsClient.Receive():
+			if !a.admit(transmission) {
+				continue
+			}
 			rCtx := context.Background()
 			rCtx = traces.WithTraceID(rCtx, transmission.TraceID)
 			rCtx = traces.WithClientName(rCtx, transmission.ClientName)
@@ -26,6 +36,52 @@ func (a *Application) recognize(ctx context.Context, out chan<- Message[string])
 			a.recognizeSample(ctx, rCtx, transmission.Audio, out)
 		}
 	}
+}
+
+// admit screens a transmission against the Athena command-channel gate.
+//
+// It returns true when the transmission may proceed to speech recognition. When
+// no gate is configured the application is running as upstream SkyEye and every
+// transmission proceeds, preserving existing behaviour.
+//
+// The log line is deliberately content-free: it records the stable rejection
+// reason and the trace ID, never a transcript or any audio-derived value.
+func (a *Application) admit(transmission simpleradio.Transmission) bool {
+	if a.admissionGate == nil {
+		return true
+	}
+
+	sampleCount := len(transmission.Audio)
+	candidate := admission.Candidate{
+		SpeakerName: transmission.ClientName,
+		FrequencyHz: uint64(transmission.Radio.Frequency),
+		Modulation:  admission.Modulation(transmission.Radio.Modulation),
+		SampleCount: sampleCount,
+		Duration:    sampleDuration(sampleCount),
+	}
+
+	decision := a.admissionGate.Admit(candidate)
+	if !decision.Admitted {
+		log.Info().
+			Str("traceID", transmission.TraceID).
+			Str("reason", string(decision.Rejection)).
+			Msg("transmission rejected before speech recognition")
+		return false
+	}
+	return true
+}
+
+// sampleDuration converts a PCM sample count to wall-clock duration at the SRS
+// wideband sample rate.
+func sampleDuration(samples int) time.Duration {
+	if samples <= 0 {
+		return 0
+	}
+	hz := rate.Wideband.Hertz()
+	if hz <= 0 {
+		return 0
+	}
+	return time.Duration(float64(samples) / hz * float64(time.Second))
 }
 
 // recognizeSample runs speech recognition on a single audio sample and forwards the recognized text to the output channel.

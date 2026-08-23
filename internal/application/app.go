@@ -13,6 +13,7 @@ import (
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/mission"
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/net"
 	"github.com/dharmab/skyeye/internal/conf"
+	"github.com/dharmab/skyeye/pkg/athena/admission"
 	secoalition "github.com/dharmab/skyeye/pkg/coalitions"
 	"github.com/dharmab/skyeye/pkg/commands"
 	"github.com/dharmab/skyeye/pkg/composer"
@@ -46,6 +47,10 @@ type Application struct {
 	recognizer recognizer.Recognizer
 	// recognizerLock prevents multiple instances from running the recognizer at the same time
 	recognizerLock *flock.Flock
+	// admissionGate screens SRS transmissions against the Athena command
+	// channel before speech recognition runs. Nil means no gate is configured
+	// and the application behaves as upstream SkyEye. See ADR 0014.
+	admissionGate *admission.Gate
 	// chatListener listens for chat messages
 	chatListener *commands.ChatListener
 	// parser converts English brevity text to internal representations
@@ -235,6 +240,32 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 	}
 
 	log.Info().Msg("constructing application")
+
+	// Athena command-channel gate. Constructed only when the operator has
+	// configured both a command frequency and a pilot name; absent that, the
+	// application behaves as upstream SkyEye. Validation is fail-closed: a
+	// partially configured gate is a startup error, never a silently open
+	// channel. See ADR 0014.
+	var admissionGate *admission.Gate
+	if config.AthenaCommandFrequencyHz != 0 || config.AthenaPilotName != "" {
+		gateConfig := admission.DefaultConfig()
+		gateConfig.FrequencyHz = config.AthenaCommandFrequencyHz
+		gateConfig.PilotName = config.AthenaPilotName
+		if config.AthenaCommandModulation != nil {
+			gateConfig.Modulation = *config.AthenaCommandModulation
+		}
+		gate, gateErr := admission.NewGate(gateConfig)
+		if gateErr != nil {
+			return nil, fmt.Errorf("failed to construct application: %w", gateErr)
+		}
+		admissionGate = gate
+		log.Info().
+			Uint64("frequencyHz", gateConfig.FrequencyHz).
+			Stringer("modulation", gateConfig.Modulation).
+			Str("pilot", gateConfig.PilotName).
+			Msg("Athena command-channel admission gate enabled")
+	}
+
 	app := &Application{
 		callsign:                   config.Callsign,
 		enableTranscriptionLogging: config.EnableTranscriptionLogging,
@@ -243,6 +274,7 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		telemetryClient:            telemetryClient,
 		recognizer:                 speechRecognizer,
 		recognizerLock:             config.RecognizerLock,
+		admissionGate:              admissionGate,
 		parser:                     requestParser,
 		radar:                      rdr,
 		controller:                 gciController,

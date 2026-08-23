@@ -24,6 +24,10 @@ type Transmission struct {
 	TraceID string
 	// ClientName is the name of the SRS client that transmitted the audio.
 	ClientName string
+	// Radio is the receiver the transmission arrived on. Athena's command-channel
+	// admission gate needs the frequency and modulation as observed facts, not as
+	// an assumption inferred from client configuration.
+	Radio types.Radio
 	// Audio sample for the transmission.
 	Audio Audio
 }
@@ -80,7 +84,7 @@ func NewClient(config types.ClientConfiguration) (*Client, error) {
 
 	receivers := make(map[types.Radio]*receiver, len(config.Radios))
 	for _, radio := range config.Radios {
-		receivers[radio] = &receiver{}
+		receivers[radio] = &receiver{radio: radio}
 	}
 
 	client := &Client{
@@ -200,7 +204,7 @@ func (c *Client) Run(ctx context.Context, wg *sync.WaitGroup) error {
 	})
 
 	udpVoiceRxChan := make(chan []byte, 64*0xFFFFF)
-	voiceBytesRxChan := make(chan []voice.Packet, 0xFFFFF)
+	voiceBytesRxChan := make(chan transmissionPackets, 0xFFFFF)
 	wg.Add(2)
 	go func() {
 		defer wg.Done()

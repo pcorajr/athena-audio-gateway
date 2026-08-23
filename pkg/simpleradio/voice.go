@@ -15,10 +15,11 @@ import (
 const opusApplicationVoIP = 2048
 
 // deocdeVoice decodes incoming voice packets from voicePacketsChan into F32LE PCM audio data published to the client's rxChan.
-func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan []voice.Packet) {
+func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transmissionPackets) {
 	for {
 		select {
-		case voicePackets := <-voicePacketsChan:
+		case received := <-voicePacketsChan:
+			voicePackets := received.packets
 			decoder, err := opus.NewDecoder(int(rate.Wideband.Hertz()), channels)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to create Opus decoder")
@@ -41,6 +42,7 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan []voic
 				c.rxChan <- Transmission{
 					TraceID:    shortuuid.New(),
 					ClientName: name,
+					Radio:      received.radio,
 					Audio:      transmissionPCM,
 				}
 			} else {

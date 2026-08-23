@@ -12,6 +12,10 @@ import (
 
 // receiver buffers incoming transmissions on a single radio frequency.
 type receiver struct {
+	// radio is the frequency/modulation this receiver is tuned to. It is
+	// carried through to the decoded transmission so downstream admission can
+	// treat the arrival channel as an observed fact.
+	radio types.Radio
 	// lock protects the receiver's state.
 	lock sync.RWMutex
 	// buffer of received voice packets.
@@ -89,8 +93,15 @@ const maxRxGap = 300 * time.Millisecond
 // thrashing due to transmissions too short to contain any useful content.
 const minRxDuration = 1 * time.Second // 1s is whisper.cpp's minimum duration, it errors for any samples shorter than this.
 
+// transmissionPackets is a complete buffered transmission together with the
+// radio it arrived on.
+type transmissionPackets struct {
+	radio   types.Radio
+	packets []voice.Packet
+}
+
 // receiveVoice listens for incoming UDP voice packets, decodes them into VoicePacket structs, and routes them to the out channel for audio decoding.
-func (c *Client) receiveVoice(ctx context.Context, in <-chan []byte, out chan<- []voice.Packet) {
+func (c *Client) receiveVoice(ctx context.Context, in <-chan []byte, out chan<- transmissionPackets) {
 	// t is a ticker which triggers the check for the end of a transmission.
 	t := time.NewTicker(frameLength)
 	for {
@@ -139,7 +150,7 @@ func (c *Client) receiveVoice(ctx context.Context, in <-chan []byte, out chan<- 
 							logger.Info().Msg("received transmission")
 							audio := make([]voice.Packet, len(receiver.buffer))
 							copy(audio, receiver.buffer)
-							out <- audio
+							out <- transmissionPackets{radio: receiver.radio, packets: audio}
 						} else {
 							logger.Info().Msg("discarding transmission below minimum size")
 						}

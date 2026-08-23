@@ -138,6 +138,19 @@ func (c *Client) initialize() error {
 		return fmt.Errorf("failed to connect external AWACS mode: %w", err)
 	}
 
+	// Announce our radios explicitly after authenticating.
+	//
+	// Upstream only sends a radio update from the EAM password reply handler,
+	// with a "TODO is the update necessary?" against it. It is: the server
+	// routes voice by looking at each client's registered radio list, so until
+	// it has ours it has no reason to forward audio to this client. Sending it
+	// as part of initialize() also covers reconnects, where the EAM reply may
+	// arrive before the receivers have been reset.
+	log.Info().Int("radios", len(c.clientInfo.RadioInfo.Radios)).Msg("announcing radios to SRS server")
+	if err := c.updateRadios(); err != nil {
+		return fmt.Errorf("failed to announce radios: %w", err)
+	}
+
 	for _, receiver := range c.receivers {
 		receiver.reset()
 	}

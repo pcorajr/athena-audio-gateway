@@ -2,6 +2,7 @@ package simpleradio
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -123,6 +124,20 @@ func (c *Client) receiveVoice(ctx context.Context, in <-chan []byte, out chan<- 
 			}
 
 			logger := log.With().Str("GUID", string(packet.OriginGUID)).Logger()
+
+			// Log every decoded voice packet before any filtering. Without
+			// this, a packet that matches no receiver is dropped silently and
+			// there is no way to tell "the server never sent us audio" apart
+			// from "audio arrived on a frequency we are not tuned to" -- which
+			// are very different faults with very different fixes.
+			freqs := make([]string, 0, len(packet.Frequencies))
+			for _, f := range packet.Frequencies {
+				freqs = append(freqs, fmt.Sprintf("%.3fMHz/mod%d", f.Frequency/1_000_000, f.Modulation))
+			}
+			logger.Debug().
+				Strs("packetFrequencies", freqs).
+				Int("receivers", len(c.receivers)).
+				Msg("decoded inbound voice packet")
 
 			if c.secureCoalitionRadios.Load() {
 				client, ok := c.clients[types.GUID(packet.OriginGUID)]

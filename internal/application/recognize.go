@@ -62,9 +62,16 @@ func (a *Application) admit(transmission simpleradio.Transmission) bool {
 
 	decision := a.admissionGate.Admit(candidate)
 	if !decision.Admitted {
+		// The frequency and modulation are logged because they are routing
+		// facts, not content: they say which channel the audio arrived on, and
+		// without them a misconfigured command channel is very hard to
+		// diagnose against a live SRS server.
 		log.Info().
 			Str("traceID", transmission.TraceID).
 			Str("reason", string(decision.Rejection)).
+			Str("speaker", transmission.ClientName).
+			Float64("arrivedOnMHz", float64(transmission.Radio.Frequency)/1_000_000).
+			Int("modulation", int(transmission.Radio.Modulation)).
 			Msg("transmission rejected before speech recognition")
 		return false
 	}

@@ -111,8 +111,26 @@ type Frequency struct {
 const (
 	// headerSegmentLength is the length of the header segment in bytes.
 	headerSegmentLength = 6
-	// fixedSegmentLength is the length of the fixed segment in bytes.
+	// fixedSegmentLength is the length of the fixed segment as written by this
+	// package's encoder.
 	fixedSegmentLength = 58
+	// srsFixedSegmentLength is the fixed segment length used by DCS-SRS itself,
+	// per Common/Models/UDPVoicePacket.cs FixedPacketLength:
+	//
+	//	uint   UnitID             4
+	//	uint64 PacketID           8
+	//	byte   Hops               1
+	//	       Transmission GUID 22
+	//	       Origin GUID       22
+	//	                       ---- 57
+	//
+	// Real packets from an SRS server are therefore one byte shorter than this
+	// package's own encoding. The framing validation added upstream in 9467cf7
+	// compared against fixedSegmentLength only, so it rejected every genuine
+	// inbound voice packet with an off-by-one error while round-tripping this
+	// package's own encoder cleanly -- which is why unit tests passed and live
+	// audio never decoded. Accept both lengths.
+	srsFixedSegmentLength = 57
 	// frequencyLength is the length of a Frequency in bytes.
 	frequencyLength = 10
 )
@@ -217,9 +235,16 @@ func Decode(b []byte) (packet *Packet, err error) {
 	if int(packetLength) != len(b) {
 		return nil, fmt.Errorf("packet length header %d does not match datagram length %d", packetLength, len(b))
 	}
-	segmentsLength := headerSegmentLength + int(audioSegmentLength) + int(frequenciesSegmentLength) + fixedSegmentLength
-	if segmentsLength != int(packetLength) {
-		return nil, fmt.Errorf("length of packet segments %d does not match packet length header %d", segmentsLength, packetLength)
+	// Accept either fixed-segment length: 57 as written by DCS-SRS, or 58 as
+	// written by this package's own encoder. Validating against only one of
+	// them rejects half of all legitimate traffic.
+	dynamicLength := headerSegmentLength + int(audioSegmentLength) + int(frequenciesSegmentLength)
+	if dynamicLength+srsFixedSegmentLength != int(packetLength) &&
+		dynamicLength+fixedSegmentLength != int(packetLength) {
+		return nil, fmt.Errorf(
+			"length of packet segments %d does not match packet length header %d",
+			dynamicLength+srsFixedSegmentLength, packetLength,
+		)
 	}
 	if frequenciesSegmentLength%frequencyLength != 0 {
 		return nil, fmt.Errorf("frequencies segment length header %d is not a multiple of %d", frequenciesSegmentLength, frequencyLength)

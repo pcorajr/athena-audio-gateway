@@ -140,6 +140,11 @@ type Configuration struct {
 	// bridge default. A slow answer is worse than no answer on a radio, so the
 	// exchange is bounded and never retried.
 	AthenaHermesTimeout time.Duration
+	// AthenaDebugAudioDir, when set, writes each admitted transmission's audio
+	// to that directory as a WAV file. Diagnostic use only: this contradicts
+	// the ADR 0014 rule that audio never leaves the gateway process. Empty
+	// disables it, and it is never set in the shipped systemd unit.
+	AthenaDebugAudioDir string
 }
 
 var DefaultCallsigns = []string{"Sky Eye", "Thunderhead", "Eagle Eye", "Ghost Eye", "Sky Keeper", "Bandog", "Long Caster", "Galaxy"}

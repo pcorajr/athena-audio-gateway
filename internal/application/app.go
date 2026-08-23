@@ -59,6 +59,11 @@ type Application struct {
 	// are reported to Hermes on every exchange.
 	athenaFrequencyHz uint64
 	athenaModulation  bridge.Modulation
+	// debugAudioDir, when non-empty, causes each admitted transmission's audio
+	// to be written to disk for offline inspection. This deliberately breaks
+	// the ADR 0014 no-retention rule and is an operator-invoked diagnostic
+	// only; empty disables it entirely.
+	debugAudioDir string
 	// chatListener listens for chat messages
 	chatListener *commands.ChatListener
 	// parser converts English brevity text to internal representations
@@ -117,6 +122,14 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 			Stringer("modulation", gateConfig.Modulation).
 			Str("pilot", gateConfig.PilotName).
 			Msg("Athena command-channel admission gate enabled")
+	}
+
+	if config.AthenaDebugAudioDir != "" {
+		log.Warn().
+			Str("dir", config.AthenaDebugAudioDir).
+			Msg("DIAGNOSTIC MODE: transmission audio will be WRITTEN TO DISK. " +
+				"This overrides the ADR 0014 no-retention rule. Unset " +
+				"--athena-debug-audio-dir for normal operation.")
 	}
 
 	// Hermes text bridge. Only constructed when an endpoint is configured; the
@@ -327,6 +340,7 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		hermesBridge:               hermesBridge,
 		athenaFrequencyHz:          athenaFrequencyHz,
 		athenaModulation:           athenaModulation,
+		debugAudioDir:              config.AthenaDebugAudioDir,
 		parser:                     requestParser,
 		radar:                      rdr,
 		controller:                 gciController,

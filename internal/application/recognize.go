@@ -29,6 +29,10 @@ func (a *Application) recognize(ctx context.Context, out chan<- Message[string])
 			if !a.admit(transmission) {
 				continue
 			}
+			// Capture only admitted audio. A rejected transmission must not be
+			// written to disk under any circumstance -- it was screened out
+			// precisely so it would not be processed or retained.
+			a.captureDiagnosticAudio(transmission)
 			rCtx := context.Background()
 			rCtx = traces.WithTraceID(rCtx, transmission.TraceID)
 			rCtx = traces.WithClientName(rCtx, transmission.ClientName)

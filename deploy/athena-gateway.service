@@ -47,8 +47,9 @@ SystemCallFilter=~@privileged @resources
 ReadOnlyPaths=/etc/athena-gateway
 ReadOnlyPaths=/opt/athena-gateway
 
-# GPU access for local Whisper via Vulkan. Remove this line when using cloud
-# speech recognition.
+# GPU access for local Whisper. Only needed for a Vulkan/GPU build; the
+# default CPU build on athena's 32-core i9 does not require it. Harmless to
+# leave in place, and required if you later switch to the Vulkan build.
 DeviceAllow=/dev/dri rw
 SupplementaryGroups=video render
 

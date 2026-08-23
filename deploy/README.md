@@ -1,21 +1,45 @@
 # Deploying the Athena Audio Gateway
 
-Target: **darkstar-79** (Linux, RTX 5090), connecting over the LAN to
-**ATHENA-DCS** (`10.90.10.78`).
+Target: **athena** — the Linux workstation at `10.90.10.112` (RTX 4090), which
+already runs Hermes. It connects over the LAN to **ATHENA-DCS** (`10.90.10.78`).
 
-Nothing is installed on the playable DCS/VR client. The gateway is an ordinary
-SRS client; it cannot disrupt the pilot's radios.
+## Topology
 
-## Why here and not on the DCS server
+```text
+DCS flight client (Windows)
+  DCS + SRS client + HOTAS + headset
+  normal cockpit PTT, unchanged
+        |  ordinary SRS traffic
+        v
+ATHENA-DCS  10.90.10.78  (Windows)
+  DCS server . SRS server (EAM) . DCS-gRPC . Tacview RT
+        |  SRS 5002 . Tacview 42674
+        v
+athena  10.90.10.112  (Linux, RTX 4090)
+  Athena Audio Gateway  +  Hermes
+```
 
-| Placement | Speech recognition | Verdict |
-|---|---|---|
-| **darkstar-79** | Local Whisper on GPU | **Chosen.** Idle GPU, no DCS load, audio never leaves the LAN. |
-| ATHENA-DCS | Cloud API | Workable fallback. Sends audio to a third party. |
-| ATHENA-DCS | Local Whisper on CPU | **Unsupported upstream.** SkyEye's author explicitly refuses to support this alongside DCS. |
+Nothing is installed on the flight client. The gateway is an ordinary SRS
+client and cannot disrupt the pilot's radios.
 
-The trade-off: the GPU build is flagged experimental upstream. If it proves
-unstable, switch `recognizer` to `openai-whisper-api`.
+## Why athena
+
+| | |
+|---|---|
+| GPU | RTX 4090, 24 GB — ample for a 466 MB Whisper model |
+| CPU | i9-14900KF, 32 cores, AVX2 present |
+| SRS reachability | Verified: `10.90.10.78:5002` open from this host |
+| Hermes | Already runs here, so the text bridge is a localhost call |
+| DCS | Not on this machine, so no contention and no boot conflict |
+
+The last two matter most. Hermes being local removes a network hop and a
+firewall rule from the command path, and keeping the gateway off any DCS
+machine avoids the configuration upstream explicitly refuses to support
+(local CPU Whisper alongside DCS).
+
+**Do not host this on a machine that also runs DCS.** A flight client is
+usually booted into Windows and busy rendering; it cannot serve as a Linux
+gateway at the same time.
 
 ## Before you start
 
@@ -29,15 +53,15 @@ On **ATHENA-DCS**, three things must already be true:
    it.
 3. A mission loaded, if you intend to test.
 
-Outbound from darkstar-79: `5002/TCP+UDP` (SRS), `42674/TCP` (Tacview),
-`443/TCP` only if using cloud recognition. **No inbound ports.**
+Outbound from athena: `5002/TCP+UDP` (SRS), `42674/TCP` (Tacview), `443/TCP`
+only if using cloud recognition. **No inbound ports.**
 
 ## Install
 
 ```sh
-# GPU driver and Vulkan loader (CachyOS/Arch)
-sudo pacman -S --needed nvidia vulkan-icd-loader opus libsoxr
-vulkaninfo | head -5   # confirm the GPU is visible
+# Build dependencies (CachyOS/Arch). go, cmake, opus and libsoxr are already
+# present on athena; this is the full list for a fresh host.
+sudo pacman -S --needed go cmake base-devel opus libsoxr
 
 # Build. Upstream forbids bare `go build` — CGO flags and libwhisper.a are
 # required. Use make.

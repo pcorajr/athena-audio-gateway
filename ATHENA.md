@@ -130,3 +130,13 @@ no AGPL modules in `go.mod`.
 
 Receive-only. No transmit path is enabled. Live `SrsService.Transmit` is gated
 by Project Athena issue #181 and requires separate explicit approval.
+
+## Deployment
+
+Runs on **athena** (`10.90.10.112`, Linux, RTX 4090) alongside Hermes,
+connecting over the LAN to the SRS server on **ATHENA-DCS** (`10.90.10.78`,
+Windows). See `deploy/README.md`.
+
+Do not host the gateway on a machine that also runs DCS: a flight client is
+booted into Windows and busy rendering, and upstream explicitly does not
+support local CPU speech recognition alongside DCS.

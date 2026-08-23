@@ -209,11 +209,20 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		return nil, fmt.Errorf("failed to construct application: %w", err)
 	}
 
+	// Telemetry feeds SkyEye's radar scope, which exists only to answer GCI
+	// requests. The Athena lane never starts the radar -- Athena's facts reach
+	// Hermes through its own tools -- so constructing a telemetry client would
+	// impose a Tacview dependency the command path does not use. Skipping it
+	// means the gateway does not require Tacview real-time telemetry to be
+	// enabled on the DCS server at all.
 	var telemetryClient telemetry.Client
-	if config.ACMIFile != "" {
+	switch {
+	case admissionGate != nil:
+		log.Info().Msg("Athena mode: skipping telemetry client; the radar scope is not used")
+	case config.ACMIFile != "":
 		log.Info().Str("file", config.ACMIFile).Msg("constructing ACMI file reader")
 		telemetryClient = telemetry.NewFileClient(config.ACMIFile, config.RadarSweepInterval)
-	} else {
+	default:
 		log.Info().Str("address", config.TelemetryAddress).Msg("constructing telemetry client")
 		telemetryClient = telemetry.NewRealTimeClient(
 			config.TelemetryAddress,
@@ -336,36 +345,40 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 
 // Run implements Application.Run.
 func (a *Application) Run(ctx context.Context, cancel context.CancelFunc, wg *sync.WaitGroup) error {
-	wg.Go(func() {
-		log.Info().Msg("running telemetry client")
-		if err := a.telemetryClient.Run(ctx); err != nil {
-			if !errors.Is(err, context.Canceled) {
-				log.Error().Err(err).Msg("error running telemetry client")
-				cancel()
+	// All three of these serve the radar scope. In Athena mode there is no
+	// telemetry client and no radar, so they are not started.
+	if a.telemetryClient != nil {
+		wg.Go(func() {
+			log.Info().Msg("running telemetry client")
+			if err := a.telemetryClient.Run(ctx); err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Error().Err(err).Msg("error running telemetry client")
+					cancel()
+				}
 			}
-		}
-	})
+		})
 
-	wg.Go(func() {
-		log.Info().Msg("streaming telemetry data to radar")
-		a.telemetryClient.Stream(ctx, wg, a.starts, a.updates, a.fades)
-	})
+		wg.Go(func() {
+			log.Info().Msg("streaming telemetry data to radar")
+			a.telemetryClient.Stream(ctx, wg, a.starts, a.updates, a.fades)
+		})
 
-	wg.Go(func() {
-		log.Info().Msg("updating mission time and bullseye")
-		ticker := time.NewTicker(2*time.Second + 100*time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				log.Info().Msg("stopping mission time and bullseye updates due to context cancellation")
-				return
-			case <-ticker.C:
-				a.updateMissionTime()
-				a.updateBullseyes()
+		wg.Go(func() {
+			log.Info().Msg("updating mission time and bullseye")
+			ticker := time.NewTicker(2*time.Second + 100*time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					log.Info().Msg("stopping mission time and bullseye updates due to context cancellation")
+					return
+				case <-ticker.C:
+					a.updateMissionTime()
+					a.updateBullseyes()
+				}
 			}
-		}
-	})
+		})
+	}
 
 	wg.Go(func() {
 		log.Info().Msg("running SRS client")

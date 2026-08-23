@@ -43,18 +43,23 @@ gateway at the same time.
 
 ## Before you start
 
-On **ATHENA-DCS**, three things must already be true:
+On **ATHENA-DCS**, two things must be true:
 
-1. **SRS External AWACS Mode enabled with a password.** `SR-Server.exe` shows
-   "ON" next to External AWACS Mode.
-2. **Tacview Real-Time Telemetry enabled** — DCS → OPTIONS → SPECIAL → Tacview.
-   This is a SkyEye startup dependency, not an Athena one; Athena's facts come
-   through Hermes tools, not SkyEye's radar. The process will not start without
-   it.
-3. A mission loaded, if you intend to test.
+1. **SRS External AWACS Mode enabled with a blue password.** `SR-Server.exe`
+   shows "ON" next to External AWACS Mode. The server keeps separate blue and
+   red passwords (`EXTERNAL_AWACS_MODE_BLUE_PASSWORD` and
+   `..._RED_PASSWORD` in `server.cfg`); supply the one matching the
+   `coalition` in the gateway config.
+2. A mission loaded, if you intend to test.
 
-Outbound from athena: `5002/TCP+UDP` (SRS), `42674/TCP` (Tacview), `443/TCP`
-only if using cloud recognition. **No inbound ports.**
+**Tacview is not required.** Upstream SkyEye needs real-time telemetry to feed
+its radar scope, which exists only to answer GCI requests. The Athena lane
+never starts the radar — Athena's facts reach Hermes through Athena's own
+tools — so the gateway skips telemetry construction entirely in Athena mode.
+Nothing needs to be installed or configured on the DCS server for it.
+
+Outbound from athena: `5002/TCP+UDP` (SRS) and `443/TCP` only if using cloud
+recognition. **No inbound ports.**
 
 ## Install
 

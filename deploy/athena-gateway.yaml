@@ -65,16 +65,17 @@ srs-eam-password: CHANGEME
 srs-frequencies: 30.0FM
 
 # ─────────────────────────────────────────────────────────────────────────────
-# TELEMETRY
+# TELEMETRY — not used in Athena mode
 # ─────────────────────────────────────────────────────────────────────────────
-
-# Tacview real-time telemetry. Enable in DCS under
-# OPTIONS → SPECIAL → Tacview → Real-Time Telemetry.
 #
-# This is a SkyEye startup dependency, not an Athena one: Athena's facts arrive
-# through Hermes tools, not through SkyEye's radar. It is required for the
-# process to start.
-telemetry-address: 10.90.10.78:42674
+# Tacview real-time telemetry feeds SkyEye's radar scope, which only serves GCI
+# requests. The Athena lane never starts the radar, so no telemetry client is
+# constructed and these settings are ignored. Tacview does not need to be
+# installed or enabled on the DCS server.
+#
+# They are retained only for running this build as upstream SkyEye, i.e. with
+# athena-command-frequency unset.
+#telemetry-address: 10.90.10.78:42674
 #telemetry-password: CHANGEME
 
 # ─────────────────────────────────────────────────────────────────────────────

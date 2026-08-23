@@ -131,6 +131,15 @@ type Configuration struct {
 	// on the Athena command channel. Transmissions from any other client are
 	// discarded before speech recognition.
 	AthenaPilotName string
+	// AthenaHermesEndpoint is the URL of the Hermes text bridge. When set, the
+	// Athena command lane replaces the GCI controller lane: transcripts are
+	// sent to Hermes and its response text is synthesized verbatim. Requires
+	// the admission gate to be configured. Empty disables the lane.
+	AthenaHermesEndpoint string
+	// AthenaHermesTimeout bounds a single Hermes exchange. Zero selects the
+	// bridge default. A slow answer is worse than no answer on a radio, so the
+	// exchange is bounded and never retried.
+	AthenaHermesTimeout time.Duration
 }
 
 var DefaultCallsigns = []string{"Sky Eye", "Thunderhead", "Eagle Eye", "Ghost Eye", "Sky Keeper", "Bandog", "Long Caster", "Galaxy"}

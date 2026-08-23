@@ -14,6 +14,7 @@ import (
 	"github.com/DCS-gRPC/go-bindings/dcs/v0/net"
 	"github.com/dharmab/skyeye/internal/conf"
 	"github.com/dharmab/skyeye/pkg/athena/admission"
+	"github.com/dharmab/skyeye/pkg/athena/bridge"
 	secoalition "github.com/dharmab/skyeye/pkg/coalitions"
 	"github.com/dharmab/skyeye/pkg/commands"
 	"github.com/dharmab/skyeye/pkg/composer"
@@ -51,6 +52,13 @@ type Application struct {
 	// channel before speech recognition runs. Nil means no gate is configured
 	// and the application behaves as upstream SkyEye. See ADR 0014.
 	admissionGate *admission.Gate
+	// hermesBridge exchanges transcripts for response text with Hermes. When
+	// non-nil the Athena command lane replaces the GCI controller lane.
+	hermesBridge bridge.Client
+	// athenaFrequencyHz and athenaModulation describe the command channel and
+	// are reported to Hermes on every exchange.
+	athenaFrequencyHz uint64
+	athenaModulation  bridge.Modulation
 	// chatListener listens for chat messages
 	chatListener *commands.ChatListener
 	// parser converts English brevity text to internal representations
@@ -266,6 +274,33 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 			Msg("Athena command-channel admission gate enabled")
 	}
 
+	// Hermes text bridge. Only constructed when an endpoint is configured; the
+	// gate and the bridge are independently optional so the gateway can run
+	// receive-only for validation before any Hermes profile exists.
+	var hermesBridge bridge.Client
+	var athenaFrequencyHz uint64
+	athenaModulation := bridge.ModulationFM
+	if config.AthenaHermesEndpoint != "" {
+		if admissionGate == nil {
+			return nil, errors.New(
+				"failed to construct application: athena-hermes-endpoint requires the admission gate to be configured",
+			)
+		}
+		client, bridgeErr := bridge.NewHTTPClient(config.AthenaHermesEndpoint, config.AthenaHermesTimeout)
+		if bridgeErr != nil {
+			return nil, fmt.Errorf("failed to construct application: %w", bridgeErr)
+		}
+		hermesBridge = client
+		gateConfig := admissionGate.Config()
+		athenaFrequencyHz = gateConfig.FrequencyHz
+		if gateConfig.Modulation == admission.ModulationAM {
+			athenaModulation = bridge.ModulationAM
+		}
+		log.Info().
+			Str("endpoint", config.AthenaHermesEndpoint).
+			Msg("Athena command lane enabled; GCI controller lane disabled")
+	}
+
 	app := &Application{
 		callsign:                   config.Callsign,
 		enableTranscriptionLogging: config.EnableTranscriptionLogging,
@@ -275,6 +310,9 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		recognizer:                 speechRecognizer,
 		recognizerLock:             config.RecognizerLock,
 		admissionGate:              admissionGate,
+		hermesBridge:               hermesBridge,
+		athenaFrequencyHz:          athenaFrequencyHz,
+		athenaModulation:           athenaModulation,
 		parser:                     requestParser,
 		radar:                      rdr,
 		controller:                 gciController,
@@ -369,22 +407,33 @@ func (a *Application) Run(ctx context.Context, cancel context.CancelFunc, wg *sy
 		})
 	}
 
-	log.Info().Msg("starting request parsing routine")
-	wg.Go(func() {
-		a.parse(ctx, rxTextChan, requestChan)
-	})
-	log.Info().Msg("starting radar scope routine")
-	wg.Go(func() {
-		a.radar.Run(ctx, wg)
-	})
-	log.Info().Msg("starting GCI controller routine")
-	wg.Go(func() {
-		a.control(ctx, wg, requestChan, callChan)
-	})
-	log.Info().Msg("starting response composer routine")
-	wg.Go(func() {
-		a.compose(ctx, callChan, txTextChan)
-	})
+	if a.hermesBridge != nil {
+		// Athena command lane. The Gateway does not interpret the transcript:
+		// it hands text to Hermes and synthesizes the reply verbatim. The GCI
+		// parse/control/compose lane is not started at all, so no brevity
+		// parser, radar scope, or GCI controller can produce a transmission.
+		log.Info().Msg("starting Athena command lane routine")
+		wg.Go(func() {
+			a.athenaCommandLane(ctx, rxTextChan, txTextChan)
+		})
+	} else {
+		log.Info().Msg("starting request parsing routine")
+		wg.Go(func() {
+			a.parse(ctx, rxTextChan, requestChan)
+		})
+		log.Info().Msg("starting radar scope routine")
+		wg.Go(func() {
+			a.radar.Run(ctx, wg)
+		})
+		log.Info().Msg("starting GCI controller routine")
+		wg.Go(func() {
+			a.control(ctx, wg, requestChan, callChan)
+		})
+		log.Info().Msg("starting response composer routine")
+		wg.Go(func() {
+			a.compose(ctx, callChan, txTextChan)
+		})
+	}
 	log.Info().Msg("starting speech synthesis routine")
 	wg.Go(func() {
 		a.synthesize(ctx, txTextChan, txAudioChan)

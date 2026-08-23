@@ -140,6 +140,14 @@ type Configuration struct {
 	// bridge default. A slow answer is worse than no answer on a radio, so the
 	// exchange is bounded and never retried.
 	AthenaHermesTimeout time.Duration
+	// AthenaPersonas declares the addressable personas, in the form
+	// "name[=alias1,alias2]". Athena is mission; Hermes is dev and system. The
+	// set is open by design: adding a persona is a configuration change.
+	AthenaPersonas []string
+	// AthenaPersonaMaxDistance is the edit distance tolerated when matching a
+	// spoken address, absorbing transcription slips on accented speech. Zero
+	// requires an exact match.
+	AthenaPersonaMaxDistance int
 	// AthenaPromptFile optionally replaces the recognizer's initial prompt with
 	// the contents of a file. Which vocabulary transcribes best is empirical
 	// and speaker-dependent, so it is tunable without a rebuild.

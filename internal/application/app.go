@@ -15,6 +15,7 @@ import (
 	"github.com/dharmab/skyeye/internal/conf"
 	"github.com/dharmab/skyeye/pkg/athena/admission"
 	"github.com/dharmab/skyeye/pkg/athena/bridge"
+	"github.com/dharmab/skyeye/pkg/athena/persona"
 	secoalition "github.com/dharmab/skyeye/pkg/coalitions"
 	"github.com/dharmab/skyeye/pkg/commands"
 	"github.com/dharmab/skyeye/pkg/composer"
@@ -59,6 +60,9 @@ type Application struct {
 	// are reported to Hermes on every exchange.
 	athenaFrequencyHz uint64
 	athenaModulation  bridge.Modulation
+	// personas resolves which addressee a transmission is directed to. Athena
+	// is mission; Hermes is dev and system; the set is open by design.
+	personas *persona.Registry
 	// debugAudioDir, when non-empty, causes each admitted transmission's audio
 	// to be written to disk for offline inspection. This deliberately breaks
 	// the ADR 0014 no-retention rule and is an operator-invoked diagnostic
@@ -130,6 +134,29 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 			Msg("DIAGNOSTIC MODE: transmission audio will be WRITTEN TO DISK. " +
 				"This overrides the ADR 0014 no-retention rule. Unset " +
 				"--athena-debug-audio-dir for normal operation.")
+	}
+
+	// Persona registry. Built before the SRS client connects so a
+	// misconfigured persona set fails at startup rather than on the first
+	// transmission.
+	var personaRegistry *persona.Registry
+	if admissionGate != nil {
+		specs, personaErr := persona.ParseSpecs(config.AthenaPersonas)
+		if personaErr != nil {
+			return nil, fmt.Errorf("failed to construct application: %w", personaErr)
+		}
+		personaRegistry, personaErr = persona.NewRegistry(specs, config.AthenaPersonaMaxDistance)
+		if personaErr != nil {
+			return nil, fmt.Errorf("failed to construct application: %w", personaErr)
+		}
+		names := make([]string, 0, len(specs))
+		for _, p := range personaRegistry.Personas() {
+			names = append(names, p.Name)
+		}
+		log.Info().
+			Strs("personas", names).
+			Int("maxEditDistance", config.AthenaPersonaMaxDistance).
+			Msg("Athena persona routing enabled")
 	}
 
 	// Hermes text bridge. Only constructed when an endpoint is configured; the
@@ -355,6 +382,7 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		hermesBridge:               hermesBridge,
 		athenaFrequencyHz:          athenaFrequencyHz,
 		athenaModulation:           athenaModulation,
+		personas:                   personaRegistry,
 		debugAudioDir:              config.AthenaDebugAudioDir,
 		parser:                     requestParser,
 		radar:                      rdr,

@@ -89,6 +89,8 @@ var (
 	athenaHermesTimeout          time.Duration
 	athenaDebugAudioDir          string
 	athenaPromptFile             string
+	athenaPersonas               []string
+	athenaPersonaMaxDistance     int
 	locationsFile                string
 	aircraftFile                 string
 )
@@ -158,6 +160,8 @@ func init() {
 	skyeye.Flags().StringVar(&athenaPilotName, "athena-pilot-name", "", "Exact SRS client name permitted to issue Athena commands. All other transmitters are discarded before speech recognition.")
 	skyeye.Flags().StringVar(&athenaHermesEndpoint, "athena-hermes-endpoint", "", "URL of the Hermes text bridge. Replaces the GCI controller lane; requires the Athena admission gate.")
 	skyeye.Flags().DurationVar(&athenaHermesTimeout, "athena-hermes-timeout", 0, "Bound on a single Hermes exchange. Zero uses the bridge default. Never retried.")
+	skyeye.Flags().StringSliceVar(&athenaPersonas, "athena-persona", nil, "Addressable persona, repeatable, as name[=alias1,alias2]. e.g. --athena-persona=athena --athena-persona=hermes. Defaults to athena and hermes when unset.")
+	skyeye.Flags().IntVar(&athenaPersonaMaxDistance, "athena-persona-max-distance", 1, "Edit distance tolerated when matching a spoken persona name, absorbing transcription slips. 0 requires an exact match.")
 	skyeye.Flags().StringVar(&athenaPromptFile, "athena-prompt-file", "", "Path to a file whose contents replace the speech recognizer's initial prompt. Tunes transcription vocabulary without a rebuild.")
 	skyeye.Flags().StringVar(&athenaDebugAudioDir, "athena-debug-audio-dir", "", "DIAGNOSTIC ONLY: write each admitted transmission's audio to this directory as WAV. Contradicts the ADR 0014 no-retention rule; leave unset for normal operation.")
 	skyeye.Flags().StringVar(&voiceLockPath, "voice-lock-path", "", "Path to lock file for concurrent text-to-speech when using multiple instances")
@@ -527,6 +531,8 @@ func run(_ *cobra.Command, _ []string) {
 		AthenaPilotName:              athenaPilotName,
 		AthenaHermesEndpoint:         athenaHermesEndpoint,
 		AthenaHermesTimeout:          athenaHermesTimeout,
+		AthenaPersonas:               athenaPersonas,
+		AthenaPersonaMaxDistance:     athenaPersonaMaxDistance,
 		AthenaPromptFile:             athenaPromptFile,
 		AthenaDebugAudioDir:          athenaDebugAudioDir,
 		VoiceSpeed:                   voiceSpeed,

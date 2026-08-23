@@ -81,6 +81,42 @@ func (a *Application) exchangeWithHermes(
 		return
 	}
 
+	// Resolve who was addressed before anything else. Athena is mission,
+	// Hermes is dev and system; they run in separate sessions because they
+	// differ in authority, not merely topic. An unaddressed transmission is
+	// not routed at all -- guessing could send a mission question into a lane
+	// that can mutate a repository.
+	//
+	// A nil registry means persona routing is not configured; the transcript
+	// goes to the single configured bridge unchanged. This keeps a
+	// single-persona deployment working without forcing the pilot to say a
+	// name on every call.
+	transcriptForHermes := transcript
+	addressee := ""
+	if a.personas != nil {
+		resolution := a.personas.Resolve(transcript)
+		if !resolution.Addressed() {
+			// The transcript is logged at debug so that, after a week of
+			// flying, we can see what unaddressed traffic actually looks like
+			// and decide on evidence whether a default persona is warranted.
+			logger.Info().Msg("transmission addressed to no persona; transmitting nothing")
+			logger.Debug().Str("transcript", transcript).Msg("unaddressed transcript")
+			return
+		}
+		if resolution.Fuzzy {
+			// Surfaced deliberately: a persona name that repeatedly needs
+			// fuzzy matching for this speaker is a naming problem, not a
+			// transient slip.
+			logger.Info().
+				Str("persona", resolution.Persona.Name).
+				Str("heard", resolution.Matched).
+				Int("distance", resolution.Distance).
+				Msg("persona resolved by near-match")
+		}
+		transcriptForHermes = resolution.Remainder
+		addressee = resolution.Persona.Name
+	}
+
 	receivedAt := traces.GetReceivedAt(rCtx)
 	if receivedAt.IsZero() {
 		receivedAt = time.Now()
@@ -92,12 +128,15 @@ func (a *Application) exchangeWithHermes(
 
 	req := bridge.Request{
 		TransmissionID: transmissionID,
-		Transcript:     transcript,
-		Speaker:        traces.GetClientName(rCtx),
-		FrequencyHz:    a.athenaFrequencyHz,
-		Modulation:     a.athenaModulation,
-		ReceivedAt:     receivedAt,
-		TranscribedAt:  transcribedAt,
+		// The remainder, not the raw transcript: a persona should not receive
+		// its own name as part of the request.
+		Transcript:    transcriptForHermes,
+		Addressee:     addressee,
+		Speaker:       traces.GetClientName(rCtx),
+		FrequencyHz:   a.athenaFrequencyHz,
+		Modulation:    a.athenaModulation,
+		ReceivedAt:    receivedAt,
+		TranscribedAt: transcribedAt,
 	}
 
 	resp, err := a.hermesBridge.Exchange(ctx, req)

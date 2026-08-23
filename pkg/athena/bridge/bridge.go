@@ -78,6 +78,13 @@ type Request struct {
 	Transcript string `json:"transcript"`
 	// Speaker is the SRS client name resolved from live metadata.
 	Speaker string `json:"speaker"`
+	// Addressee is the persona the pilot addressed, e.g. "athena" for mission
+	// questions or "hermes" for development and system work. Empty means the
+	// transmission was not addressed to anyone and must not be routed.
+	//
+	// This is distinct from Speaker: Speaker is who talked, Addressee is who
+	// was talked to. Admission screens the former; routing uses the latter.
+	Addressee string `json:"addressee,omitempty"`
 	// FrequencyHz is the command frequency the utterance arrived on.
 	FrequencyHz uint64 `json:"frequency_hz"`
 	// Modulation is the modulation the utterance arrived with.

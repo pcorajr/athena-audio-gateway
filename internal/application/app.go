@@ -253,6 +253,21 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 
 	recognizerOpts := []recognizer.Option{recognizer.WithLocations(locationNames)}
 
+	// The upstream prompt primes for AWACS brevity codes. The Athena command
+	// channel carries ordinary conversational English, and priming for the
+	// wrong register measurably degrades accuracy on natural speech.
+	if admissionGate != nil {
+		recognizerOpts = append(recognizerOpts, recognizer.WithAthenaMode())
+	}
+	if config.AthenaPromptFile != "" {
+		override, promptErr := recognizer.LoadPromptFile(config.AthenaPromptFile)
+		if promptErr != nil {
+			return nil, fmt.Errorf("failed to construct application: %w", promptErr)
+		}
+		recognizerOpts = append(recognizerOpts, recognizer.WithPromptOverride(override))
+		log.Info().Str("file", config.AthenaPromptFile).Msg("loaded recognizer prompt override")
+	}
+
 	log.Info().Msg("constructing speech-to-text recognizer")
 	var speechRecognizer recognizer.Recognizer
 	switch config.Recognizer {

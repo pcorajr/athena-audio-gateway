@@ -140,6 +140,10 @@ type Configuration struct {
 	// bridge default. A slow answer is worse than no answer on a radio, so the
 	// exchange is bounded and never retried.
 	AthenaHermesTimeout time.Duration
+	// AthenaPromptFile optionally replaces the recognizer's initial prompt with
+	// the contents of a file. Which vocabulary transcribes best is empirical
+	// and speaker-dependent, so it is tunable without a rebuild.
+	AthenaPromptFile string
 	// AthenaDebugAudioDir, when set, writes each admitted transmission's audio
 	// to that directory as a WAV file. Diagnostic use only: this contradicts
 	// the ADR 0014 rule that audio never leaves the gateway process. Empty

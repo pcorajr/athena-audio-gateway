@@ -88,6 +88,7 @@ var (
 	athenaHermesEndpoint         string
 	athenaHermesTimeout          time.Duration
 	athenaDebugAudioDir          string
+	athenaPromptFile             string
 	locationsFile                string
 	aircraftFile                 string
 )
@@ -157,6 +158,7 @@ func init() {
 	skyeye.Flags().StringVar(&athenaPilotName, "athena-pilot-name", "", "Exact SRS client name permitted to issue Athena commands. All other transmitters are discarded before speech recognition.")
 	skyeye.Flags().StringVar(&athenaHermesEndpoint, "athena-hermes-endpoint", "", "URL of the Hermes text bridge. Replaces the GCI controller lane; requires the Athena admission gate.")
 	skyeye.Flags().DurationVar(&athenaHermesTimeout, "athena-hermes-timeout", 0, "Bound on a single Hermes exchange. Zero uses the bridge default. Never retried.")
+	skyeye.Flags().StringVar(&athenaPromptFile, "athena-prompt-file", "", "Path to a file whose contents replace the speech recognizer's initial prompt. Tunes transcription vocabulary without a rebuild.")
 	skyeye.Flags().StringVar(&athenaDebugAudioDir, "athena-debug-audio-dir", "", "DIAGNOSTIC ONLY: write each admitted transmission's audio to this directory as WAV. Contradicts the ADR 0014 no-retention rule; leave unset for normal operation.")
 	skyeye.Flags().StringVar(&voiceLockPath, "voice-lock-path", "", "Path to lock file for concurrent text-to-speech when using multiple instances")
 	if runtime.GOOS == "darwin" {
@@ -525,6 +527,7 @@ func run(_ *cobra.Command, _ []string) {
 		AthenaPilotName:              athenaPilotName,
 		AthenaHermesEndpoint:         athenaHermesEndpoint,
 		AthenaHermesTimeout:          athenaHermesTimeout,
+		AthenaPromptFile:             athenaPromptFile,
 		AthenaDebugAudioDir:          athenaDebugAudioDir,
 		VoiceSpeed:                   voiceSpeed,
 		Volume:                       volume,

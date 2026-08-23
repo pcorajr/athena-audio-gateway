@@ -46,7 +46,7 @@ func (r *whisperRecognizer) Recognize(ctx context.Context, sample []float32, ena
 		return "", fmt.Errorf("error creating whisper context: %w", err)
 	}
 
-	wCtx.SetInitialPrompt(prompt(r.callsign, r.locations))
+	wCtx.SetInitialPrompt(r.initialPrompt(r.callsign))
 
 	if wCtx.IsMultilingual() {
 		_ = wCtx.SetLanguage("en")
@@ -82,7 +82,7 @@ func (r *whisperRecognizer) Recognize(ctx context.Context, sample []float32, ena
 			if err != nil {
 				return textBuilder.String(), fmt.Errorf("error processing segment: %w", err)
 			}
-			if _, err := textBuilder.WriteString(segment.Text); err != nil {
+			if _, err := textBuilder.WriteString(stripNonSpeech(segment.Text)); err != nil {
 				return textBuilder.String(), fmt.Errorf("error writing segment text: %w", err)
 			}
 		}

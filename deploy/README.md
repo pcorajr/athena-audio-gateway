@@ -61,6 +61,23 @@ Nothing needs to be installed or configured on the DCS server for it.
 Outbound from athena: `5002/TCP+UDP` (SRS) and `443/TCP` only if using cloud
 recognition. **No inbound ports.**
 
+## Pilot audio setup
+
+Recognition quality is dominated by microphone gain, not by the model. Do these
+in order -- the first one is what lets the second one work.
+
+1. **SRS client -> Mic Output -> the no-passthrough entry.** Hearing yourself is
+   what causes feedback, and feedback is why people turn the mic down.
+2. **Windows -> Sound -> Input -> your mic -> level ~90%.** Check for a separate
+   "Microphone Boost" under Additional device properties -> Levels.
+3. **Disable audio enhancements** on that input. Windows AGC fights you.
+4. **Verify.** Peaks should land around 0.3-0.7 of full scale. Below ~0.05 the
+   recogniser is starved; above ~0.85 loud calls clip, and distortion hurts
+   recognition far more than low level does.
+
+The SRS `MicBoost` slider does **not** affect transmitted audio -- it only
+changes the settings-page preview. See `docs/PITFALLS.md`.
+
 ## Install
 
 ```sh

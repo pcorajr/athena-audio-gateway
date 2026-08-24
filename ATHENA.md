@@ -3,6 +3,9 @@
 This is a fork of [`dharmab/skyeye`](https://github.com/dharmab/skyeye) (MIT),
 adapted into the **Athena Audio Gateway** for Project Athena.
 
+See `docs/PITFALLS.md` for traps this project hit that are not obvious
+from the code.
+
 Governing decision: **ADR 0014 — Server-Side SRS Audio Gateway Boundary**
 (`docs/architecture/adr/0014-srs-audio-gateway-boundary.md` in `pcorajr/project-athena`).
 

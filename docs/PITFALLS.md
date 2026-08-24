@@ -63,6 +63,36 @@ A handler runs on the server's goroutine and, in timeout tests, outlives the
 test function. `-race` reports it against whichever test happens to be running,
 which makes it look unrelated to the real cause.
 
+## 9. The API server does not surface the skills index
+
+A skill can be `enabled` in `hermes skills list`, present in
+`~/.hermes/.skills_prompt_snapshot.json`, and still be invisible to a session
+running through the API server platform. Asked "do you have skill X", the agent
+answers no.
+
+`skill_view(name="...")` **does** work when called explicitly, which is the
+useful half: the skill is reachable, it is just not advertised.
+
+**Unresolved.** Ruled out so far: OS platform gating (`skill_matches_platform`
+is about macOS/Linux), stale snapshot (the skill is in it), session age (a
+brand-new conversation behaves the same), and the `platform_hints` entry for
+`api_server` (that is prose guidance, not a gate). The actual mechanism has not
+been found.
+
+**Do not "fix" this by naming the skill in the prompt.** Tried, and it made
+things worse: loading a skill mid-turn pushed the exchange past a 15 s timeout,
+so calls that had been answering in 4.5 s failed outright with
+`hermes unreachable`. Reverted.
+
+## 10. A fix applied without a diagnosis usually costs more than the bug
+
+Pitfall 9 was chased through five dead ends and then "fixed" on a guess. The
+result was a slower, more broken system than before the change.
+
+The rule that would have prevented it: **find the mechanism first**. If the
+mechanism is unknown, say so and stop, rather than shipping the most plausible
+guess.
+
 ## Two techniques that paid for themselves
 
 **Quiet-floor measurement** distinguishes "SRS effects reached us" from "they

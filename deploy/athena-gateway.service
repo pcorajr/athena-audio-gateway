@@ -20,6 +20,15 @@ StateDirectory=athena-gateway
 Environment=HOME=/var/lib/athena-gateway
 Environment=XDG_DATA_HOME=/var/lib/athena-gateway/.local/share
 
+# The Hermes API key is a credential. It is passed through the environment
+# rather than a command-line flag, because a flag value is visible in `ps`
+# output and lands in shell history. The file is mode 0600 and owned by the
+# service account.
+#
+# Marked optional so the gateway still starts receive-only when no bridge is
+# configured; the application warns if an endpoint is set without a key.
+EnvironmentFile=-/etc/athena-gateway/secrets.env
+
 ExecStart=/opt/athena-gateway/bin/skyeye --config-file=/etc/athena-gateway/config.yaml
 
 # The gateway is an ordinary SRS client. Restarting it cannot disrupt DCS or

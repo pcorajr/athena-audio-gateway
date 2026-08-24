@@ -63,26 +63,35 @@ A handler runs on the server's goroutine and, in timeout tests, outlives the
 test function. `-race` reports it against whichever test happens to be running,
 which makes it look unrelated to the real cause.
 
-## 9. The API server does not surface the skills index
+## 9. The skills index is cached at gateway startup
 
-A skill can be `enabled` in `hermes skills list`, present in
-`~/.hermes/.skills_prompt_snapshot.json`, and still be invisible to a session
-running through the API server platform. Asked "do you have skill X", the agent
-answers no.
+A skill created *after* the gateway process started is invisible to it. Asked
+"do you have skill X", the agent says no, while `hermes skills list` shows it
+enabled and it is present in `~/.hermes/.skills_prompt_snapshot.json`.
 
-`skill_view(name="...")` **does** work when called explicitly, which is the
-useful half: the skill is reachable, it is just not advertised.
+`skill_view(name=...)` still works throughout, because that reads from disk on
+demand. Only the *index* is stale, which makes it look like a visibility or
+permissions problem rather than a caching one.
 
-**Unresolved.** Ruled out so far: OS platform gating (`skill_matches_platform`
-is about macOS/Linux), stale snapshot (the skill is in it), session age (a
-brand-new conversation behaves the same), and the `platform_hints` entry for
-`api_server` (that is prose guidance, not a gate). The actual mechanism has not
-been found.
+**After adding or editing a skill, restart the gateway:**
 
-**Do not "fix" this by naming the skill in the prompt.** Tried, and it made
-things worse: loading a skill mid-turn pushed the exchange past a 15 s timeout,
-so calls that had been answering in 4.5 s failed outright with
-`hermes unreachable`. Reverted.
+```bash
+sudo /home/pcorajr/.local/bin/hermes gateway restart --system
+```
+
+Diagnosed by comparing two timestamps that should have been the first thing
+checked:
+
+```
+systemctl show hermes-gateway -p ActiveEnterTimestamp --value
+stat -c '%y' ~/.hermes/skills/<category>/<name>/SKILL.md
+```
+
+**A wrong turn worth remembering:** "a brand-new conversation behaves the same"
+was used to rule out staleness. It does not — a new conversation is a new
+*session*, but the skills index lives on the *process*. Right instinct aimed at
+the wrong lifetime, and it cost about an hour of hunting a platform gate that
+does not exist.
 
 ## 10. A fix applied without a diagnosis usually costs more than the bug
 

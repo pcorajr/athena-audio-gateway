@@ -1,6 +1,7 @@
 package application
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/dharmab/skyeye/pkg/athena/bridge"
@@ -72,8 +73,8 @@ func TestAddressIsStrippedBeforeReachingHermes(t *testing.T) {
 	if got, want := fake.requests[0].Transcript, "give me a status update on the battlefield."; got != want {
 		t.Errorf("transcript = %q, want the address stripped: %q", got, want)
 	}
-	if got := fake.requests[0].Addressee; got != "athena" {
-		t.Errorf("addressee = %q, want %q", got, "athena")
+	if got := fake.requests[0].Addressee; !strings.HasPrefix(got, "athena") {
+		t.Errorf("addressee = %q, want it to identify the athena persona", got)
 	}
 }
 
@@ -94,8 +95,8 @@ func TestPersonasRouteToDistinctAddressees(t *testing.T) {
 		if len(fake.requests) != 1 {
 			t.Fatalf("%q: bridge called %d times, want 1", tc.transcript, len(fake.requests))
 		}
-		if got := fake.requests[0].Addressee; got != tc.addressee {
-			t.Errorf("%q: addressee = %q, want %q", tc.transcript, got, tc.addressee)
+		if got := fake.requests[0].Addressee; !strings.HasPrefix(got, tc.addressee) {
+			t.Errorf("%q: addressee = %q, want it to identify %q", tc.transcript, got, tc.addressee)
 		}
 		if got := fake.requests[0].Transcript; got != tc.remainder {
 			t.Errorf("%q: transcript = %q, want %q", tc.transcript, got, tc.remainder)
@@ -117,8 +118,8 @@ func TestNearMissAddressStillRoutes(t *testing.T) {
 	if len(fake.requests) != 1 {
 		t.Fatalf("bridge called %d times, want 1; a near-miss should still route", len(fake.requests))
 	}
-	if got := fake.requests[0].Addressee; got != "athena" {
-		t.Errorf("addressee = %q, want %q", got, "athena")
+	if got := fake.requests[0].Addressee; !strings.HasPrefix(got, "athena") {
+		t.Errorf("addressee = %q, want it to identify the athena persona", got)
 	}
 }
 

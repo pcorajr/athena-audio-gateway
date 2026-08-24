@@ -1,6 +1,9 @@
 package persona
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // testRegistry mirrors the pilot's real setup: Athena is mission, Hermes is dev
 // and system.
@@ -263,5 +266,44 @@ func TestPersonasReturnsACopy(t *testing.T) {
 	got[0].Name = "mutated"
 	if r.Personas()[0].Name == "mutated" {
 		t.Error("Personas() must not expose internal state for mutation")
+	}
+}
+
+// A conversation accumulates history, and history is read as truth. A session
+// that spent an evening answering "no telemetry" keeps saying "still no
+// telemetry" after the data returns, because its own past turns are the most
+// recent evidence it has. The epoch exists to abandon such a session.
+func TestConversationNameCarriesTheEpoch(t *testing.T) {
+	t.Parallel()
+
+	p := Persona{Name: "athena"}
+	got := p.ConversationName()
+	if got == "athena" {
+		t.Error("default conversation name should carry the epoch so a poisoned session can be abandoned")
+	}
+	if !strings.HasPrefix(got, "athena-") {
+		t.Errorf("ConversationName() = %q, want it to start with the persona name", got)
+	}
+}
+
+func TestExplicitConversationOverridesTheEpoch(t *testing.T) {
+	t.Parallel()
+
+	// An operator who names a conversation explicitly means that exact name.
+	p := Persona{Name: "athena", Conversation: "mission-alpha"}
+	if got := p.ConversationName(); got != "mission-alpha" {
+		t.Errorf("ConversationName() = %q, want the explicit name verbatim", got)
+	}
+}
+
+func TestPersonasGetDistinctConversations(t *testing.T) {
+	t.Parallel()
+
+	// The epoch must not collapse two personas into one session; mission and
+	// development context staying separate is the whole point of the split.
+	athena := Persona{Name: "athena"}.ConversationName()
+	hermes := Persona{Name: "hermes"}.ConversationName()
+	if athena == hermes {
+		t.Fatalf("personas share conversation %q; they must stay isolated", athena)
 	}
 }

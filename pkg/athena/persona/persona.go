@@ -46,11 +46,24 @@ type Persona struct {
 }
 
 // ConversationName returns the persona's session name, defaulting to its name.
+//
+// A conversation accumulates history, and history is read as truth. A session
+// that spent an evening answering "no telemetry available" will keep saying
+// "still no telemetry" after the data comes back, because its own past turns
+// are the most recent evidence it has. Observed live: the store was refreshed
+// and ownship resolved at high confidence, yet the lane kept reporting
+// unavailable until the conversation was replaced.
+//
+// So the name carries an epoch. Bumping it starts a clean session without
+// touching persona identity, routing, or config.
 func (p Persona) ConversationName() string {
 	if strings.TrimSpace(p.Conversation) != "" {
 		return p.Conversation
 	}
-	return p.Name
+	if conversationEpoch == "" {
+		return p.Name
+	}
+	return p.Name + "-" + conversationEpoch
 }
 
 // Registry maps spoken address words to personas.
@@ -87,6 +100,15 @@ type Resolution struct {
 
 // Addressed reports whether a persona was resolved.
 func (r Resolution) Addressed() bool { return r.Persona != nil }
+
+// conversationEpoch suffixes every default conversation name.
+//
+// Bump it to abandon poisoned sessions across all personas at once. Empty
+// restores the bare persona name.
+//
+// This is deliberately a constant rather than a flag: it should change when a
+// human decides the accumulated history is wrong, not silently per deployment.
+const conversationEpoch = "v2"
 
 // DefaultMaxDistance tolerates a one-character transcription slip.
 //

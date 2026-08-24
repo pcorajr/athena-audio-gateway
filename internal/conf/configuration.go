@@ -140,6 +140,10 @@ type Configuration struct {
 	// bridge default. A slow answer is worse than no answer on a radio, so the
 	// exchange is bounded and never retried.
 	AthenaHermesTimeout time.Duration
+	// AthenaHermesMaxSpeech bounds a deliverable radio answer in characters.
+	// Zero selects the bridge default. An over-long answer is suppressed
+	// rather than truncated: half a transmission is worse than none.
+	AthenaHermesMaxSpeech int
 	// AthenaPersonas declares the addressable personas, in the form
 	// "name[=alias1,alias2]". Athena is mission; Hermes is dev and system. The
 	// set is open by design: adding a persona is a configuration change.

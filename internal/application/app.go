@@ -171,7 +171,43 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 				"failed to construct application: athena-hermes-endpoint requires the admission gate to be configured",
 			)
 		}
-		client, bridgeErr := bridge.NewHTTPClient(config.AthenaHermesEndpoint, config.AthenaHermesTimeout)
+		// Select the bridge implementation.
+		//
+		// The Hermes API server is the supported path: it awaits the agent and
+		// returns the answer in the response body. The plain HTTP client
+		// remains for a bespoke endpoint that already speaks the bridge
+		// contract natively.
+		//
+		// The API key is a credential, so it comes from the environment only.
+		// A command-line flag would leak it into `ps` output and shell
+		// history; a config file would risk it reaching a repository.
+		apiKey := firstNonEmptyEnv("ATHENA_HERMES_API_KEY", "API_SERVER_KEY")
+		var client bridge.Client
+		var bridgeErr error
+		if apiKey != "" {
+			defaultConversation := ""
+			if personaRegistry != nil {
+				defaultConversation = personaRegistry.Personas()[0].ConversationName()
+			}
+			client, bridgeErr = bridge.NewAPIServerClient(bridge.APIServerConfig{
+				Endpoint:            config.AthenaHermesEndpoint,
+				APIKey:              apiKey,
+				Timeout:             config.AthenaHermesTimeout,
+				MaxSpeechChars:      config.AthenaHermesMaxSpeech,
+				DefaultConversation: defaultConversation,
+			})
+			log.Info().
+				Str("endpoint", config.AthenaHermesEndpoint).
+				Str("mode", "api-server").
+				Msg("Athena command lane enabled; GCI controller lane disabled")
+		} else {
+			client, bridgeErr = bridge.NewHTTPClient(config.AthenaHermesEndpoint, config.AthenaHermesTimeout)
+			log.Warn().
+				Str("endpoint", config.AthenaHermesEndpoint).
+				Str("mode", "raw-bridge").
+				Msg("no ATHENA_HERMES_API_KEY set; assuming the endpoint speaks the bridge " +
+					"contract natively. Set the key to use the Hermes API server.")
+		}
 		if bridgeErr != nil {
 			return nil, fmt.Errorf("failed to construct application: %w", bridgeErr)
 		}

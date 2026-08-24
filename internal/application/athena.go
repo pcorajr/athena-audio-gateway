@@ -114,7 +114,9 @@ func (a *Application) exchangeWithHermes(
 				Msg("persona resolved by near-match")
 		}
 		transcriptForHermes = resolution.Remainder
-		addressee = resolution.Persona.Name
+		// The conversation name, not the persona name: they are the same by
+		// default, but a persona may override its session.
+		addressee = resolution.Persona.ConversationName()
 	}
 
 	receivedAt := traces.GetReceivedAt(rCtx)
@@ -139,19 +141,33 @@ func (a *Application) exchangeWithHermes(
 		TranscribedAt: transcribedAt,
 	}
 
+	exchangeStart := time.Now()
 	resp, err := a.hermesBridge.Exchange(ctx, req)
+	exchangeDuration := time.Since(exchangeStart)
 	if err != nil {
 		// Bounded error code only. The transcript is not logged here: whether
 		// transcripts may be logged at all is a separate operator decision.
-		logger.Warn().Err(err).Msg("bridge exchange failed; transmitting nothing")
+		logger.Warn().Err(err).
+			Dur("exchange", exchangeDuration).
+			Msg("bridge exchange failed; transmitting nothing")
 		a.trace(traces.WithRequestError(rCtx, err))
 		return
 	}
 
+	// Stage timings are recorded on every outcome, deliverable or not, so the
+	// baseline covers the suppressed path too -- a slow refusal costs the
+	// pilot exactly as much airtime as a slow answer.
+	recognition := transcribedAt.Sub(receivedAt)
+	total := time.Since(receivedAt)
+
 	if !resp.Deliverable {
 		logger.Info().
 			Str("reason", resp.SuppressionReason).
+			Str("intent", string(resp.IntentClass)).
 			Str("state", string(resp.State)).
+			Dur("recognition", recognition).
+			Dur("exchange", exchangeDuration).
+			Dur("total", total).
 			Msg("Hermes suppressed the response; transmitting nothing")
 		return
 	}
@@ -159,6 +175,10 @@ func (a *Application) exchangeWithHermes(
 	logger.Info().
 		Str("intent", string(resp.IntentClass)).
 		Str("state", string(resp.State)).
+		Int("speechChars", len([]rune(resp.Speech))).
+		Dur("recognition", recognition).
+		Dur("exchange", exchangeDuration).
+		Dur("total", total).
 		Msg("Hermes returned a deliverable response")
 
 	// Speech is synthesized verbatim. The Gateway does not reword, summarize,

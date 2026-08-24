@@ -10,12 +10,20 @@ import (
 	"time"
 )
 
-// encodeOrFail writes a JSON body and fails the test if encoding fails, so the
-// linter's error-check requirement is satisfied without discarding the error.
-func encodeOrFail(t *testing.T, w http.ResponseWriter, v any) {
-	t.Helper()
+// encodeOrFail writes a JSON body from a test HTTP handler.
+//
+// It deliberately does NOT call t.Errorf. A handler runs on the server's
+// goroutine and, in timeout tests, outlives the test function: reporting
+// through *testing.T from there is a data race that -race reports against
+// whichever test happens to be running. A write failure here means the client
+// already gave up, which is exactly what those tests are asserting, so it is
+// not a fault worth reporting.
+func encodeOrFail(_ *testing.T, w http.ResponseWriter, v any) {
 	if err := json.NewEncoder(w).Encode(v); err != nil {
-		t.Errorf("failed to encode test response: %v", err)
+		// The client has already gone away, which is what the timeout tests
+		// are asserting. Reporting it through *testing.T from this goroutine
+		// would be the data race this function exists to avoid.
+		_ = err
 	}
 }
 

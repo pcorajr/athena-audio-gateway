@@ -39,6 +39,18 @@ type Persona struct {
 	// Endpoint is where resolved transmissions are sent. Personas may share an
 	// endpoint or have their own.
 	Endpoint string
+	// Conversation names this persona's server-side session. Empty defaults to
+	// the persona name. Separate conversations are what keep mission context
+	// and development context from bleeding into each other.
+	Conversation string
+}
+
+// ConversationName returns the persona's session name, defaulting to its name.
+func (p Persona) ConversationName() string {
+	if strings.TrimSpace(p.Conversation) != "" {
+		return p.Conversation
+	}
+	return p.Name
 }
 
 // Registry maps spoken address words to personas.

@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,8 +109,8 @@ func TestExchangeSendsThePersonaConversation(t *testing.T) {
 	if !strings.Contains(seen.Input, "what am I flying") {
 		t.Errorf("input %q should carry the transcript", seen.Input)
 	}
-	if seen.Instructions == "" {
-		t.Error("the reply-shape instruction must be sent")
+	if !strings.Contains(seen.Input, "JSON object") {
+		t.Error("the reply-shape contract must travel in the turn's input")
 	}
 }
 
@@ -338,5 +339,52 @@ func TestNewAPIServerClientValidatesConfig(t *testing.T) {
 	}
 	if c.maxSpeechChars != DefaultMaxSpeechChars {
 		t.Errorf("maxSpeechChars = %d, want the default", c.maxSpeechChars)
+	}
+}
+
+// The API server persists `instructions` into a stored conversation. Sending
+// the reply-shape contract that way contaminated every later turn -- observed
+// live, where a plain question came back wrapped in the radio JSON envelope.
+func TestReplyShapeDoesNotLeakIntoTheStoredConversation(t *testing.T) {
+	t.Parallel()
+
+	var bodies []map[string]any
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		mu.Unlock()
+		_, _ = w.Write(okReply(t, `{"speech":"ok","intent":"factual","state":"ok"}`))
+	}))
+	defer srv.Close()
+
+	client := newTestClient(t, srv)
+
+	// Two turns on the same conversation, as a real session would run.
+	for i := range 2 {
+		req := apiExchangeRequest()
+		req.TransmissionID = fmt.Sprintf("tx-%d", i)
+		if _, err := client.Exchange(t.Context(), req); err != nil {
+			t.Fatalf("Exchange %d: %v", i, err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(bodies) != 2 {
+		t.Fatalf("captured %d requests, want 2", len(bodies))
+	}
+	for i, body := range bodies {
+		if _, present := body["instructions"]; present {
+			t.Errorf("request %d carries an `instructions` field; it would persist "+
+				"into the stored conversation and contaminate every later turn", i)
+		}
+		input, _ := body["input"].(string)
+		if !strings.Contains(input, "JSON object") {
+			t.Errorf("request %d input lacks the reply-shape contract; it must "+
+				"travel per turn, not be inherited from the session", i)
+		}
 	}
 }

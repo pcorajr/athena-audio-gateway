@@ -132,9 +132,14 @@ func NewAPIServerClient(cfg APIServerConfig) (*APIServerClient, error) {
 
 // responsesRequest is the API server's /v1/responses payload.
 type responsesRequest struct {
-	Model        string `json:"model"`
-	Input        string `json:"input"`
-	Instructions string `json:"instructions,omitempty"`
+	Model string `json:"model"`
+	Input string `json:"input"`
+	// Deliberately no Instructions field.
+	//
+	// The API server persists `instructions` into a stored conversation, so a
+	// reply-shape contract sent that way contaminates every later turn --
+	// observed live: a plain question came back wrapped in the radio JSON
+	// envelope. The contract is per-turn, so it belongs in Input.
 	Conversation string `json:"conversation,omitempty"`
 	Store        bool   `json:"store"`
 }
@@ -163,8 +168,7 @@ func (c *APIServerClient) Exchange(ctx context.Context, req Request) (Response, 
 
 	body, err := json.Marshal(responsesRequest{
 		Model:        c.model,
-		Input:        buildInput(req),
-		Instructions: fmt.Sprintf(replyInstruction, c.maxSpeechChars),
+		Input:        buildInput(req, c.maxSpeechChars),
 		Conversation: c.conversationFor(req),
 		Store:        true,
 	})
@@ -232,7 +236,7 @@ func (c *APIServerClient) conversationFor(req Request) string {
 // Deliberately small: the request already costs tens of thousands of tokens in
 // system prompt and tool schemas, and none of this context earns its place
 // unless Hermes would answer differently without it.
-func buildInput(req Request) string {
+func buildInput(req Request, maxSpeechChars int) string {
 	var b strings.Builder
 	b.WriteString("Radio transmission from ")
 	b.WriteString(req.Speaker)
@@ -243,6 +247,13 @@ func buildInput(req Request) string {
 	// strings.Builder never returns an error.
 	_, _ = fmt.Fprintf(&b, ", on %.3f MHz %s:\n\n", float64(req.FrequencyHz)/1_000_000, req.Modulation)
 	b.WriteString(req.Transcript)
+
+	// The reply-shape contract travels with every turn rather than being set
+	// once as session instructions. Repeating it costs a few hundred tokens;
+	// leaking it into the conversation costs every future turn in that session.
+	b.WriteString("\n\n")
+	// strings.Builder never returns an error.
+	_, _ = fmt.Fprintf(&b, replyInstruction, maxSpeechChars)
 	return b.String()
 }
 

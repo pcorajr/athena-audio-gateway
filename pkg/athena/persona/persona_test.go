@@ -307,3 +307,53 @@ func TestPersonasGetDistinctConversations(t *testing.T) {
 		t.Fatalf("personas share conversation %q; they must stay isolated", athena)
 	}
 }
+
+// Whisper prefixes a transcript with a dash or ellipsis when the audio starts
+// mid-breath. Observed live: three of six calls in one test run were dropped
+// as unaddressed because "-" became the address word. Silent loss is worse
+// than a misroute -- there is nothing for the pilot to notice.
+func TestLeadingPunctuationDoesNotBlockRouting(t *testing.T) {
+	t.Parallel()
+	r := testRegistry(t)
+
+	for _, transcript := range []string{
+		"- Athena, what am I flying?", // exactly as transcribed live
+		"- Athena, how many units are out there?",
+		"-Athena, what is the mission?", // no space after the dash
+		"... Athena, where am I?",
+		"— Athena, status", // em dash
+		"\"Athena, status",
+		"  -  Athena, status",
+	} {
+		got := r.Resolve(transcript)
+		if !got.Addressed() {
+			t.Errorf("Resolve(%q) resolved to nobody; leading punctuation must not block routing", transcript)
+			continue
+		}
+		if got.Persona.Name != "athena" {
+			t.Errorf("Resolve(%q) = %q, want athena", transcript, got.Persona.Name)
+		}
+		if strings.HasPrefix(got.Remainder, "Athena") {
+			t.Errorf("Resolve(%q) remainder %q still contains the address", transcript, got.Remainder)
+		}
+	}
+}
+
+// Stripping leading punctuation must not turn an unaddressed call into an
+// addressed one.
+func TestLeadingPunctuationDoesNotInventAnAddress(t *testing.T) {
+	t.Parallel()
+	r := testRegistry(t)
+
+	for _, transcript := range []string{
+		"- what is near me?",
+		"...say again",
+		"-",
+		"--",
+		"- - -",
+	} {
+		if got := r.Resolve(transcript); got.Addressed() {
+			t.Errorf("Resolve(%q) resolved to %q; want nobody", transcript, got.Persona.Name)
+		}
+	}
+}

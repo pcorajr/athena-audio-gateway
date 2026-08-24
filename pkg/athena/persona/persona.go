@@ -237,10 +237,18 @@ func (r *Registry) Resolve(transcript string) Resolution {
 
 // splitLeadingWord returns the first word and the remainder.
 //
-// Trailing punctuation is stripped from the word because an address is almost
-// always followed by a comma, as in "Athena, what is near me?".
+// Leading punctuation is stripped before the split. Whisper routinely prefixes
+// a transcript with a dash or ellipsis when the audio starts mid-breath --
+// observed live as "- Athena, what am I flying?", which silently routed to
+// nobody because "-" became the address word. Half a pilot's calls vanishing
+// with no error is worse than a misroute, because there is nothing to notice.
+//
+// Trailing punctuation is stripped from the word too, because an address is
+// almost always followed by a comma, as in "Athena, what is near me?".
 func splitLeadingWord(s string) (head, rest string) {
-	trimmed := strings.TrimSpace(s)
+	// Cut leading punctuation and whitespace in one pass so "- Athena" and
+	// "...Athena" both reduce to "Athena".
+	trimmed := strings.TrimLeft(strings.TrimSpace(s), "-–—.,:;!?\"'“”‘’ 	")
 	if trimmed == "" {
 		return "", ""
 	}

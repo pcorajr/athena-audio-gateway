@@ -474,16 +474,24 @@ func preRun(cmd *cobra.Command, _ []string) error {
 	return nil
 }
 
-// The legacy parser defaults unknown modulation to AM. MVP must not infer it.
+// The legacy parser consumes only a decimal prefix and defaults unknown
+// modulation to AM. MVP accepts only spellings that parser preserves.
 func validateSRSMVPRadioFlags(frequencies []string) error {
 	if len(frequencies) != 1 {
 		return errors.New("MVP requires exactly one srs-frequencies entry")
 	}
-	raw := strings.TrimSpace(frequencies[0])
-	if !strings.HasSuffix(raw, "AM") && !strings.HasSuffix(raw, "FM") {
+	raw := frequencies[0]
+	pos := strings.IndexFunc(raw, func(r rune) bool {
+		return (r < '0' || r > '9') && r != '.'
+	})
+	if pos < 0 {
+		return errors.New("MVP SRS frequency requires decimal MHz and explicit AM or FM")
+	}
+	suffix := strings.TrimSpace(raw[pos:])
+	if suffix != "AM" && suffix != "FM" {
 		return errors.New("MVP SRS frequency requires explicit AM or FM")
 	}
-	mhz, err := strconv.ParseFloat(strings.TrimSpace(raw[:len(raw)-2]), 64)
+	mhz, err := strconv.ParseFloat(raw[:pos], 64)
 	if err != nil || math.IsNaN(mhz) || math.IsInf(mhz, 0) || mhz <= 0 {
 		return errors.New("MVP SRS frequency must be a real positive number")
 	}

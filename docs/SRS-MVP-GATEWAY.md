@@ -51,6 +51,14 @@ credentials. Do not point this mode directly at a Hermes `/v1/responses` server.
 | `recognizer` | Must be `openai-whisper-local`. No cloud STT fallback. |
 | `enable-grpc` | Must be false. |
 
+Use positive decimal MHz with uppercase `AM` or `FM` for `srs-frequencies`,
+for example `133.0AM`, `133.025AM` or `30.0FM`. Exponent notation (including
+`133e0FM` and `133.0e0FM`), signs, hexadecimal notation, underscores and leading
+whitespace are rejected before runtime parsing. Whitespace between the number
+and modulation or after the modulation is allowed. This MVP-only restriction
+prevents the legacy parser's permissive AM fallback from changing the route;
+non-MVP parsing is unchanged.
+
 Malformed config values fail startup rather than silently retaining defaults.
 MVP config is validated before network connection, and the CLI validates it
 before loading Whisper. Radio guard/retransmit is disabled. The gateway does not

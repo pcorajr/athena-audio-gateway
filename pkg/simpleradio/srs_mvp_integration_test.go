@@ -138,9 +138,11 @@ func TestSRSMVPTextRoundTrip(t *testing.T) {
 					var observed bridge.Response
 					var timings []mvp.Timing
 					exchanges := 0
+					syntheses := 0
 					r := &mvp.Runner{Gate: gate, Radio: radio, MaxAge: mvp.DefaultMaxAge,
 						Recognize: func(context.Context, simpleradio.Audio) (string, error) { return text, nil },
 						Synthesize: func(_ context.Context, speech string) (simpleradio.Audio, error) {
+							syntheses++
 							if speech != observed.Speech {
 								t.Error("adapter speech was rewritten")
 							}
@@ -174,13 +176,25 @@ func TestSRSMVPTextRoundTrip(t *testing.T) {
 					if exchanges != 1 || len(timings) != 1 {
 						t.Fatalf("exchange/replay count=%d timings=%d", exchanges, len(timings))
 					}
-					wantState := map[string]bridge.State{"current_state": bridge.StateOK, "recent_events": bridge.StateOK, "unavailable": bridge.StateUnavailable, "stale": bridge.StateStale, "ambiguous": bridge.StateOwnshipAmbiguous, "unrecognized": bridge.StateOK}[scenario]
+					// Unrecognized requests are suppressed without querying state.
+					wantState := map[string]bridge.State{"current_state": bridge.StateOK, "recent_events": bridge.StateOK, "unavailable": bridge.StateUnavailable, "stale": bridge.StateStale, "ambiguous": bridge.StateOwnshipAmbiguous, "unrecognized": bridge.StateUnavailable}[scenario]
 					if observed.State != wantState {
 						t.Fatalf("scenario %s state=%s", scenario, observed.State)
 					}
 					wantDeliverable := scenario != "unrecognized"
 					if observed.Deliverable != wantDeliverable {
 						t.Fatalf("scenario deliverable=%v", observed.Deliverable)
+					}
+					if scenario == "unrecognized" {
+						if observed.IntentClass != bridge.IntentUnrecognized || observed.SuppressionReason != "unrecognized_intent" || observed.Speech != "" {
+							t.Fatalf("unexpected unrecognized suppression: intent=%q reason=%q speech=%q", observed.IntentClass, observed.SuppressionReason, observed.Speech)
+						}
+						if observed.TransmissionID != tr.TraceID || timings[0].TransmissionID != tr.TraceID {
+							t.Fatalf("unrecognized correlation: response=%q timing=%q want=%q", observed.TransmissionID, timings[0].TransmissionID, tr.TraceID)
+						}
+						if syntheses != 0 || timings[0].TTSDone != -1 {
+							t.Fatalf("unrecognized reply reached synthesis: calls=%d tts_done=%d", syntheses, timings[0].TTSDone)
+						}
 					}
 					wantWrites := 0
 					if wantDeliverable && (mode == "normal" || mode == "duplicate") {

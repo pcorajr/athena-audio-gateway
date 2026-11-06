@@ -38,7 +38,7 @@ func (c *Client) SendPing() {
 		logger.Error().Err(err).Msg("error sending TCP ping")
 	}
 
-	_, err := c.udpConnection.Write([]byte(guid))
+	_, err := c.udp().Write([]byte(guid))
 	if errors.Is(err, net.ErrClosed) {
 		logger.Warn().Msg("ping skipped due to closed connection")
 	} else if err != nil {

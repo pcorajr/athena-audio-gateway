@@ -246,6 +246,21 @@ run:
 test: generate
 	$(BUILD_VARS) $(GO) tool gotestsum -- $(BUILD_FLAGS) -race $(TEST_FLAGS) ./...
 
+# Focused offline MVP checks. No generate/whisper prerequisites: never download
+# models or build native dependencies as a side effect of this safety target.
+SRSMVP_PACKAGES ?= ./pkg/simpleradio ./pkg/simpleradio/voice ./pkg/athena/admission ./pkg/athena/bridge ./pkg/athena/mvp ./internal/application ./cmd/skyeye
+SRSMVP_TESTS ?= ^(TestSRSMVP|TestMuteMakesTransmitPathUnreachable|TestUnmutedClientReachesTransmitPath)
+.PHONY: test-athena-mvp
+test-athena-mvp:
+	$(BUILD_VARS) $(GO) test $(BUILD_FLAGS) -race -count=1 -v -run '$(SRSMVP_TESTS)' $(SRSMVP_PACKAGES)
+
+.PHONY: test-athena-mvp-integration
+test-athena-mvp-integration:
+	test -n "$(SRSMVP_TEXT_ADAPTER_ROOT)"
+	test -n "$(SRSMVP_ATHENA_SRC)"
+	test -n "$(SRSMVP_PYTHON)"
+	SRSMVP_TEXT_ADAPTER_ROOT="$(SRSMVP_TEXT_ADAPTER_ROOT)" SRSMVP_ATHENA_SRC="$(SRSMVP_ATHENA_SRC)" SRSMVP_PYTHON="$(SRSMVP_PYTHON)" $(BUILD_VARS) $(GO) test $(BUILD_FLAGS) -race -count=1 -v -run '^TestSRSMVPTextRoundTrip$$' ./pkg/simpleradio
+
 .PHONY: benchmark-whisper
 benchmark-whisper: whisper
 	test -n "$(SKYEYE_WHISPER_MODEL)"  # Set SKYEYE_WHISPER_MODEL to the absolute path to the model's .bin file

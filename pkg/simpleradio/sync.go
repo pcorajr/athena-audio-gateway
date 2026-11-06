@@ -10,6 +10,10 @@ import (
 
 // syncClients calls syncClient for each client in the given slice.
 func (c *Client) syncClients(others []types.ClientInfo) {
+	if c.mvp {
+		c.syncMVPClients(others)
+		return
+	}
 	log.Info().Int("count", len(others)).Msg("syncronizing clients")
 	for _, info := range others {
 		c.syncClient(info)
@@ -18,6 +22,10 @@ func (c *Client) syncClients(others []types.ClientInfo) {
 
 // syncClient checks if the given client matches this client's coalition and radios, and if so, stores it in the clients map. Non-matching clients are removed from the map if previously stored.
 func (c *Client) syncClient(other types.ClientInfo) {
+	if c.mvp {
+		c.syncMVPClient(other)
+		return
+	}
 	if other.GUID == c.clientInfo.GUID {
 		// why, of course I know him. he's me!
 		return
@@ -57,7 +65,11 @@ func (c *Client) syncClient(other types.ClientInfo) {
 func (c *Client) removeClient(info types.ClientInfo) {
 	c.clientsLock.Lock()
 	defer c.clientsLock.Unlock()
+	before := c.mvpIdentityLocked()
 	delete(c.clients, info.GUID)
+	if c.mvp && before != c.mvpIdentityLocked() {
+		c.mvpEpoch++
+	}
 }
 
 // sync sends a sync message to the SRS server containing this client's information.

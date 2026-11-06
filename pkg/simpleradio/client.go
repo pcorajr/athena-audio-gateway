@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -30,6 +31,10 @@ type Transmission struct {
 	Radio types.Radio
 	// Audio sample for the transmission.
 	Audio Audio
+	// ReceivedAt marks assembled reception, not physical PTT release.
+	ReceivedAt time.Time
+	// route binds MVP audio to the observed connection and identity generation.
+	route mvpRoute
 }
 
 // Client is a SimpleRadio-Standalone Client.
@@ -43,6 +48,8 @@ type Client struct {
 	tcpConnection *net.TCPConn
 	// udpConnection is the UDP connection to the SRS server used for audio and pings.
 	udpConnection *net.UDPConn
+	// Protects connection pointer swaps during reconnect, not socket I/O.
+	connectionLock sync.RWMutex
 
 	// clientInfo is the client information for this client. It is what players will see in the SRS client list, and in
 	/// the in-game overlay when this client transmits.
@@ -52,6 +59,16 @@ type Client struct {
 	clients map[types.GUID]types.ClientInfo
 	// clientsLock controls access to the clients map.
 	clientsLock sync.RWMutex
+	// MVP fields are immutable after construction, except epoch/writer/packet
+	// state, which are protected by clientsLock.
+	mvp             bool
+	liveTX          bool
+	pilotName       string
+	mvpEpoch        uint64
+	mvpWriter       io.Writer
+	mvpLastOrigin   types.GUID
+	mvpLastPacket   uint64
+	mvpChannelUntil time.Time
 
 	// secureCoalitionRadios indicates if the client should only receive transmissions from the same coalition.
 	// Written by the TCP receiver goroutine (updateServerSettings) and read by the UDP receiver
@@ -80,6 +97,9 @@ type Client struct {
 
 // NewClient creates a new SimpleRadio-Standalone client.
 func NewClient(config types.ClientConfiguration) (*Client, error) {
+	if err := validateMVPConfig(config); err != nil {
+		return nil, err
+	}
 	guid := types.NewGUID()
 
 	receivers := make(map[types.Radio]*receiver, len(config.Radios))
@@ -100,7 +120,7 @@ func NewClient(config types.ClientConfiguration) (*Client, error) {
 				IFF:     types.NewIFF(),
 				Ambient: types.NewAmbient(),
 			},
-			AllowRecording: true,
+			AllowRecording: !config.SRSMVP,
 			Position:       &types.Position{},
 		},
 		externalAWACSModePassword: config.ExternalAWACSModePassword,
@@ -112,6 +132,10 @@ func NewClient(config types.ClientConfiguration) (*Client, error) {
 		packetNumber: 1,
 		mute:         config.Mute,
 		lastPing:     time.Now(),
+		mvp:          config.SRSMVP,
+		liveTX:       config.LiveTX,
+		pilotName:    config.PilotName,
+		mvpEpoch:     1,
 	}
 
 	err := client.connectTCP()
@@ -210,14 +234,20 @@ func (c *Client) Run(ctx context.Context, wg *sync.WaitGroup) error {
 	udpPingRxChan := make(chan []byte, 0xF)
 	wg.Go(func() { c.receivePings(ctx, udpPingRxChan) })
 
-	udpVoiceRxChan := make(chan []byte, maxRxPackets)
-	voiceBytesRxChan := make(chan transmissionPackets, 128)
+	udpVoiceRxChan := make(chan voiceDatagram, maxRxPackets)
+	queueSize := 128
+	if c.mvp {
+		queueSize = 0
+	}
+	voiceBytesRxChan := make(chan transmissionPackets, queueSize)
 	wg.Go(func() { c.receiveVoice(ctx, udpVoiceRxChan, voiceBytesRxChan) })
 	wg.Go(func() { c.decodeVoice(ctx, voiceBytesRxChan) })
 
-	voicePacketsTxChan := make(chan []voice.Packet, 3)
-	wg.Go(func() { c.encodeVoice(ctx, voicePacketsTxChan) })
-	wg.Go(func() { c.transmitPackets(ctx, voicePacketsTxChan) })
+	if !c.mvp {
+		voicePacketsTxChan := make(chan []voice.Packet, 3)
+		wg.Go(func() { c.encodeVoice(ctx, voicePacketsTxChan) })
+		wg.Go(func() { c.transmitPackets(ctx, voicePacketsTxChan) })
+	}
 	wg.Go(func() { c.receiveUDP(ctx, udpPingRxChan, udpVoiceRxChan) })
 	wg.Go(func() { c.autoheal(ctx) })
 
@@ -238,10 +268,10 @@ func (c *Client) getPeerName(guid types.GUID) (string, bool) {
 // close the client's connections. Should be called after the autoheal goroutine has completed.
 func (c *Client) close() {
 	var err error
-	if tcpErr := c.tcpConnection.Close(); tcpErr != nil {
+	if tcpErr := c.tcp().Close(); tcpErr != nil {
 		err = errors.Join(err, fmt.Errorf("error closing TCP connection to SRS: %w", tcpErr))
 	}
-	if udpErr := c.udpConnection.Close(); udpErr != nil {
+	if udpErr := c.udp().Close(); udpErr != nil {
 		err = errors.Join(err, fmt.Errorf("error closing UDP connection to SRS: %w", udpErr))
 	}
 	if err != nil {

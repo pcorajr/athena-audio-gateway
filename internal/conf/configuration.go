@@ -1,9 +1,12 @@
 package conf
 
 import (
+	"errors"
+	"strings"
 	"time"
 
 	"github.com/dharmab/skyeye/pkg/athena/admission"
+	"github.com/dharmab/skyeye/pkg/athena/bridge"
 	"github.com/dharmab/skyeye/pkg/coalitions"
 	"github.com/dharmab/skyeye/pkg/encyclopedia"
 	"github.com/dharmab/skyeye/pkg/locations"
@@ -25,6 +28,12 @@ const (
 
 // Configuration for the SkyEye application.
 type Configuration struct {
+	// AthenaSRSMVP selects PTT-only, native-bridge, one-radio operation.
+	AthenaSRSMVP bool
+	// AthenaLiveTX is off by default and never overrides Mute.
+	AthenaLiveTX bool
+	// AthenaResponseMaxAge bounds assembled reception through first send.
+	AthenaResponseMaxAge time.Duration
 	// ACMIFile is the path to the ACMI file
 	ACMIFile string
 	// TelemetryAddress is the network address of the real-time telemetry server (including port)
@@ -161,6 +170,29 @@ type Configuration struct {
 	// the ADR 0014 rule that audio never leaves the gateway process. Empty
 	// disables it, and it is never set in the shipped systemd unit.
 	AthenaDebugAudioDir string
+}
+
+// ValidateSRSMVP fails before connection or model loading. Non-MVP behavior is
+// unchanged; there is no implicit fallback from an invalid MVP configuration.
+func (c Configuration) ValidateSRSMVP() error {
+	if !c.AthenaSRSMVP {
+		return nil
+	}
+	if c.AthenaCommandFrequencyHz == 0 || c.AthenaCommandModulation == nil || strings.TrimSpace(c.AthenaPilotName) == "" ||
+		len(c.SRSFrequencies) != 1 || c.AthenaResponseMaxAge <= 0 || c.AthenaHermesTimeout < 0 ||
+		c.AthenaHermesMaxSpeech < 0 || c.AthenaHermesMaxSpeech > bridge.DefaultMaxSpeechChars {
+		return errors.New("MVP requires explicit command frequency/modulation, pilot, one radio and positive response max age")
+	}
+	mod := *c.AthenaCommandModulation
+	if (mod != admission.ModulationAM && mod != admission.ModulationFM) ||
+		c.SRSFrequencies[0].Frequency.Hertz() != float64(c.AthenaCommandFrequencyHz) ||
+		int(c.SRSFrequencies[0].Modulation) != int(mod) {
+		return errors.New("MVP SRS radio must exactly match the command frequency/modulation")
+	}
+	if c.AthenaDebugAudioDir != "" || len(c.AthenaPersonas) != 0 || c.EnableGRPC || c.Recognizer != WhisperLocal {
+		return errors.New("MVP requires local STT, no diagnostic audio, no personas and no gRPC")
+	}
+	return bridge.ValidateMVPEndpoint(c.AthenaHermesEndpoint)
 }
 
 var DefaultCallsigns = []string{"Sky Eye", "Thunderhead", "Eagle Eye", "Ghost Eye", "Sky Keeper", "Bandog", "Long Caster", "Galaxy"}

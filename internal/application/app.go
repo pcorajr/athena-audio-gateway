@@ -39,6 +39,9 @@ import (
 
 // Application implements the SkyEye application.
 type Application struct {
+	athenaSRSMVP         bool
+	athenaResponseMaxAge time.Duration
+	athenaMaxSpeech      int
 	// callsign of the GCI controller
 	callsign string
 	// srsClient is a SimpleRadio Standalone client
@@ -99,6 +102,9 @@ type Application struct {
 
 // NewApplication constructs a new Application.
 func NewApplication(config conf.Configuration) (*Application, error) {
+	if err := config.ValidateSRSMVP(); err != nil {
+		return nil, err
+	}
 	// Athena configuration is validated before any network connection is
 	// attempted. A misconfigured command channel must be a startup error the
 	// operator sees immediately, not something discovered only after SRS
@@ -113,6 +119,9 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		gateConfig := admission.DefaultConfig()
 		gateConfig.FrequencyHz = config.AthenaCommandFrequencyHz
 		gateConfig.PilotName = config.AthenaPilotName
+		if config.AthenaSRSMVP {
+			gateConfig.FrequencyToleranceHz = 0
+		}
 		if config.AthenaCommandModulation != nil {
 			gateConfig.Modulation = *config.AthenaCommandModulation
 		}
@@ -140,7 +149,7 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 	// misconfigured persona set fails at startup rather than on the first
 	// transmission.
 	var personaRegistry *persona.Registry
-	if admissionGate != nil {
+	if admissionGate != nil && !config.AthenaSRSMVP {
 		specs, personaErr := persona.ParseSpecs(config.AthenaPersonas)
 		if personaErr != nil {
 			return nil, fmt.Errorf("failed to construct application: %w", personaErr)
@@ -181,10 +190,15 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		// The API key is a credential, so it comes from the environment only.
 		// A command-line flag would leak it into `ps` output and shell
 		// history; a config file would risk it reaching a repository.
-		apiKey := firstNonEmptyEnv("ATHENA_HERMES_API_KEY", "API_SERVER_KEY")
 		var client bridge.Client
 		var bridgeErr error
-		if apiKey != "" {
+		apiKey := ""
+		if !config.AthenaSRSMVP {
+			apiKey = firstNonEmptyEnv("ATHENA_HERMES_API_KEY", "API_SERVER_KEY")
+		}
+		if config.AthenaSRSMVP {
+			client, bridgeErr = bridge.NewMVPClient(config.AthenaHermesEndpoint, config.AthenaHermesTimeout, config.AthenaHermesMaxSpeech)
+		} else if apiKey != "" {
 			defaultConversation := ""
 			if personaRegistry != nil {
 				defaultConversation = personaRegistry.Personas()[0].ConversationName()
@@ -261,7 +275,7 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		radios = append(radios, srs.Radio{
 			Frequency:        radioFrequency.Frequency.Hertz(),
 			Modulation:       radioFrequency.Modulation,
-			ShouldRetransmit: true,
+			ShouldRetransmit: !config.AthenaSRSMVP,
 		})
 	}
 
@@ -280,6 +294,9 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		Coalition:                 config.Coalition,
 		Radios:                    radios,
 		Mute:                      config.Mute,
+		SRSMVP:                    config.AthenaSRSMVP,
+		LiveTX:                    config.AthenaLiveTX,
+		PilotName:                 config.AthenaPilotName,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to construct application: %w", err)
@@ -346,38 +363,44 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		return nil, fmt.Errorf("failed to construct application: unrecognized recognizer %q", config.Recognizer)
 	}
 
-	log.Info().Msg("constructing request parser")
-	requestParser := parser.New(config.Callsign, locationNames, config.EnableTranscriptionLogging)
+	var requestParser *parser.Parser
+	var rdr *radar.Radar
+	var gciController *controller.Controller
+	var responseComposer composer.Composer
+	if !config.AthenaSRSMVP {
+		log.Info().Msg("constructing request parser")
+		requestParser = parser.New(config.Callsign, locationNames, config.EnableTranscriptionLogging)
 
-	// Register custom aircraft into the encyclopedia before the radar, its first consumer, is built.
-	encyclopedia.AddCustomAircraft(config.CustomAircraft)
+		// Register custom aircraft into the encyclopedia before the radar, its first consumer, is built.
+		encyclopedia.AddCustomAircraft(config.CustomAircraft)
 
-	log.Info().Msg("constructing radar scope")
+		log.Info().Msg("constructing radar scope")
 
-	// When threat monitoring requires SRS, the radar uses the SRS client to restrict the
-	// receiver set of each threat call to friendlies on frequency, so the BRAA/bullseye format
-	// reflects the pilots who will hear the call. When SRS is not required (debugging), leaving
-	// the client nil tells the radar to treat every friendly as a potential receiver.
-	var radarSRSClient *simpleradio.Client // separate variable so we can pass nil to the radar without affecting other references to srsClient
-	if config.ThreatMonitoringRequiresSRS {
-		radarSRSClient = srsClient
+		// When threat monitoring requires SRS, the radar uses the SRS client to restrict the
+		// receiver set of each threat call to friendlies on frequency, so the BRAA/bullseye format
+		// reflects the pilots who will hear the call. When SRS is not required (debugging), leaving
+		// the client nil tells the radar to treat every friendly as a potential receiver.
+		var radarSRSClient *simpleradio.Client // separate variable so we can pass nil to the radar without affecting other references to srsClient
+		if config.ThreatMonitoringRequiresSRS {
+			radarSRSClient = srsClient
+		}
+		rdr = radar.New(config.Coalition, starts, updates, fades, config.MandatoryThreatRadius, config.ThreatBRAABearingSpread, config.ThreatBRAARangeSpread, config.EnableTerrainDetection, radarSRSClient)
+		log.Info().Msg("constructing GCI controller")
+		gciController = controller.New(
+			rdr,
+			srsClient,
+			config.Coalition,
+			config.EnableAutomaticPicture,
+			config.PictureBroadcastInterval,
+			config.EnableThreatMonitoring,
+			config.ThreatMonitoringInterval,
+			config.ThreatMonitoringRequiresSRS,
+			config.Locations,
+		)
+
+		log.Info().Msg("constructing response composer")
+		responseComposer = composer.Composer{Callsign: config.Callsign}
 	}
-	rdr := radar.New(config.Coalition, starts, updates, fades, config.MandatoryThreatRadius, config.ThreatBRAABearingSpread, config.ThreatBRAARangeSpread, config.EnableTerrainDetection, radarSRSClient)
-	log.Info().Msg("constructing GCI controller")
-	gciController := controller.New(
-		rdr,
-		srsClient,
-		config.Coalition,
-		config.EnableAutomaticPicture,
-		config.PictureBroadcastInterval,
-		config.EnableThreatMonitoring,
-		config.ThreatMonitoringInterval,
-		config.ThreatMonitoringRequiresSRS,
-		config.Locations,
-	)
-
-	log.Info().Msg("constructing response composer")
-	responseComposer := composer.Composer{Callsign: config.Callsign}
 
 	log.Info().Msg("constructing text-to-speech synthesizer")
 	var synthesizer speakers.Speaker
@@ -407,6 +430,9 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 	log.Info().Msg("constructing application")
 
 	app := &Application{
+		athenaSRSMVP:               config.AthenaSRSMVP,
+		athenaResponseMaxAge:       config.AthenaResponseMaxAge,
+		athenaMaxSpeech:            config.AthenaHermesMaxSpeech,
 		callsign:                   config.Callsign,
 		enableTranscriptionLogging: config.EnableTranscriptionLogging,
 		chatListener:               chatListener,
@@ -482,6 +508,11 @@ func (a *Application) Run(ctx context.Context, cancel context.CancelFunc, wg *sy
 			}
 		}
 	})
+
+	if a.athenaSRSMVP {
+		wg.Go(func() { a.runSRSMVP(ctx) })
+		return nil
+	}
 
 	rxTextChan := make(chan Message[string])
 	requestChan := make(chan Message[any])

@@ -20,6 +20,9 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 		select {
 		case received := <-voicePacketsChan:
 			voicePackets := received.packets
+			if len(voicePackets) == 0 {
+				continue
+			}
 			decoder, err := opus.NewDecoder(int(rate.Wideband.Hertz()), channels)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to create Opus decoder")
@@ -30,6 +33,10 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 				packetPCM, err := decodeFrame(decoder, packet.AudioBytes)
 				if err != nil {
 					log.Error().Err(err).Msg("failed to decode audio")
+					if c.mvp {
+						transmissionPCM = nil
+						break
+					}
 				} else {
 					transmissionPCM = append(transmissionPCM, packetPCM...)
 				}
@@ -39,11 +46,28 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 				origin := types.GUID(voicePackets[0].OriginGUID)
 				name, _ := c.getPeerName(origin)
 				log.Info().Str("clientName", name).Int("len", len(transmissionPCM)).Msg("publishing received audio to receiving channel")
-				c.rxChan <- Transmission{
+				t := Transmission{
 					TraceID:    shortuuid.New(),
 					ClientName: name,
 					Radio:      received.radio,
 					Audio:      transmissionPCM,
+					ReceivedAt: received.receivedAt,
+					route:      received.route,
+				}
+				if c.mvp {
+					if !c.ValidMVP(t) {
+						continue
+					}
+					select {
+					case c.rxChan <- t:
+					default:
+					}
+				} else {
+					select {
+					case c.rxChan <- t:
+					case <-ctx.Done():
+						return
+					}
 				}
 			} else {
 				log.Debug().Msg("decoded transmission PCM is empty")
@@ -57,6 +81,9 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 
 // encodeVoice encodes audio from the client's txChan and publishes an entire transmission's worth of voice packets to packetCh.
 func (c *Client) encodeVoice(ctx context.Context, packetChan chan<- []voice.Packet) {
+	if c.mvp {
+		return
+	} // MVP never uses the legacy all-radio encoder.
 	frequencyList := make([]voice.Frequency, 0, len(c.clientInfo.RadioInfo.Radios))
 	for _, radio := range c.clientInfo.RadioInfo.Radios {
 		frequencyList = append(frequencyList, voice.Frequency{

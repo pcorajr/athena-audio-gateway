@@ -21,7 +21,7 @@ func (c *Client) Send(message types.Message) error {
 		return fmt.Errorf("failed to marshal message to JSON: %w", err)
 	}
 	b = append(b, byte('\n'))
-	_, err = c.tcpConnection.Write(b)
+	_, err = c.tcp().Write(b)
 	if err != nil {
 		return fmt.Errorf("failed to write message: %w", err)
 	}
@@ -47,8 +47,10 @@ func (c *Client) handleMessage(message types.Message) {
 	case types.MessageServerSettings:
 		c.updateServerSettings(message)
 	case types.MessageVersionMismatch:
+		c.invalidateMVP()
 		log.Warn().Any("message", message).Msg("received version mismatch message from SRS server")
 	case types.MessageExternalAWACSModeDisconnect:
+		c.invalidateMVP()
 		logMessageAndIgnore(message)
 	case types.MessageSync:
 		c.syncClients(message.Clients)

@@ -5,8 +5,8 @@ import threading
 import uuid
 
 from athena.state_service_client import ClientQueryError, StateServiceClient, load_client_config
-from metis.state_service.lifecycle import HealthComponent
 
+from .context import RELEVANT_HEALTH, validate_factual_context
 from .contract import MAX_SPEECH_CHARS, response, safe_text
 from .ownship import OwnshipReader
 
@@ -58,18 +58,12 @@ class Facts:
 
 
 def _caveats(frame, intent):
+    # The public recent-events client still owns row/protocol semantics. Shared
+    # admission checks only supplied context consistency before either template.
+    validate_factual_context(frame, intent)
     context = frame.context
-    if context is None:
-        raise ClientQueryError("state_unavailable")
     state, fresh = context.state, context.state.freshness
     caveats, status = [], "ok"
-    # The public recent-events validator owns row semantics; these additional
-    # presentation gates prevent absent/contradictory freshness from being
-    # spoken as clean facts. No age or battlefield facts are recomputed.
-    if (type(fresh.age_ms) not in (int, float) or not math.isfinite(fresh.age_ms) or
-            fresh.age_ms < 0 or fresh.age_ms != state.age_ms or
-            fresh.observed_at_utc is None or fresh.observed_at_utc > frame.generated_at_utc):
-        raise ClientQueryError("state_unavailable")
     if fresh.max_age_ms is None:
         caveats.append("Freshness budget unavailable.")
         status = "degraded"
@@ -96,13 +90,8 @@ def _caveats(frame, intent):
         caveats.append("State caveat: " + fresh.stale_reason.replace("_", " ") + ".")
         if status == "ok":
             status = "degraded"
-    relevant = ({HealthComponent.UNITS_STREAM, HealthComponent.GENERATION_PUBLISHER,
-                 HealthComponent.UNIX_SOCKET_QUERY_SERVER} if intent == "current_state" else
-                {HealthComponent.EVENTS_STREAM, HealthComponent.UNIX_SOCKET_QUERY_SERVER})
-    for component in sorted(relevant, key=lambda item: item.value):
-        health = context.component_health.get(component)
-        if health is None:
-            raise ClientQueryError("state_unavailable")
+    for component in RELEVANT_HEALTH[intent]:
+        health = context.component_health[component]
         if health.status.value != "healthy":
             caveats.append(component.value.replace("_", " ").capitalize() + " " + health.status.value + ".")
             if status == "ok":

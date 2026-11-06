@@ -19,6 +19,7 @@ from metis.state_service.socket_protocol import (
     decode_server_frame, encode_client_frame,
 )
 
+from .context import validate_factual_context
 from .contract import safe_text
 
 _OWN_KEYS = frozenset({"unit_id", "unit_name", "player_name", "callsign", "coalition",
@@ -66,6 +67,7 @@ def validate_ownship(response, *, request_id):
         raise ClientQueryError("state_unavailable")
     if type(response.context) is not SocketResponseContext:
         _invalid()
+    validate_factual_context(response, "current_state")
     context = response.context
     _exact(response.data, {"ownship"})
     _exact(response.limits, set())
@@ -97,15 +99,10 @@ def validate_ownship(response, *, request_id):
     if _plain(evidence["capabilities"]) != expected:
         _invalid()
     fresh = state.freshness
-    _number(fresh.age_ms, minimum=0)
-    if fresh.age_ms != state.age_ms or fresh.observed_at_utc is None:
-        _invalid()
     if fresh.max_age_ms is not None:
         _number(fresh.max_age_ms, minimum=0)
     if fresh.stale_reason is not None:
         safe_text(fresh.stale_reason)
-    if fresh.observed_at_utc > response.generated_at_utc or state.published_at_utc > response.generated_at_utc:
-        _invalid()
     own = response.data["ownship"]
     if own is None:
         return response

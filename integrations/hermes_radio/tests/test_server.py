@@ -1,15 +1,17 @@
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+import errno
 import http.client
 import json
 import socket
 import threading
 import time
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from integrations.hermes_radio.contract import MAX_BODY_BYTES
 from integrations.hermes_radio.facts import Facts
-from integrations.hermes_radio.fixture_data import bridge_request, wire
+from integrations.hermes_radio.fixture_data import bridge_request, state_frame, wire
 from integrations.hermes_radio.fixture_server import FixtureClassifier, FixtureFacts
 from integrations.hermes_radio.hermes_client import HermesClassifier
 from integrations.hermes_radio.server import Adapter, RadioServer
@@ -126,30 +128,95 @@ class ServerTests(unittest.TestCase):
 
     def test_concurrent_exchange_rejected_no_queue(self):
         entered, release = threading.Event(), threading.Event()
-        real = Adapter(FixtureClassifier("current_state"), FixtureFacts("current_state"))
-        class BlockingAdapter:
-            calls = 0
-            def exchange(self, request):
-                self.calls += 1
-                entered.set()
-                if not release.wait(2):
-                    raise AssertionError("test release timeout")
-                return real.exchange(request)
-        adapter = BlockingAdapter()
-        with running(adapter) as server:
-            first = []
-            worker = threading.Thread(target=lambda: first.append(post(server.server_port, wire(bridge_request()))))
-            worker.start()
+        headers_sent, rejected_closed = threading.Event(), threading.Event()
+        rejected_peers = []
+        test = self
+
+        def held_state(connection, request):
+            entered.set()
+            if not release.wait(3):
+                raise AssertionError("test release timeout")
+            connection.sendall(wire(state_frame(request["operation"], request["request_id"])))
+
+        class SplitBodyConnection(http.client.HTTPConnection):
+            sends = 0
+            def send(self, data):
+                self.sends += 1
+                super().send(data)
+                if self.sends == 1:
+                    # Force the observed header -> real busy close -> body
+                    # schedule, without sleeps or changing the rejection path.
+                    headers_sent.set()
+                    test.assertTrue(rejected_closed.wait(2), "busy connection did not close")
+
+        with fake_hermes(model_reply("current_state")) as (endpoint, model_calls), \
+                fake_state(held_state, timeout_ms=4000) as (config, state_calls, closed):
+            facts = Facts(config)
+            adapter = Mock(wraps=Adapter(HermesClassifier(endpoint, "synthetic-key", timeout=1), facts))
             try:
-                self.assertTrue(entered.wait(1))
-                status, raw = post(server.server_port, wire(bridge_request()))
-                self.assertEqual(status, 503)
-                self.assertEqual(raw, b"")
-                self.assertEqual(adapter.calls, 1)
+                with running(adapter) as server, ThreadPoolExecutor(max_workers=1) as clients:
+                    first = clients.submit(post, server.server_port, wire(bridge_request("Give me a check")))
+                    connection = SplitBodyConnection("127.0.0.1", server.server_port, timeout=2)
+                    original_process = server.process_request
+
+                    def reject_after_headers(request, address):
+                        test.assertTrue(headers_sent.wait(2), "busy headers not sent")
+                        rejected_peers.append(address)
+                        original_process(request, address)  # unmodified early reject/close
+                        rejected_closed.set()
+
+                    try:
+                        self.assertTrue(entered.wait(2))
+                        with patch.object(server, "process_request", side_effect=reject_after_headers):
+                            connection.connect()
+                            rejected_address = connection.sock.getsockname()
+                            try:
+                                connection.request("POST", "/radio/v1/exchange",
+                                    body=wire(bridge_request("Check the rejected request") |
+                                              {"transmission_id": "rejected-transmission"}),
+                                    headers={"Content-Type": "application/json"})
+                                reply = connection.getresponse()
+                                self.assertEqual((reply.status, reply.read()), (503, b""))
+                                outcome = "503"
+                            except (BrokenPipeError, ConnectionResetError) as error:
+                                # Only this proven-busy request may see the real
+                                # early-close race. Timeouts/other errors fail.
+                                self.assertIn(error.errno, (errno.EPIPE, errno.ECONNRESET))
+                                self.assertEqual(connection.sends, 2)
+                                outcome = type(error).__name__
+                        self.assertTrue(rejected_closed.is_set())
+                        self.assertEqual(rejected_peers, [rejected_address])
+                        self.assertEqual(adapter.exchange.call_count, 1)
+                        self.assertEqual(len(model_calls), 1)
+                        self.assertEqual(len(state_calls), 1)
+                    finally:
+                        connection.close()
+                        release.set()
+                    # No exceptions are accepted for the admitted or recovery request.
+                    status, raw = first.result(timeout=2)
+                    self.assertEqual(status, 200)
+                    self.assertTrue(json.loads(raw)["deliverable"])
+                    self.assertIn("F-16", json.loads(raw)["speech"])
+                    # Join the handler's cleanup boundary before proving recovery.
+                    self.assertTrue(server._active.acquire(timeout=2))
+                    server._active.release()
+                    self.assertEqual(adapter.exchange.call_count, 1)
+                    status, raw = post(server.server_port, wire(bridge_request("Give me another check") |
+                                                              {"transmission_id": "recovery-transmission"}))
+                    self.assertEqual(status, 200)
+                    self.assertTrue(json.loads(raw)["deliverable"])
+                    self.assertEqual(json.loads(raw)["transmission_id"], "recovery-transmission")
             finally:
                 release.set()
-                worker.join(2)
-            self.assertEqual(first[0][0], 200)
+                facts.close()
+        # Server/worker shutdown drains all possible work: rejection never runs later.
+        self.assertEqual(adapter.exchange.call_count, 2)
+        self.assertEqual([call.args[0].transmission_id for call in adapter.exchange.call_args_list],
+                         ["synthetic-transmission", "recovery-transmission"])
+        self.assertEqual(len(model_calls), 2)
+        self.assertEqual(len(state_calls), 2)
+        self.assertEqual(closed, [True, True])
+        print("busy rejection:", outcome, "first/recovery=200; model/state calls=2; rejected work=0")
 
     def test_cumulative_slow_header_and_body_deadline(self):
         for partial in (b"POST /radio/v1/exchange HTTP/1.0\r\n", b"POST /radio/v1/exchange HTTP/1.0\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{"):

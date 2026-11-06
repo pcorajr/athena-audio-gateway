@@ -366,6 +366,9 @@ class OwnshipTests(unittest.TestCase):
 
     def test_fresh_flag_does_not_erase_exceeded_age_or_checkpoint(self):
         def aged(frame):
+            # Keep the producer's timestamp/age relation valid: this test is
+            # about an exceeded supplied budget, not contradictory evidence.
+            frame["generated_at_utc"] = "2026-01-01T00:00:02Z"
             frame["context"]["state"]["age_ms"] = 2000
             frame["context"]["state"]["freshness"]["age_ms"] = 2000
             return frame

@@ -51,7 +51,10 @@ bounded to 64 KiB; transcript UTF-8 is bounded to 32000 bytes; spoken output to
 numbers, trailing JSON, non-UTC or reversed timestamps, wrong speaker, and
 nonempty addressee are rejected. UTC nanoseconds emitted by Go remain ordered.
 Only factual replies may be deliverable. Malformed HTTP is an empty 4xx;
-concurrent exchanges get empty 503. Neither is speech. HTTP chunking, compression,
+concurrent exchanges are closed immediately, with a best-effort empty 503.
+Because rejection does not read/queue the request, a client sending its body
+after the early close may instead observe a broken pipe or connection reset.
+Neither outcome is speech, queued work or permission to retry. HTTP chunking, compression,
 ambiguous lengths and `Expect` are not accepted. Each connection closes after
 one request. Header/body acquisition has a cumulative deadline.
 
@@ -82,6 +85,14 @@ and closure on all paths. It additionally validates exact ownship/position and
 evidence keys, empty limits, public leaf models plus canonical safe text/finite
 numbers, and generation/mission/lineage/source/health-evidence consistency.
 No private upstream client method or validator substitution is used.
+
+Both factual templates also check the supplied observation/generation timestamps
+against the producer's integer-millisecond age rule, without consulting a live
+clock, changing metadata or inventing a freshness budget. Relevant health
+records must retain the public fixed dependency declarations; `healthy` requires
+a success timestamp and no error metadata, as produced by `HealthRegistry`.
+Legitimate nonhealthy records retain their qualifications. Error-severity issues
+in a successful response's warnings array are rejected before warning wording.
 
 Null ownship, mismatched player name, or confidence other than `high` yields
 `Ownship not confirmed.` It never selects a unit from the SRS display name.
@@ -130,6 +141,12 @@ loading synthetic client documents; config, codec, semantic validation and I/O
 are real. The permanent canonical-ownship regression loads Athena's synthetic
 `tests/fixtures/state_service/e12_domain_queries.json` read-only. Timing probes
 wrap real validation to delay it, never bypass it. No test reads credentials.
+Context regressions also use the real `GenerationPublisher`, `HealthRegistry`
+and `DomainQueryDispatcher` with in-memory synthetic inputs and an empty event
+read port, including cached/nonhealthy and submillisecond-age controls. The busy
+test forces headers -> real early rejection/close -> body, narrowly accepts
+503 or that rejected request's broken pipe/reset, and requires first-request
+success, no rejected model/state invocation or later work, and normal recovery.
 
 ## Fake-only gateway fixture interface
 

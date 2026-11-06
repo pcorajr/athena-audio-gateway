@@ -26,6 +26,12 @@ func TestParseFrequency(t *testing.T) {
 		{"251.0AM", RadioFrequency{251 * unit.Megahertz, types.ModulationAM}, true},
 		{"251.1AM", RadioFrequency{251.1 * unit.Megahertz, types.ModulationAM}, true},
 		{"251.1 AM", RadioFrequency{251.1 * unit.Megahertz, types.ModulationAM}, true},
+		// Non-MVP callers retain the legacy decimal-prefix/unknown-suffix fallback.
+		{"251.1garbage", RadioFrequency{251.1 * unit.Megahertz, types.ModulationAM}, true},
+		{"133e0AM", RadioFrequency{133 * unit.Megahertz, types.ModulationAM}, true},
+		{"133e0FM", RadioFrequency{133 * unit.Megahertz, types.ModulationAM}, true},
+		{"133.0e0AM", RadioFrequency{133 * unit.Megahertz, types.ModulationAM}, true},
+		{"133.0e0FM", RadioFrequency{133 * unit.Megahertz, types.ModulationAM}, true},
 		{"eekum bokum", RadioFrequency{}, false},
 		{"AM", RadioFrequency{}, false},
 		{"FM", RadioFrequency{}, false},

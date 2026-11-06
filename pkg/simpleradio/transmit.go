@@ -13,6 +13,9 @@ import (
 
 // Transmit enqueues a transmission to send over the radio.
 func (c *Client) Transmit(transmission Transmission) {
+	if c.mvp {
+		return
+	} // MVP must use the synchronous, identity-bound path.
 	c.txChan <- transmission
 }
 
@@ -45,10 +48,13 @@ func (c *Client) waitForClearChannel() {
 		isReceiving := false
 		deadline := time.Now()
 		for _, receiver := range c.receivers {
-			if receiver.isReceivingTransmission() {
+			receiver.lock.RLock()
+			receiveDeadline := receiver.deadline
+			receiver.lock.RUnlock()
+			if receiveDeadline.After(time.Now()) {
 				isReceiving = true
-				if receiver.deadline.After(deadline) {
-					deadline = receiver.deadline
+				if receiveDeadline.After(deadline) {
+					deadline = receiveDeadline
 				}
 			}
 		}
@@ -63,6 +69,9 @@ func (c *Client) waitForClearChannel() {
 
 // writePackets writes voice packets to the UDP connection.
 func (c *Client) writePackets(packets []voice.Packet) {
+	if c.mute || c.mvp {
+		return
+	} // No legacy write may bypass the MVP guard.
 	startTime := time.Now()
 	for i, packet := range packets {
 		b := packet.Encode()
@@ -75,7 +84,7 @@ func (c *Client) writePackets(packets []voice.Packet) {
 				Add(-frameLength / 2),
 		)
 		time.Sleep(delay)
-		_, err := c.udpConnection.Write(b)
+		_, err := c.udp().Write(b)
 		if errors.Is(err, net.ErrClosed) {
 			log.Error().Err(err).Msg("UDP connection closed during transmission")
 			return

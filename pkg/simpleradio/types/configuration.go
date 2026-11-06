@@ -26,4 +26,10 @@ type ClientConfiguration struct {
 	AllowRecording bool
 	// Mute is true if the client should not transmit.
 	Mute bool
+	// SRSMVP selects the one-radio, identity-bound PTT path.
+	SRSMVP bool
+	// LiveTX is a default-off MVP interlock, subordinate to Mute.
+	LiveTX bool
+	// PilotName is the sole admitted live SRS display name in MVP mode.
+	PilotName string
 }

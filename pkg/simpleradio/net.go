@@ -26,7 +26,9 @@ func (c *Client) connectTCP() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to data socket: %w", err)
 	}
+	c.connectionLock.Lock()
 	c.tcpConnection = connection
+	c.connectionLock.Unlock()
 	return nil
 }
 
@@ -41,13 +43,25 @@ func (c *Client) connectUDP() error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to UDP socket: %w", err)
 	}
+	c.connectionLock.Lock()
+	defer c.connectionLock.Unlock()
 	c.udpConnection = connection
+	c.clientsLock.Lock()
+	if c.mvp {
+		c.mvpEpoch++
+		c.clients = make(map[types.GUID]types.ClientInfo)
+	}
+	c.mvpWriter = connection
+	c.clientsLock.Unlock()
 	return nil
 }
 
 // reconnect closes the existing connections and attempts to reconnect to the
 // SRS server. It will retry until successful or the context is canceled.
 func (c *Client) reconnect(ctx context.Context) error {
+	c.connectionLock.Lock()
+	c.invalidateMVP()
+	c.connectionLock.Unlock()
 	var err error
 	backoff := frameLength
 
@@ -57,11 +71,11 @@ func (c *Client) reconnect(ctx context.Context) error {
 			return ctx.Err()
 		default:
 			log.Info().Msg("attempting to reconnect to SRS server")
-			_ = c.tcpConnection.Close()
+			_ = c.tcp().Close()
 			err = c.connectTCP()
 			if err == nil {
 				log.Info().Msg("successfully reconnected to SRS server over TCP")
-				_ = c.udpConnection.Close()
+				_ = c.udp().Close()
 				err = c.connectUDP()
 				if err == nil {
 					log.Info().Msg("successfully reconnected to SRS server over UDP")
@@ -77,7 +91,7 @@ func (c *Client) reconnect(ctx context.Context) error {
 }
 
 // receiveUDP listens for incoming UDP packets and routes them to the appropriate channel.
-func (c *Client) receiveUDP(ctx context.Context, pingChan chan<- []byte, voiceChan chan<- []byte) {
+func (c *Client) receiveUDP(ctx context.Context, pingChan chan<- []byte, voiceChan chan<- voiceDatagram) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -85,7 +99,13 @@ func (c *Client) receiveUDP(ctx context.Context, pingChan chan<- []byte, voiceCh
 			return
 		default:
 			buf := make([]byte, 1500)
-			n, err := c.udpConnection.Read(buf)
+			c.connectionLock.RLock()
+			c.clientsLock.RLock()
+			epoch := c.mvpEpoch
+			connection := c.udpConnection
+			c.clientsLock.RUnlock()
+			c.connectionLock.RUnlock()
+			n, err := connection.Read(buf)
 			switch {
 			case errors.Is(err, net.ErrClosed):
 				if ctx.Err() == nil {
@@ -109,7 +129,13 @@ func (c *Client) receiveUDP(ctx context.Context, pingChan chan<- []byte, voiceCh
 					pingChan <- packet
 				case n > types.GUIDLength:
 					// Voice packet
-					voiceChan <- packet
+					// The epoch is captured before Read: a datagram buffered on
+					// an old connection cannot be admitted after reconnect.
+					select {
+					case voiceChan <- voiceDatagram{data: packet, epoch: epoch}:
+					case <-ctx.Done():
+						return
+					}
 				}
 			}
 		}
@@ -118,7 +144,8 @@ func (c *Client) receiveUDP(ctx context.Context, pingChan chan<- []byte, voiceCh
 
 // receiveTCP listens for incoming TCP messages and routes them to the appropriate handler.
 func (c *Client) receiveTCP(ctx context.Context) {
-	reader := bufio.NewReader(c.tcpConnection)
+	connection := c.tcp()
+	reader := bufio.NewReader(connection)
 	for {
 		select {
 		case <-ctx.Done():
@@ -127,13 +154,19 @@ func (c *Client) receiveTCP(ctx context.Context) {
 		default:
 			line, err := reader.ReadBytes(byte('\n'))
 			if err != nil {
+				c.connectionLock.RLock()
+				if connection == c.tcpConnection {
+					c.invalidateMVP()
+				}
+				c.connectionLock.RUnlock()
 				if errors.Is(err, net.ErrClosed) && ctx.Err() != nil {
 					continue
 				}
 				log.Error().Err(err).Msg("error reading from SRS server TCP socket")
 				// Wait and try again in case it recovers by reconnecting
 				time.Sleep(pingInterval)
-				reader = bufio.NewReader(c.tcpConnection)
+				connection = c.tcp()
+				reader = bufio.NewReader(connection)
 				continue
 			}
 
@@ -142,8 +175,37 @@ func (c *Client) receiveTCP(ctx context.Context) {
 			if jsonErr != nil {
 				log.Warn().Str("text", string(line)).Err(jsonErr).Msg("failed to unmarshal message")
 			} else {
-				c.handleMessage(message)
+				c.handleConnectionMessage(connection, message)
 			}
 		}
 	}
+}
+
+// Serialize identity updates against reconnect. The password acknowledgement
+// only emits a radio announcement; release the pointer lock before its Send.
+func (c *Client) handleConnectionMessage(connection *net.TCPConn, message types.Message) {
+	c.connectionLock.RLock()
+	if connection != c.tcpConnection {
+		c.connectionLock.RUnlock()
+		return
+	}
+	if message.Type == types.MessageExternalAWACSModePassword {
+		c.connectionLock.RUnlock()
+		c.handleMessage(message)
+		return
+	}
+	defer c.connectionLock.RUnlock()
+	c.handleMessage(message)
+}
+
+func (c *Client) tcp() *net.TCPConn {
+	c.connectionLock.RLock()
+	defer c.connectionLock.RUnlock()
+	return c.tcpConnection
+}
+
+func (c *Client) udp() *net.UDPConn {
+	c.connectionLock.RLock()
+	defer c.connectionLock.RUnlock()
+	return c.udpConnection
 }

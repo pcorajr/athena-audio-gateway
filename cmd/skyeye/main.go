@@ -31,6 +31,7 @@ import (
 	"github.com/dharmab/skyeye/internal/cli"
 	"github.com/dharmab/skyeye/internal/conf"
 	"github.com/dharmab/skyeye/pkg/athena/admission"
+	"github.com/dharmab/skyeye/pkg/athena/mvp"
 	"github.com/dharmab/skyeye/pkg/coalitions"
 	"github.com/dharmab/skyeye/pkg/encyclopedia"
 	"github.com/dharmab/skyeye/pkg/locations"
@@ -84,6 +85,9 @@ var (
 	exitAfter                    time.Duration
 	enableTerrainDetection       bool
 	athenaCommandFrequency       string
+	athenaSRSMVP                 bool
+	athenaLiveTX                 bool
+	athenaResponseMaxAge         time.Duration
 	athenaPilotName              string
 	athenaHermesEndpoint         string
 	athenaHermesTimeout          time.Duration
@@ -155,6 +159,9 @@ func init() {
 	skyeye.Flags().BoolVar(&mute, "mute", false, "Mute all SRS transmissions. Useful for testing without disrupting play")
 
 	// Athena command channel (see ADR 0014 in pcorajr/project-athena).
+	skyeye.Flags().BoolVar(&athenaSRSMVP, "athena-srs-mvp", false, "PTT-only MVP: one command radio, native bridge, no personas or GCI")
+	skyeye.Flags().BoolVar(&athenaLiveTX, "athena-live-tx", false, "MVP voice-write interlock; requires separate live authorization and never overrides --mute")
+	skyeye.Flags().DurationVar(&athenaResponseMaxAge, "athena-response-max-age", mvp.DefaultMaxAge, "MVP maximum assembled-reception to first-send age; must be positive")
 	// Setting these replaces the GCI controller lane with a text exchange
 	// against Hermes. Leaving them unset preserves upstream SkyEye behaviour.
 	skyeye.Flags().StringVar(&athenaCommandFrequency, "athena-command-frequency", "", "Athena command channel frequency, e.g. 30.0FM. Enables the Athena admission gate; requires --athena-pilot-name.")
@@ -304,20 +311,23 @@ func initializeConfig(cmd *cobra.Command) error {
 	v.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	v.AutomaticEnv()
 
-	bindFlags(cmd, v)
-	return nil
+	return bindFlags(cmd, v)
 }
 
-func bindFlags(cmd *cobra.Command, v *viper.Viper) {
+func bindFlags(cmd *cobra.Command, v *viper.Viper) error {
+	var configErr error
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
 		// Apply the viper config value to the flag when the flag is not set and viper has a value
 		if !f.Changed && v.IsSet(f.Name) {
 			val := v.Get(f.Name)
 			if err := cmd.Flags().Set(f.Name, fmt.Sprint(val)); err != nil {
-				log.Warn().Str("flag", f.Name).Msg("Failed to set flag")
+				// Never silently fall back to defaults for invalid safety flags.
+				// Exclude the value/error text, which may contain credentials.
+				configErr = errors.Join(configErr, fmt.Errorf("invalid configuration flag %s", f.Name))
 			}
 		}
 	})
+	return configErr
 }
 
 func loadCoalition() (coalition coalitions.Coalition) {
@@ -458,6 +468,33 @@ func preRun(cmd *cobra.Command, _ []string) error {
 	if err := initializeConfig(cmd); err != nil {
 		return fmt.Errorf("failed to initialize config: %w", err)
 	}
+	if athenaSRSMVP {
+		return validateSRSMVPRadioFlags(srsFrequencies)
+	}
+	return nil
+}
+
+// The legacy parser consumes only a decimal prefix and defaults unknown
+// modulation to AM. MVP accepts only spellings that parser preserves.
+func validateSRSMVPRadioFlags(frequencies []string) error {
+	if len(frequencies) != 1 {
+		return errors.New("MVP requires exactly one srs-frequencies entry")
+	}
+	raw := frequencies[0]
+	pos := strings.IndexFunc(raw, func(r rune) bool {
+		return (r < '0' || r > '9') && r != '.'
+	})
+	if pos < 0 {
+		return errors.New("MVP SRS frequency requires decimal MHz and explicit AM or FM")
+	}
+	suffix := strings.TrimSpace(raw[pos:])
+	if suffix != "AM" && suffix != "FM" {
+		return errors.New("MVP SRS frequency requires explicit AM or FM")
+	}
+	mhz, err := strconv.ParseFloat(raw[:pos], 64)
+	if err != nil || math.IsNaN(mhz) || math.IsInf(mhz, 0) || mhz <= 0 {
+		return errors.New("MVP SRS frequency must be a real positive number")
+	}
 	return nil
 }
 
@@ -493,7 +530,6 @@ func run(_ *cobra.Command, _ []string) {
 
 	log.Info().Msg("loading configuration")
 	coalition := loadCoalition()
-	whisperModel := loadWhisperModel()
 	rando := randomizer()
 	voice := loadVoice(rando)
 	callsign := loadCallsign(rando)
@@ -522,13 +558,15 @@ func run(_ *cobra.Command, _ []string) {
 		RadarSweepInterval:           telemetryUpdateInterval,
 		Recognizer:                   conf.Recognizer(recognizerName),
 		RecognizerLock:               recognizerLock,
-		WhisperModel:                 whisperModel,
 		OpenAIAPIKey:                 openAIAPIKey,
 		Voice:                        voice,
 		UseSystemVoice:               useSystemVoice,
 		VoiceLock:                    voiceLock,
 		Mute:                         mute,
 		AthenaCommandFrequencyHz:     athenaFrequencyHz,
+		AthenaSRSMVP:                 athenaSRSMVP,
+		AthenaLiveTX:                 athenaLiveTX,
+		AthenaResponseMaxAge:         athenaResponseMaxAge,
 		AthenaCommandModulation:      athenaModulation,
 		AthenaPilotName:              athenaPilotName,
 		AthenaHermesEndpoint:         athenaHermesEndpoint,
@@ -561,6 +599,10 @@ func run(_ *cobra.Command, _ []string) {
 		CustomAircraft:               customAircraft,
 	}
 
+	if err := config.ValidateSRSMVP(); err != nil {
+		log.Fatal().Err(err).Msg("invalid MVP configuration")
+	}
+	config.WhisperModel = loadWhisperModel()
 	log.Info().Msg("starting application")
 	app, err := application.NewApplication(config)
 	if err != nil {

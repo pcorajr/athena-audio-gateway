@@ -84,6 +84,8 @@ type Request struct {
 	//
 	// This is distinct from Speaker: Speaker is who talked, Addressee is who
 	// was talked to. Admission screens the former; routing uses the latter.
+	// Exception: the explicit PTT-only MVP omits Addressee and routes only to
+	// its configured native text adapter, with no persona resolution.
 	Addressee string `json:"addressee,omitempty"`
 	// FrequencyHz is the command frequency the utterance arrived on.
 	FrequencyHz uint64 `json:"frequency_hz"`

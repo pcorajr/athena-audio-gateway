@@ -30,12 +30,15 @@ func (c *Client) BeginMVPReply(t Transmission) func(context.Context, Audio, time
 		defer c.txLock.Unlock()
 		closed = true
 		if c.mute || !c.liveTX {
-			return Delivery{Outcome: "interlocked"}
+			return Delivery{Outcome: "interlocked", Reason: c.mvpInterlockReason()}
 		}
-		if !c.ValidMVP(t) {
-			return Delivery{Outcome: "identity_changed"}
+		if reason := c.MVPRejection(t); reason != "" {
+			return Delivery{Outcome: "identity_changed", Reason: reason}
 		}
-		if ctx.Err() != nil || !time.Now().Before(expires) {
+		if ctx.Err() != nil {
+			return Delivery{Outcome: "canceled"}
+		}
+		if !time.Now().Before(expires) {
 			return Delivery{Outcome: "expired"}
 		}
 		packets, err := c.encodeMVP(audio)

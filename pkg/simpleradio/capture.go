@@ -77,6 +77,14 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 					continue
 				}
 				origin := types.GUID(packet.OriginGUID)
+				// receiveUDP snapshots the epoch before blocking Read. A stale
+				// datagram must not start assembly and poison admitted packets.
+				// Discard it as the legacy command path did; never promote its
+				// audio or replace an existing capture's route token.
+				if route.rejection == "packet_epoch_mismatch" {
+					c.captureFailure(transmissionPackets{radio: radio, origin: origin, traceID: shortuuid.New()}, "packet_epoch_mismatch")
+					continue
+				}
 				a := active[origin]
 				if a == nil {
 					if len(active) >= 64 {

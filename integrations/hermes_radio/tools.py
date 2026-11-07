@@ -9,6 +9,7 @@ import uuid
 from athena.state_service_client import ClientQueryError, StateServiceClient, load_client_config
 from .context import RELEVANT_HEALTH, validate_factual_context
 from .contract import safe_text
+from .failures import response_failure
 from .ownship import OwnshipReader, _plain, _invalid, _number, _exact, validate_projection
 from .projections import page
 from .tactical import bearing_range, category, same_scope
@@ -38,6 +39,17 @@ TOOLS = [
     schema("braa", "Deterministic ownship-to-unit TRUE bearing/range/altitude; aspect unable without supported true heading reference.", {"unit_id": ID}, ("unit_id",)),
 ]
 SCHEMAS = {tool["function"]["name"]: tool["function"]["parameters"] for tool in TOOLS}
+
+# Local radio policy, not producer metadata: a missing producer max is not
+# unlimited evidence. Intersect any supplied smaller budget, never enlarge it.
+RADIO_MAX_EVIDENCE_AGE_MS = 5000
+
+
+def evidence_budget(fresh):
+    if fresh.max_age_ms is None:
+        return RADIO_MAX_EVIDENCE_AGE_MS
+    _number(fresh.max_age_ms, minimum=0)
+    return min(RADIO_MAX_EVIDENCE_AGE_MS, fresh.max_age_ms)
 
 
 def arguments(name, value):
@@ -84,14 +96,19 @@ def metadata(frame):
 def usable(frame):
     validate_factual_context(frame, "recent_events" if frame.operation == "recent_events" else "current_state")
     fresh = frame.context.state.freshness
-    if (fresh.status != "fresh" or fresh.max_age_ms is None or fresh.age_ms > fresh.max_age_ms or
-            frame.context.mission.state.value != "running" or frame.context.state.source.value != "live_memory"):
-        raise ClientQueryError("state_unavailable")
+    if fresh.status != "fresh":
+        raise ClientQueryError("freshness_not_fresh")
+    if fresh.age_ms >= evidence_budget(fresh):
+        raise ClientQueryError("evidence_expired")
+    if frame.context.mission.state.value != "running":
+        raise ClientQueryError("mission_not_running")
+    if frame.context.state.source.value != "live_memory":
+        raise ClientQueryError("source_not_live")
     components = RELEVANT_HEALTH["recent_events" if frame.operation == "recent_events" else "current_state"]
     if any(frame.context.component_health[c].status.value != "healthy" for c in components):
-        raise ClientQueryError("state_unavailable")
+        raise ClientQueryError("component_unhealthy")
     if any(w.code not in {"truncated_result", "partial_data", "ownship_unavailable"} for w in frame.warnings):
-        raise ClientQueryError("state_unavailable")
+        raise ClientQueryError("unsupported_state_warning")
 
 
 @dataclass(frozen=True)
@@ -130,7 +147,7 @@ class RadioTools:
         else:
             frame = self.client.query(operation=operation, params=params, request_id=request_id)
             if not frame.ok:
-                raise ClientQueryError("state_unavailable")
+                raise response_failure(frame)
             if operation != "recent_events":
                 validate_projection(frame, rows_matched=1 if operation == "get_unit" else frame.data["total"])
             if operation in {"get_unit", "query_units"}:
@@ -164,9 +181,9 @@ class RadioTools:
         fresh = frame.context.state.freshness
         # Charge the entire query/validation duration conservatively. Receipt
         # time must never grant the producer's evidence a new freshness budget.
-        expires_at = started + (fresh.max_age_ms - fresh.age_ms) / 1000
+        expires_at = started + (evidence_budget(fresh) - fresh.age_ms) / 1000
         if self.clock() >= expires_at:
-            raise ClientQueryError("state_unavailable")
+            raise ClientQueryError("evidence_expired")
         return TimedFrame(frame, expires_at)
 
     def own(self):
@@ -182,7 +199,7 @@ class RadioTools:
         operation = "get_unit" if name == "braa" else name
         own_frame = anchor if anchor is not None else self.own()
         if self.clock() >= own_frame.expires_at:
-            raise ClientQueryError("state_unavailable")
+            raise ClientQueryError("evidence_expired")
         own = own_frame.data["ownship"]
         params = {k: v for k, v in args.items() if k not in {"category", "radius_nm"}}
         if "coalition" in params and params["coalition"] in {"friendly", "hostile"}:
@@ -236,7 +253,7 @@ class RadioTools:
             data["events"] = [{k: row[k] for k in ("event_id", "event_type", "observed_at_utc", "subject_ids", "warnings")} for row in data["events"]]
         expires_at = min(own_frame.expires_at, frame.expires_at)
         if self.clock() >= expires_at:
-            raise ClientQueryError("state_unavailable")
+            raise ClientQueryError("evidence_expired")
         return Evidence({"ok": True, "data": data, "context": metadata(frame)}, expires_at)
 
 
@@ -284,7 +301,7 @@ class SnapshotCache:
                     data[side] = value
                 expires_at = min(value.expires_at for value in data.values())
                 if self.clock() >= expires_at:
-                    raise ClientQueryError("state_unavailable")
+                    raise ClientQueryError("evidence_expired")
                 with self.lock:
                     if self.value is None or identity(self.value[0]) != identity(own):
                         self.epoch += 1

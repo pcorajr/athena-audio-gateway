@@ -8,6 +8,7 @@ import time
 from athena.state_service_client import ClientQueryError
 from .contract import MAX_SPEECH_CHARS, response, safe_text, strict_json
 from .openai_provider import ProviderError
+from .failures import failure_code, safe_code
 from .tools import TOOLS, SCHEMAS, arguments, identity
 
 CORE_PROMPT = "You are Athena, the GCI/AWACS controller for callsign Prometheus in DCS. Answer like real radio: 1–2 short sentences, callsign first, BRAA format for contacts. Only state facts returned by the tools; if data is missing say 'unable' briefly. Never invent contacts."
@@ -84,6 +85,7 @@ class Controller:
         # newer snapshot the background cache happens to hold at emission.
         evidence_expires = evidence.expires_at if evidence is not None else float("inf")
         failed = False
+        failure_reason = "provider_failed"
         seen_calls = set()
         try:
             for _round in range(4):
@@ -151,7 +153,7 @@ class Controller:
                                   args={}, result={"ok": False}, outcome="invalid_arguments")
                         raise ProviderError() from None
                     tool_start = time.monotonic()
-                    result = {"ok": False, "reason": "unable"}
+                    result = {"ok": False, "reason": "state_query_failed"}
                     try:
                         if anchor is None:
                             anchor = self.tools.own()
@@ -161,15 +163,16 @@ class Controller:
                         have_evidence = True
                         if "unit_id" in args:
                             self.references = [args["unit_id"]] + [x for x in self.references if x != args["unit_id"]][:9]
-                    except (ClientQueryError, ValueError, TypeError, KeyError, OverflowError):
-                        result = {"ok": False, "reason": "unable"}
+                    except (ClientQueryError, ValueError, TypeError, KeyError, OverflowError) as error:
+                        failure_reason = failure_code(error)
+                        result = {"ok": False, "reason": failure_reason}
                         self.cache.invalidate()
                         # Never use earlier snapshots after a failed live read.
                         have_evidence = False
                         raise ProviderError() from None
                     finally:
                         self._log(request, "tool", tool=name, args=args, result=compact_result(result),
-                                  outcome="ok" if result["ok"] else "unable",
+                                  outcome="ok" if result["ok"] else result["reason"],
                                   timings_ms={"tool": round((time.monotonic()-tool_start)*1000)})
                     messages.append({"role": "tool", "tool_call_id": call_id,
                                      "content": json.dumps(result, ensure_ascii=True, allow_nan=False)})
@@ -178,7 +181,7 @@ class Controller:
                 raise ProviderError()
         except (ProviderError, ClientQueryError, ValueError, TypeError, KeyError, OverflowError):
             failed = True
-            self._log(request, "controller_error", outcome="unable", timings_ms={"total": round((time.monotonic()-start)*1000)})
+            self._log(request, "controller_error", outcome=failure_reason, timings_ms={"total": round((time.monotonic()-start)*1000)})
             self.cache.invalidate()
             self.history.clear()
             if not spoken:
@@ -210,7 +213,7 @@ class Controller:
 def compact_result(result):
     """Log bounded evidence, not arbitrary state strings or raw response dumps."""
     if not result["ok"]:
-        return {"ok": False, "reason": "unable"}
+        return {"ok": False, "reason": safe_code(result.get("reason"))}
     data = result["data"]
     summary = {key: data[key] for key in ("total", "total_units", "producer_matching_total",
         "returned_filtered_count", "nearest_scope", "category_vocabulary_incomplete", "unit_id", "braa") if key in data}

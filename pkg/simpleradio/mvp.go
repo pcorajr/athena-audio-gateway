@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/pcm/rate"
 	"github.com/dharmab/skyeye/pkg/simpleradio/types"
 	"github.com/dharmab/skyeye/pkg/simpleradio/voice"
@@ -23,6 +24,8 @@ type mvpRoute struct {
 	origin types.GUID
 	epoch  uint64
 	used   *atomic.Bool
+	// Content-free packet admission reason for observed non-command audio.
+	rejection string
 }
 
 type mvpIdentity struct {
@@ -50,8 +53,13 @@ func validateMVPConfig(cfg types.ClientConfiguration) error {
 // Caller holds clientsLock. Count names across the entire live snapshot, not
 // just on-frequency clients: a duplicate display name is ambiguous.
 func (c *Client) mvpIdentityLocked() mvpIdentity {
+	identity, _ := c.mvpIdentityReasonLocked()
+	return identity
+}
+
+func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
 	if !c.mvp || len(c.clientInfo.RadioInfo.Radios) != 1 {
-		return mvpIdentity{}
+		return mvpIdentity{}, "radio_configuration"
 	}
 	var pilot types.ClientInfo
 	count := 0
@@ -61,15 +69,27 @@ func (c *Client) mvpIdentityLocked() mvpIdentity {
 			pilot = peer
 		}
 	}
-	if count != 1 || pilot.GUID == "" || pilot.GUID == c.clientInfo.GUID || pilot.Coalition != c.clientInfo.Coalition {
-		return mvpIdentity{}
+	if count == 0 {
+		return mvpIdentity{}, "pilot_missing"
+	}
+	if count != 1 {
+		return mvpIdentity{}, "pilot_ambiguous"
+	}
+	if pilot.GUID == "" {
+		return mvpIdentity{}, "pilot_guid_missing"
+	}
+	if pilot.GUID == c.clientInfo.GUID {
+		return mvpIdentity{}, "pilot_is_self"
+	}
+	if pilot.Coalition != c.clientInfo.Coalition {
+		return mvpIdentity{}, "pilot_coalition_mismatch"
 	}
 	for _, radio := range pilot.RadioInfo.Radios {
 		if exactMVPRadio(radio, c.clientInfo.RadioInfo.Radios[0]) {
-			return mvpIdentity{guid: pilot.GUID, unitID: pilot.RadioInfo.UnitID, unit: pilot.RadioInfo.Unit, seat: pilot.Seat}
+			return mvpIdentity{guid: pilot.GUID, unitID: pilot.RadioInfo.UnitID, unit: pilot.RadioInfo.Unit, seat: pilot.Seat}, ""
 		}
 	}
-	return mvpIdentity{}
+	return mvpIdentity{}, "pilot_radio_mismatch"
 }
 
 func exactMVPRadio(a, b types.Radio) bool {
@@ -78,7 +98,6 @@ func exactMVPRadio(a, b types.Radio) bool {
 
 func (c *Client) syncMVPClients(peers []types.ClientInfo) {
 	c.clientsLock.Lock()
-	defer c.clientsLock.Unlock()
 	before := c.mvpIdentityLocked()
 	c.clients = make(map[types.GUID]types.ClientInfo, len(peers))
 	for _, peer := range peers {
@@ -89,18 +108,48 @@ func (c *Client) syncMVPClients(peers []types.ClientInfo) {
 	if before != c.mvpIdentityLocked() {
 		c.mvpEpoch++
 	}
+	record := c.mvpReadinessLocked()
+	c.clientsLock.Unlock()
+	c.transcript.Log(record)
 }
 
 func (c *Client) syncMVPClient(peer types.ClientInfo) {
 	c.clientsLock.Lock()
-	defer c.clientsLock.Unlock()
 	before := c.mvpIdentityLocked()
+	beforeReason := c.mvpReadinessLocked().Outcome
 	if peer.GUID != c.clientInfo.GUID {
 		c.clients[peer.GUID] = peer
 	}
-	if before != c.mvpIdentityLocked() {
+	changed := before != c.mvpIdentityLocked()
+	if changed {
 		c.mvpEpoch++
 	}
+	record := c.mvpReadinessLocked()
+	c.clientsLock.Unlock()
+	if changed || beforeReason != record.Outcome {
+		c.transcript.Log(record)
+	}
+}
+
+// Diagnostic guard state only, not authority to transmit a future reception.
+// Never include peer names, GUIDs, credentials or packets.
+func (c *Client) mvpReadinessLocked() transcript.Record {
+	_, reason := c.mvpIdentityReasonLocked()
+	if c.mvpWriter == nil {
+		reason = "transport_unavailable"
+	}
+	if reason == "" {
+		reason = "ready"
+	}
+	r := transcript.Record{Kind: "radio_readiness", Speaker: "Athena", Route: "ignored", Outcome: reason}
+	if len(c.clientInfo.RadioInfo.Radios) == 1 {
+		radio := c.clientInfo.RadioInfo.Radios[0]
+		r.FrequencyHz, r.Modulation = uint64(radio.Frequency), "AM"
+		if radio.Modulation == types.ModulationFM {
+			r.Modulation = "FM"
+		}
+	}
+	return r
 }
 
 func (c *Client) invalidateMVP() {
@@ -108,20 +157,29 @@ func (c *Client) invalidateMVP() {
 		return
 	}
 	c.clientsLock.Lock()
-	defer c.clientsLock.Unlock()
 	c.mvpEpoch++
 	c.clients = make(map[types.GUID]types.ClientInfo)
 	c.mvpWriter = nil
 	c.mvpLastOrigin, c.mvpLastPacket = "", 0
+	record := c.mvpReadinessLocked()
+	c.clientsLock.Unlock()
+	c.transcript.Log(record)
 }
 
 func (c *Client) admitMVPPacket(packet *voice.Packet, epoch uint64) (mvpRoute, bool) {
 	c.clientsLock.Lock()
 	defer c.clientsLock.Unlock()
-	identity := c.mvpIdentityLocked()
+	reject := func(reason string) (mvpRoute, bool) { return mvpRoute{rejection: reason}, false }
+	identity, identityReason := c.mvpIdentityReasonLocked()
 	origin := types.GUID(packet.OriginGUID)
-	if epoch != c.mvpEpoch || c.mvpWriter == nil || len(c.clientInfo.RadioInfo.Radios) != 1 {
-		return mvpRoute{}, false
+	if epoch != c.mvpEpoch {
+		return reject("packet_epoch_mismatch")
+	}
+	if c.mvpWriter == nil {
+		return reject("transport_unavailable")
+	}
+	if len(c.clientInfo.RadioInfo.Radios) != 1 {
+		return reject("radio_configuration")
 	}
 	matched := false
 	for _, f := range packet.Frequencies {
@@ -132,20 +190,73 @@ func (c *Client) admitMVPPacket(packet *voice.Packet, epoch uint64) (mvpRoute, b
 	if matched {
 		c.mvpChannelUntil = time.Now().Add(maxRxGap)
 	}
-	if identity.guid == "" || identity.guid != origin || origin == c.clientInfo.GUID || types.GUID(packet.RelayGUID) == c.clientInfo.GUID {
-		return mvpRoute{}, false
+	if identityReason != "" {
+		return reject(identityReason)
 	}
-	if !matched || (origin == c.mvpLastOrigin && packet.PacketID <= c.mvpLastPacket) {
-		return mvpRoute{}, false
+	if origin == c.clientInfo.GUID {
+		return reject("self_origin")
+	}
+	if types.GUID(packet.RelayGUID) == c.clientInfo.GUID {
+		return reject("self_relay")
+	}
+	if identity.guid != origin {
+		return reject("origin_mismatch")
+	}
+	if !matched {
+		return reject("packet_radio_mismatch")
+	}
+	if origin == c.mvpLastOrigin && packet.PacketID <= c.mvpLastPacket {
+		return reject("packet_replayed")
 	}
 	c.mvpLastOrigin, c.mvpLastPacket = origin, packet.PacketID
 	return mvpRoute{origin: origin, epoch: epoch, used: &atomic.Bool{}}, true
 }
 
 func (c *Client) validMVPLocked(t Transmission) bool {
-	return c.mvp && c.mvpWriter != nil && t.route.used != nil && t.route.epoch == c.mvpEpoch &&
-		t.route.origin != "" && t.route.origin == c.mvpIdentityLocked().guid &&
-		len(c.clientInfo.RadioInfo.Radios) == 1 && exactMVPRadio(t.Radio, c.clientInfo.RadioInfo.Radios[0])
+	return c.mvpRejectionLocked(t) == ""
+}
+
+func (c *Client) mvpRejectionLocked(t Transmission) string {
+	if !c.mvp {
+		return "radio_mvp_disabled"
+	}
+	if c.mvpWriter == nil {
+		return "radio_transport_unavailable"
+	}
+	if t.route.used == nil {
+		if t.route.rejection != "" {
+			return "radio_route_missing:" + t.route.rejection
+		}
+		return "radio_route_missing"
+	}
+	if t.route.epoch != c.mvpEpoch {
+		return "radio_epoch_mismatch"
+	}
+	if t.route.origin == "" {
+		return "radio_origin_missing"
+	}
+	identity, reason := c.mvpIdentityReasonLocked()
+	if reason != "" {
+		return "radio_" + reason
+	}
+	if t.route.origin != identity.guid {
+		return "radio_origin_mismatch"
+	}
+	if !exactMVPRadio(t.Radio, c.clientInfo.RadioInfo.Radios[0]) {
+		return "radio_channel_mismatch"
+	}
+	return ""
+}
+
+// MVPRejection uses exactly ValidMVP's guards without minting or consuming a
+// token. Reasons are constants, never peer metadata or transcript content.
+func (c *Client) MVPRejection(t Transmission) string {
+	if c == nil {
+		return "radio_unavailable"
+	}
+	c.clientsLock.RLock()
+	defer c.clientsLock.RUnlock()
+	return c.mvpRejectionLocked(t)
 }
 
 // ValidMVP revalidates the original connection, speaker and command route.
@@ -160,6 +271,7 @@ type Delivery struct {
 	FirstSend time.Time
 	LastSend  time.Time
 	Outcome   string
+	Reason    string // bounded guard detail, never an error body
 }
 
 // TransmitMVP is synchronous: no pending reply queue, no retry, no replay.
@@ -172,12 +284,15 @@ func (c *Client) TransmitMVP(ctx context.Context, t Transmission, expires time.T
 		return Delivery{Outcome: "invalid_or_replayed"}
 	}
 	if c.mute || !c.liveTX {
-		return Delivery{Outcome: "interlocked"}
+		return Delivery{Outcome: "interlocked", Reason: c.mvpInterlockReason()}
 	}
-	if !c.ValidMVP(t) {
-		return Delivery{Outcome: "identity_changed"}
+	if reason := c.MVPRejection(t); reason != "" {
+		return Delivery{Outcome: "identity_changed", Reason: reason}
 	}
-	if ctx.Err() != nil || !time.Now().Before(expires) {
+	if ctx.Err() != nil {
+		return Delivery{Outcome: "canceled"}
+	}
+	if !time.Now().Before(expires) {
 		return Delivery{Outcome: "expired"}
 	}
 	packets, err := c.encodeMVP(t.Audio)
@@ -219,7 +334,15 @@ func (c *Client) sendMVP(ctx context.Context, t Transmission, expires time.Time,
 	waitCtx, cancel := context.WithDeadline(ctx, expires)
 	defer cancel()
 	for {
-		if waitCtx.Err() != nil || !c.ValidMVP(t) {
+		if ctx.Err() != nil {
+			d.Outcome = "canceled"
+			return d
+		}
+		if waitCtx.Err() != nil {
+			return d
+		}
+		if reason := c.MVPRejection(t); reason != "" {
+			d.Outcome, d.Reason = "invalidated", reason
 			return d
 		}
 		c.clientsLock.RLock()
@@ -232,6 +355,9 @@ func (c *Client) sendMVP(ctx context.Context, t Transmission, expires time.Time,
 			break
 		}
 		if !waitMVP(waitCtx, frameLength) {
+			if ctx.Err() != nil {
+				d.Outcome = "canceled"
+			}
 			return d
 		}
 	}
@@ -244,10 +370,22 @@ func (c *Client) sendMVP(ctx context.Context, t Transmission, expires time.Time,
 		// The lock linearizes identity invalidation and each socket write.
 		// Interlocks and route are checked here, including the first write.
 		c.clientsLock.RLock()
-		if c.mute || !c.liveTX || !c.validMVPLocked(t) || c.mvpWriter == nil || ctx.Err() != nil ||
-			(i == 0 && (!time.Now().Before(expires) || time.Now().Before(c.mvpChannelUntil))) {
+		reason := c.mvpInterlockReason()
+		if reason == "" {
+			reason = c.mvpRejectionLocked(t)
+		}
+		if reason == "" && ctx.Err() != nil {
+			reason = "canceled"
+		}
+		if reason == "" && i == 0 && !time.Now().Before(expires) {
+			reason = "expired"
+		}
+		if reason == "" && i == 0 && time.Now().Before(c.mvpChannelUntil) {
+			reason = "channel_busy"
+		}
+		if reason != "" {
 			c.clientsLock.RUnlock()
-			d.Outcome = "invalidated"
+			d.Outcome, d.Reason = "invalidated", reason
 			return d
 		}
 		if len(packet.Frequencies) != 1 || !exactMVPRadio(types.Radio{Frequency: packet.Frequencies[0].Frequency, Modulation: types.Modulation(packet.Frequencies[0].Modulation), IsEncrypted: packet.Frequencies[0].Encryption != 0}, t.Radio) {
@@ -294,6 +432,16 @@ func (c *Client) sendMVP(ctx context.Context, t Transmission, expires time.Time,
 		d.Outcome = "sent"
 	}
 	return d
+}
+
+func (c *Client) mvpInterlockReason() string {
+	if c.mute {
+		return "muted"
+	}
+	if !c.liveTX {
+		return "live_tx_disabled"
+	}
+	return ""
 }
 
 func waitMVP(ctx context.Context, delay time.Duration) bool {

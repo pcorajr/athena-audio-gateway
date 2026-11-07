@@ -17,6 +17,7 @@ from metis.state_service.socket_protocol import (
 
 from .context import validate_factual_context
 from .contract import safe_text
+from .failures import response_failure
 
 _OWN_KEYS = frozenset({"unit_id", "unit_name", "player_name", "callsign", "coalition",
                        "unit_type", "position", "heading_deg", "speed_kts",
@@ -60,7 +61,7 @@ def validate_ownship(response, *, request_id):
     if response.operation != "ownship":
         raise ClientQueryError("operation_mismatch")
     if not response.ok:
-        raise ClientQueryError("state_unavailable")
+        raise response_failure(response)
     if type(response.context) is not SocketResponseContext:
         _invalid()
     _exact(response.data, {"ownship"})

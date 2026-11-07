@@ -103,6 +103,22 @@ Every emitted sentence checks that deadline; a background refresh cannot renew
 old wording. Expiry before the first part yields unable, and expiry after a part
 stops further parts without replay. These checks do not prove semantic entailment.
 
+Radio evidence has a finite adapter-local 5000 ms age ceiling. A null producer
+`max_age_ms` is valid, not unlimited; a supplied smaller maximum further narrows
+the budget. The original freshness metadata is never rewritten. Query duration,
+cache residence and generation time all consume the same remaining lifetime.
+Tool failures retain allowlisted codes (for example `socket_unavailable`,
+`protocol_error`, `ownship_unavailable`, `evidence_expired`) in the private
+transcript; radio speech still says unable, never raw errors.
+
+Gateway `exchange_outcome` rejections identify the actual configuration,
+admission or radio guard. `radio_readiness` records on metadata sync/change give
+the current unique-pilot/coalition/channel guard state without requiring PTT;
+they are diagnostic snapshots, not permission to transmit or factual readiness.
+Stale-epoch datagrams are recorded and discarded before they can start capture;
+untrusted audio never acquires a token from a later admitted packet. The earlier
+bare `rejected` records cannot retroactively identify which guard failed.
+
 Ten exchanges plus referenced IDs are kept in memory, with no raw factual tool
 snapshots carried as conversation history. Mission/session/lineage changes and
 observed outages clear continuation/history. Refresh after an unavailable turn

@@ -150,7 +150,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 			return errors.New(reason)
 		}
 		if !valid() {
-			return failure("expired_or_invalidated")
+			return failure(timing.Outcome)
 		}
 		audio, err := r.Synthesize(workCtx, resp.Speech)
 		timing.TTSDone = time.Since(t.ReceivedAt).Milliseconds()
@@ -158,7 +158,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 			return failure("tts_failed_or_empty")
 		}
 		if !valid() {
-			return failure("expired_or_invalidated")
+			return failure(timing.Outcome)
 		}
 		d := send(ctx, audio, expires)
 		first, last := int64(-1), int64(-1)
@@ -172,8 +172,8 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 			last = d.LastSend.Sub(t.ReceivedAt).Milliseconds()
 			timing.LastSend = last
 		}
-		timing.Outcome = d.Outcome
-		r.record(t, "delivery", resp.Speech, d.Outcome, "LLM", part, map[string]int64{"first_send": first, "last_send": last})
+		timing.Outcome = deliveryOutcome(d)
+		r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", part, map[string]int64{"first_send": first, "last_send": last})
 		if d.Outcome != "sent" {
 			return errors.New("delivery_failed")
 		}
@@ -181,7 +181,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 	})
 	if err != nil {
 		r.record(t, "stream_error", "", "bridge_or_delivery_failed", "LLM", part, nil)
-		if timing.Outcome == "rejected" {
+		if timing.Outcome == "bridge_no_response" {
 			timing.Outcome = "bridge_failed"
 		}
 	}

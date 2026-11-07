@@ -74,12 +74,16 @@ func (r *Runner) Process(ctx context.Context, t simpleradio.Transmission) {
 }
 
 func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, recognition string) {
-	if t.TraceID == "" || t.TraceID == r.lastTransmissionID {
-		r.record(t, "route", "", "missing_id_or_replay", "ignored", 0, nil)
+	if t.TraceID == "" {
+		r.record(t, "route", "", "missing_transmission_id", "ignored", 0, nil)
+		return
+	}
+	if t.TraceID == r.lastTransmissionID {
+		r.record(t, "route", "", "transmission_replayed", "ignored", 0, nil)
 		return
 	}
 	r.lastTransmissionID = t.TraceID
-	timing := Timing{TransmissionID: t.TraceID, Received: 0, STTDone: -1, ReplyReceived: -1, TTSDone: -1, FirstSend: -1, LastSend: -1, Outcome: "rejected"}
+	timing := Timing{TransmissionID: t.TraceID, Received: 0, STTDone: -1, ReplyReceived: -1, TTSDone: -1, FirstSend: -1, LastSend: -1, Outcome: "bridge_no_response"}
 	defer func() {
 		route := "ignored"
 		if timing.ReplyReceived >= 0 {
@@ -92,19 +96,38 @@ func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, re
 			LogTiming(timing)
 		}
 	}()
-	if r.Gate == nil || r.Radio == nil || r.Bridge == nil || r.Recognize == nil || r.Synthesize == nil || r.MaxAge <= 0 || t.ReceivedAt.IsZero() || t.ReceivedAt.After(time.Now()) {
+	if reason := r.configurationRejection(t); reason != "" {
+		timing.Outcome = "rejected:" + reason
 		return
 	}
 	candidate := admission.Candidate{SpeakerName: t.ClientName, FrequencyHz: uint64(t.Radio.Frequency), Modulation: admission.Modulation(t.Radio.Modulation), SampleCount: len(t.Audio), Duration: time.Duration(len(t.Audio)) * time.Second / 16000}
-	if !r.Gate.Admit(candidate).Admitted || !r.Radio.ValidMVP(t) {
+	if decision := r.Gate.Admit(candidate); !decision.Admitted {
+		timing.Outcome = "rejected:admission_" + string(decision.Rejection)
+		return
+	}
+	if reason := r.radioRejection(t); reason != "" {
+		timing.Outcome = "rejected:" + reason
 		return
 	}
 	expires := t.ReceivedAt.Add(r.MaxAge)
 	workCtx, cancel := context.WithDeadline(ctx, expires)
 	defer cancel()
-	valid := func() bool { return workCtx.Err() == nil && time.Now().Before(expires) && r.Radio.ValidMVP(t) }
+	valid := func() bool {
+		switch {
+		case ctx.Err() != nil:
+			timing.Outcome = "canceled"
+		case workCtx.Err() != nil || !time.Now().Before(expires):
+			timing.Outcome = "expired"
+		default:
+			if reason := r.radioRejection(t); reason != "" {
+				timing.Outcome = reason
+			} else {
+				return true
+			}
+		}
+		return false
+	}
 	if !valid() {
-		timing.Outcome = "expired_or_invalidated"
 		return
 	}
 	timing.STTDone = time.Since(t.ReceivedAt).Milliseconds()
@@ -113,7 +136,6 @@ func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, re
 		return
 	}
 	if !valid() {
-		timing.Outcome = "expired_or_invalidated"
 		return
 	}
 	modulation := bridge.ModulationAM
@@ -134,7 +156,6 @@ func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, re
 		return
 	}
 	if !valid() {
-		timing.Outcome = "expired_or_invalidated"
 		return
 	}
 	if !resp.Deliverable {
@@ -149,7 +170,6 @@ func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, re
 		return
 	}
 	if !valid() {
-		timing.Outcome = "expired_or_invalidated"
 		return
 	}
 	t.Audio = audio
@@ -162,6 +182,13 @@ func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, re
 	if !delivery.LastSend.IsZero() {
 		timing.LastSend = delivery.LastSend.Sub(t.ReceivedAt).Milliseconds()
 	}
-	timing.Outcome = delivery.Outcome
-	r.record(t, "delivery", resp.Speech, delivery.Outcome, "LLM", 1, map[string]int64{"first_send": timing.FirstSend, "last_send": timing.LastSend})
+	timing.Outcome = deliveryOutcome(delivery)
+	r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", 1, map[string]int64{"first_send": timing.FirstSend, "last_send": timing.LastSend})
+}
+
+func deliveryOutcome(d simpleradio.Delivery) string {
+	if d.Reason != "" {
+		return d.Outcome + ":" + d.Reason
+	}
+	return d.Outcome
 }

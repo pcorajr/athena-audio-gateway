@@ -64,11 +64,17 @@ func (c *Client) syncClient(other types.ClientInfo) {
 // removeClient removes the client with the given GUID from the clients map.
 func (c *Client) removeClient(info types.ClientInfo) {
 	c.clientsLock.Lock()
-	defer c.clientsLock.Unlock()
 	before := c.mvpIdentityLocked()
+	beforeReason := c.mvpReadinessLocked().Outcome
 	delete(c.clients, info.GUID)
-	if c.mvp && before != c.mvpIdentityLocked() {
+	changed := c.mvp && before != c.mvpIdentityLocked()
+	if changed {
 		c.mvpEpoch++
+	}
+	record := c.mvpReadinessLocked()
+	c.clientsLock.Unlock()
+	if c.mvp && (changed || beforeReason != record.Outcome) {
+		c.transcript.Log(record)
 	}
 }
 

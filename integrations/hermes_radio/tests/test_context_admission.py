@@ -149,7 +149,7 @@ class ContextAdmissionTests(unittest.TestCase):
                     self.assertTrue(result["deliverable"])
                     self.assertEqual(result["state"], "degraded")
                     self.assertIn("Freshness budget unavailable.", result["speech"])
-                    self.assertIn("F-16, heading 270, 194 knots." if intent == "current_state"
+                    self.assertIn("F-16, heading 270 true, 194 knots." if intent == "current_state"
                                   else "No recorded events yet.", result["speech"])
 
     def test_producer_health_and_warning_invariants(self):

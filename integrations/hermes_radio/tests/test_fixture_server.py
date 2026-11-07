@@ -10,6 +10,7 @@ from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from integrations.hermes_radio.fixture_data import bridge_request, wire
+from integrations.hermes_radio.facts import CAPABILITIES
 from integrations.hermes_radio.fixture_server import FixtureFacts, SCENARIOS
 from integrations.hermes_radio.tests.support import post
 
@@ -19,7 +20,7 @@ class FixtureLauncherTests(unittest.TestCase):
         expected = {"current_state": ("ok", "F-16"), "recent_events": ("ok", "Last events:"),
                     "unavailable": ("unavailable", "Athena not connected."), "stale": ("stale", "Stale state."),
                     "ambiguous": ("ownship_ambiguous", "Ownship not confirmed."),
-                    "unrecognized": ("unavailable", "")}
+                    "unrecognized": ("ok", CAPABILITIES)}
         for index, scenario in enumerate(SCENARIOS):
             with self.subTest(scenario=scenario):
                 env = os.environ.copy()
@@ -45,7 +46,8 @@ class FixtureLauncherTests(unittest.TestCase):
                     self.assertEqual(status, 200)
                     self.assertEqual(result["state"], expected[scenario][0])
                     self.assertIn(expected[scenario][1], result["speech"])
-                    self.assertEqual(result["deliverable"], scenario != "unrecognized")
+                    self.assertTrue(result["deliverable"])
+                    self.assertEqual(result["intent_class"], "factual")
                     self.assertLessEqual(len(result["speech"]), 350)
                     process.send_signal(signal.SIGINT if index % 2 else signal.SIGTERM)
                     stdout, stderr = process.communicate(timeout=5)

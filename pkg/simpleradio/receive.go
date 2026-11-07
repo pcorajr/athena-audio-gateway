@@ -132,6 +132,7 @@ type transmissionPackets struct {
 	route      mvpRoute
 	receivedAt time.Time
 	traceID    string
+	receipt    *captureReceipt
 	origin     types.GUID
 	reason     string
 }

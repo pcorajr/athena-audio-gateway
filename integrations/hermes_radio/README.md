@@ -55,6 +55,10 @@ audio is recorded with a bounded reason, never called a successful transcription
 There is no guarantee against kernel/network packet loss or physical RF collisions.
 Assembly is bounded to 64 concurrent origins; decode/STT queues are bounded and
 overflows are explicit blank/error records, not silent omissions or delayed commands.
+Each observed ID carries one terminal-outcome receipt through assembly, decode,
+receive and intake. Graceful cancellation records unfinished observations once
+as blank `inbound/capture_canceled`, including sends racing queue shutdown; it
+does not drain an unlimited producer stream or admit delayed replies.
 
 `received`, `inbound`, `adapter_ingress`, `route`, `tool`, `reply_generated`,
 `reply_intended`, `delivery`, and timing records share transmission IDs. Generated
@@ -63,6 +67,9 @@ UDP writes (or failure), never audibility. Logging failures emit the fixed stder
 code `athena_radio_transcript_write_failed`; the next record retries opening the
 sink without replaying the possibly appended record. No raw provider error/auth
 bodies, audio, or health-error strings enter these records.
+`reply_generated` and `text_smoke_output` identify **Athena** as `speaker`;
+`request_speaker` separately preserves the pilot's routing identity. Existing
+append-only records are not rewritten.
 
 The existing URL negotiates `Accept: application/x-ndjson`. Each flushed line is
 one validated v1 Response; `[DONE]` terminates the stream. The Go bridge starts
@@ -90,6 +97,11 @@ filtered-page counts. BRAA uses true geographic bearing, nautical miles, feet MS
 missing position/altitude stays null. Heading reference and aspect are unavailable
 in the pinned producer. Mission intel has null brief/objectives/airbases. Stale,
 cached, paused, ended, inconsistent or unhealthy current state is unavailable.
+Each turn retains the earliest monotonic expiry of the actual snapshot and tool
+results supplied to its model, charging query duration and cache residence.
+Every emitted sentence checks that deadline; a background refresh cannot renew
+old wording. Expiry before the first part yields unable, and expiry after a part
+stops further parts without replay. These checks do not prove semantic entailment.
 
 Ten exchanges plus referenced IDs are kept in memory, with no raw factual tool
 snapshots carried as conversation history. Mission/session/lineage changes and

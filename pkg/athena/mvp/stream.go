@@ -23,6 +23,12 @@ func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmiss
 	worker.Go(func() {
 		for j := range jobs {
 			text, outcome := r.observe(ctx, j.t)
+			if ctx.Err() != nil {
+				if j.owned {
+					r.busy.Store(false)
+				}
+				continue
+			}
 			if !j.owned {
 				r.record(j.t, "route", "", "busy", "ignored", 0, nil)
 				continue
@@ -31,12 +37,34 @@ func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmiss
 		}
 	})
 	defer func() { close(jobs); worker.Wait(); replies.Wait() }()
+	defer func() {
+		// Never wait for an arbitrary producer or drain an unbounded stream.
+		// Production receipts independently cover sends racing this snapshot.
+		for range cap(in) {
+			select {
+			case t, ok := <-in:
+				if !ok {
+					return
+				}
+				r.record(t, "inbound", "", "capture_canceled", "ignored", 0, nil)
+			default:
+				return
+			}
+		}
+	}()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case t, ok := <-in:
 			if !ok {
+				return
+			}
+			if ctx.Err() != nil {
+				r.record(t, "inbound", "", "capture_canceled", "ignored", 0, nil)
 				return
 			}
 			owned := r.busy.CompareAndSwap(false, true)
@@ -53,6 +81,9 @@ func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmiss
 }
 
 func (r *Runner) record(t simpleradio.Transmission, kind, text, outcome, route string, part int, timings map[string]int64) {
+	if kind == "inbound" && t.RecordReception(text, outcome, timings) {
+		return
+	}
 	mod := "AM"
 	if t.Radio.Modulation == 1 {
 		mod = "FM"
@@ -67,7 +98,9 @@ func (r *Runner) record(t simpleradio.Transmission, kind, text, outcome, route s
 func (r *Runner) observe(ctx context.Context, t simpleradio.Transmission) (string, string) {
 	text, outcome := "", "recognized"
 	start := time.Now()
-	if t.ReceptionError != "" {
+	if ctx.Err() != nil {
+		outcome = "capture_canceled"
+	} else if t.ReceptionError != "" {
 		outcome = t.ReceptionError
 	} else if r.Recognize == nil || len(t.Audio) == 0 || len(t.Audio) > 16000*30 {
 		outcome = "audio_unavailable_or_oversize"
@@ -85,6 +118,9 @@ func (r *Runner) observe(ctx context.Context, t simpleradio.Transmission) (strin
 			outcome = "stt_empty"
 		}
 		cancel()
+	}
+	if ctx.Err() != nil {
+		text, outcome = "", "capture_canceled"
 	}
 	r.record(t, "inbound", text, outcome, "pending", 0, map[string]int64{"stt": time.Since(start).Milliseconds()})
 	return text, outcome

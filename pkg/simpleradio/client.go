@@ -36,6 +36,8 @@ type Transmission struct {
 	ReceivedAt time.Time
 	// ReceptionError is a safe bounded reason when audio cannot be recognized.
 	ReceptionError string
+	// receipt follows capture ownership across queues; it grants no reply route.
+	receipt *captureReceipt
 	// route binds MVP audio to the observed connection and identity generation.
 	route mvpRoute
 }

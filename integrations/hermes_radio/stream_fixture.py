@@ -5,13 +5,16 @@ import time
 from .controller import Controller
 from .fixture_server import FixtureFacts
 from .transcript import Transcript
+from .tools import Evidence
 
 
 class Snapshot:
     epoch = 0
+    clock = staticmethod(time.monotonic)
     def get(self):
         own = FixtureFacts("current_state").query("current_state")
-        return own, {"synthetic": "validated ownship fixture"}
+        fresh = own.context.state.freshness
+        return own, Evidence({"synthetic": "validated ownship fixture"}, self.clock() + (fresh.max_age_ms-fresh.age_ms)/1000)
     def invalidate(self):
         pass
 

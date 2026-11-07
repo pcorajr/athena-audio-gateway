@@ -58,7 +58,11 @@ class Transcript:
     def log(self, *, kind, request=None, text="", outcome="", route="LLM", **metadata):
         record = dict(kind=kind, text=text, outcome=outcome, route=route, **metadata)
         if request is not None:
-            record.update(transmission_id=request.transmission_id, speaker=request.speaker,
+            # Request identity routes the exchange; it is not the author of
+            # Athena's generated words (including words never sent on radio).
+            speaker = "Athena" if kind in {"reply_generated", "text_smoke_output"} else request.speaker
+            record.update(transmission_id=request.transmission_id, speaker=speaker,
+                          request_speaker=request.speaker,
                           frequency_hz=request.frequency_hz, modulation=request.modulation)
         try:
             self.append(record)

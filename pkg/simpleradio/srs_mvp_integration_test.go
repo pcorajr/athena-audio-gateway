@@ -27,7 +27,7 @@ func startTextFixture(t *testing.T, scenario string) string {
 	return startTextFixtureWithAck(t, scenario, "")
 }
 
-func startTextFixtureWithAck(t *testing.T, scenario, ack string) string {
+func startTextFixtureWithAck(t *testing.T, scenario, ack string, transcriptRoot ...string) string {
 	t.Helper()
 	root, src, python := os.Getenv("SRSMVP_TEXT_ADAPTER_ROOT"), os.Getenv("SRSMVP_ATHENA_SRC"), os.Getenv("SRSMVP_PYTHON")
 	for name, path := range map[string]string{"adapter root": root, "Athena src": src, "Python": python} {
@@ -40,6 +40,9 @@ func startTextFixtureWithAck(t *testing.T, scenario, ack string) string {
 	// Do not inherit credentials, model routes or production configuration.
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir(), "PYTHONPATH=" + src + string(os.PathListSeparator) + root, "PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1"}
 	cmd.Env = append(cmd.Env, "SRSMVP_STREAM_ACK="+ack)
+	if len(transcriptRoot) != 0 {
+		cmd.Env = append(cmd.Env, "ATHENA_RADIO_TRANSCRIPT_DIR="+transcriptRoot[0])
+	}
 	cmd.Stderr = io.Discard
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -80,6 +80,9 @@ class Controller:
         messages.append({"role": "user", "content": request.transcript})
         deadline = start + self.timeout
         spoken, pending, tool_count, have_evidence = [], "", 0, evidence is not None
+        # Bind this turn to every fact supplied to the model, not whatever
+        # newer snapshot the background cache happens to hold at emission.
+        evidence_expires = evidence.expires_at if evidence is not None else float("inf")
         failed = False
         seen_calls = set()
         try:
@@ -106,7 +109,7 @@ class Controller:
                                     break
                                 sentence, pending = pending[:match.end()].strip(), pending[match.end():].lstrip()
                                 safe_text(sentence)
-                                if self.cache.epoch != epoch:
+                                if self.cache.epoch != epoch or (have_evidence and self.cache.clock() >= evidence_expires):
                                     raise ProviderError()
                                 if (len(spoken) >= 2 or len(" ".join(spoken + [sentence]).split()) > 32 or
                                         (not spoken and not sentence.startswith("Prometheus,"))):
@@ -115,6 +118,10 @@ class Controller:
                                     raise ProviderError()
                                 self._log(request, "reply_generated", text=sentence, outcome="intended_not_sent",
                                           part=len(spoken)+1, timings_ms={"first_sentence": round((time.monotonic()-start)*1000)})
+                                # The append lock can wait too. A generated
+                                # record is not permission to emit expired text.
+                                if self.cache.epoch != epoch or (have_evidence and self.cache.clock() >= evidence_expires):
+                                    raise ProviderError()
                                 spoken.append(sentence)
                                 yield response(request, speech=sentence, state="ok" if have_evidence else "unavailable")
                         else:
@@ -150,6 +157,7 @@ class Controller:
                             anchor = self.tools.own()
                             self.scope = identity(anchor)
                         result = self.tools.call(name, args, anchor=anchor)
+                        evidence_expires = min(evidence_expires, result.expires_at)
                         have_evidence = True
                         if "unit_id" in args:
                             self.references = [args["unit_id"]] + [x for x in self.references if x != args["unit_id"]][:9]

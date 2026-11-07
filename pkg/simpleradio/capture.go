@@ -9,13 +9,23 @@ import (
 	"time"
 )
 
-func (c *Client) captureRecord(t transmissionPackets, kind, reason string) {
+func (c *Client) captureIdentity(t transmissionPackets) transcript.Record {
 	name, _ := c.getPeerName(t.origin)
 	modulation := "AM"
 	if t.radio.Modulation == types.ModulationFM {
 		modulation = "FM"
 	}
-	c.transcript.Log(transcript.Record{Kind: kind, ID: t.traceID, FrequencyHz: uint64(t.radio.Frequency), Modulation: modulation, Speaker: name, Outcome: reason, Route: "ignored"})
+	return transcript.Record{ID: t.traceID, FrequencyHz: uint64(t.radio.Frequency), Modulation: modulation, Speaker: name, Route: "ignored"}
+}
+
+func (c *Client) captureRecord(t transmissionPackets, kind, reason string) {
+	if kind == "inbound" && t.receipt != nil {
+		t.receipt.finish("", reason, nil)
+		return
+	}
+	record := c.captureIdentity(t)
+	record.Kind, record.Outcome = kind, reason
+	c.transcript.Log(record)
 }
 func (c *Client) captureFailure(t transmissionPackets, reason string) {
 	c.captureRecord(t, "inbound", reason)
@@ -28,21 +38,25 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 		receiver *receiver
 		id       string
 		origin   types.GUID
+		receipt  *captureReceipt
 	}
+	ledger := &captureLedger{ctx: ctx, writer: c.transcript, pending: make(map[*captureReceipt]transcript.Record)}
+	defer ledger.cancel()
 	active := map[types.GUID]*capture{}
 	ticker := time.NewTicker(frameLength)
 	defer ticker.Stop()
-	defer func() {
-		for _, a := range active {
-			c.captureFailure(transmissionPackets{radio: a.receiver.radio, origin: a.origin, traceID: a.id}, "capture_canceled")
-		}
-	}()
 	for {
+		if ctx.Err() != nil {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
 		case b, ok := <-in:
 			if !ok {
+				return
+			}
+			if ctx.Err() != nil {
 				return
 			}
 			packet, err := voice.Decode(b.data)
@@ -71,7 +85,7 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 					}
 					a = &capture{receiver: &receiver{radio: radio}, id: shortuuid.New(), origin: origin}
 					active[origin] = a
-					c.captureRecord(transmissionPackets{radio: radio, origin: origin, traceID: a.id}, "received", "assembling")
+					a.receipt = ledger.begin(c.captureIdentity(transmissionPackets{radio: radio, origin: origin, traceID: a.id}))
 				}
 				// Keep observation epoch even when no reply token was minted.
 				if route.used == nil {
@@ -89,6 +103,7 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 				}
 				tr, valid := a.receiver.takeCompleted()
 				tr.traceID, tr.origin = a.id, origin
+				tr.receipt = a.receipt
 				delete(active, origin)
 				if !valid {
 					c.captureFailure(tr, "short_overflow_or_invalid_audio")

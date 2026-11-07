@@ -1,6 +1,7 @@
 """Read-only, bounded radio tools. Geometry and filters are code, not model math."""
 
 import math
+from dataclasses import dataclass
 import threading
 import time
 import uuid
@@ -93,9 +94,27 @@ def usable(frame):
         raise ClientQueryError("state_unavailable")
 
 
+@dataclass(frozen=True)
+class TimedFrame:
+    """Local timing envelope; never changes the public state-service schema."""
+    frame: object
+    expires_at: float
+
+    def __getattr__(self, name):
+        return getattr(self.frame, name)
+
+
+class Evidence(dict):
+    """JSON-compatible facts with a local, non-serialized evidence deadline."""
+    def __init__(self, value, expires_at):
+        super().__init__(value)
+        self.expires_at = expires_at
+
+
 class RadioTools:
-    def __init__(self, config):
+    def __init__(self, config, *, clock=time.monotonic):
         self.config = config
+        self.clock = clock
         self.client = StateServiceClient(config)
         self.raw = OwnshipReader(config)
 
@@ -104,6 +123,7 @@ class RadioTools:
         return cls(load_client_config(path))
 
     def read(self, operation, params):
+        started = self.clock()
         request_id = uuid.uuid4().hex
         if operation in {"ownship", "mission_intel", "group_summary", "current_summary"}:
             frame = self.raw.query(operation=operation, params=params, request_id=request_id)
@@ -141,7 +161,13 @@ class RadioTools:
                     if any(row["coalition"] != params["coalition"] for row in frame.data["rows"]):
                         _invalid()
         usable(frame)
-        return frame
+        fresh = frame.context.state.freshness
+        # Charge the entire query/validation duration conservatively. Receipt
+        # time must never grant the producer's evidence a new freshness budget.
+        expires_at = started + (fresh.max_age_ms - fresh.age_ms) / 1000
+        if self.clock() >= expires_at:
+            raise ClientQueryError("state_unavailable")
+        return TimedFrame(frame, expires_at)
 
     def own(self):
         frame = self.read("ownship", {})
@@ -155,6 +181,8 @@ class RadioTools:
         args = arguments(name, args)
         operation = "get_unit" if name == "braa" else name
         own_frame = anchor if anchor is not None else self.own()
+        if self.clock() >= own_frame.expires_at:
+            raise ClientQueryError("state_unavailable")
         own = own_frame.data["ownship"]
         params = {k: v for k, v in args.items() if k not in {"category", "radius_nm"}}
         if "coalition" in params and params["coalition"] in {"friendly", "hostile"}:
@@ -206,7 +234,10 @@ class RadioTools:
                 raise ClientQueryError("state_unavailable")
             # No arbitrary event data or raw/error bodies in model/log context.
             data["events"] = [{k: row[k] for k in ("event_id", "event_type", "observed_at_utc", "subject_ids", "warnings")} for row in data["events"]]
-        return {"ok": True, "data": data, "context": metadata(frame)}
+        expires_at = min(own_frame.expires_at, frame.expires_at)
+        if self.clock() >= expires_at:
+            raise ClientQueryError("state_unavailable")
+        return Evidence({"ok": True, "data": data, "context": metadata(frame)}, expires_at)
 
 
 def geometry(own, row):
@@ -251,10 +282,13 @@ class SnapshotCache:
                     value["data"]["rows"] = value["data"]["rows"][:10]
                     value["data"]["snapshot_rows_limited_to_ten"] = True
                     data[side] = value
+                expires_at = min(value.expires_at for value in data.values())
+                if self.clock() >= expires_at:
+                    raise ClientQueryError("state_unavailable")
                 with self.lock:
                     if self.value is None or identity(self.value[0]) != identity(own):
                         self.epoch += 1
-                    self.value, self.stamp = (own, data), self.clock()
+                    self.value, self.stamp = (own, Evidence(data, expires_at)), self.clock()
                 return self.value
             except (ClientQueryError, ValueError, TypeError, KeyError, OverflowError):
                 self.invalidate()
@@ -264,9 +298,8 @@ class SnapshotCache:
         with self.lock:
             value = self.value
             if value is not None:
-                fresh = value[0].context.state.freshness
                 elapsed = self.clock() - self.stamp
-                if elapsed <= self.interval and fresh.max_age_ms is not None and fresh.age_ms + elapsed*1000 <= fresh.max_age_ms:
+                if elapsed <= self.interval and self.clock() < value[1].expires_at:
                     return value
         # Re-read after outages; never let a cached "unable" control a new turn.
         return self.refresh()

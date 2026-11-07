@@ -16,9 +16,37 @@ const opusApplicationVoIP = 2048
 
 // deocdeVoice decodes incoming voice packets from voicePacketsChan into F32LE PCM audio data published to the client's rxChan.
 func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transmissionPackets) {
+	if c.mvp {
+		defer func() {
+			// Bounded fallback for untracked fixture inputs. Real observations
+			// also carry a receipt, so the assembly owner accounts for late
+			// producers even after this finite queue snapshot is drained.
+			for range cap(voicePacketsChan) {
+				select {
+				case received, ok := <-voicePacketsChan:
+					if !ok {
+						return
+					}
+					c.captureFailure(received, "capture_canceled")
+				default:
+					return
+				}
+			}
+		}()
+	}
 	for {
+		if c.mvp && ctx.Err() != nil {
+			return
+		}
 		select {
-		case received := <-voicePacketsChan:
+		case received, ok := <-voicePacketsChan:
+			if !ok {
+				return
+			}
+			if c.mvp && ctx.Err() != nil {
+				c.captureFailure(received, "capture_canceled")
+				return
+			}
 			voicePackets := received.packets
 			if len(voicePackets) == 0 {
 				if c.mvp {
@@ -62,6 +90,11 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 				}
 				if c.mvp {
 					t.TraceID = received.traceID
+					t.receipt = received.receipt
+					if ctx.Err() != nil {
+						c.captureFailure(received, "capture_canceled")
+						return
+					}
 					select {
 					case c.rxChan <- t:
 					default:

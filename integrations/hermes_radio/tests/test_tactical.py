@@ -21,7 +21,7 @@ from metis.state_service.socket_protocol import StateQueryRequest, encode_server
 from metis.state_service.units_stream import UnitStreamSnapshot
 from metis.state_service.working_state import PublicationWindow
 
-from integrations.hermes_radio.contract import encode_response, parse_request
+from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, encode_response, parse_request
 from integrations.hermes_radio.facts import CAPABILITIES, Facts
 from integrations.hermes_radio.fixture_data import LIMITS, NOW, QUERY_LIMITS, STAMP, bridge_request, issue, wire
 from integrations.hermes_radio.hermes_client import HermesClassifier, classify
@@ -356,7 +356,7 @@ class TacticalTests(unittest.TestCase):
         self.assertFalse(result["deliverable"])
         self.assertEqual(result["suppression_reason"], "unsupported_state_caveat")
         result, _ = exchange(units=[unit(2)], alter=lambda g: replace(g,
-            freshness=replace(g.freshness, stale_reason="x" * 350)))
+            freshness=replace(g.freshness, stale_reason="x" * MAX_SPEECH_CHARS)))
         self.assertFalse(result["deliverable"])
         self.assertEqual(result["speech"], "")
         self.assertEqual(result["suppression_reason"], "speech_budget_exceeded")

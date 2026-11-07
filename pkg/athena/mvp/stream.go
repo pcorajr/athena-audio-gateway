@@ -11,32 +11,47 @@ import (
 	"time"
 )
 
-// Intake reserves reply admission immediately, independently of the bounded
-// serial STT queue. A busy capture never becomes a command later when idle.
+// Intake hands every capture to the serial STT worker. Recognized commands are
+// answered strictly in arrival order by a single reply goroutine: a command
+// that arrives while a reply is in flight is queued and answered next, never
+// dropped (Athena Eye, 2026-11-07). Its expiry clock starts when its turn comes.
 func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmission) {
 	type job struct {
-		t     simpleradio.Transmission
-		owned bool
+		t             simpleradio.Transmission
+		text, outcome string
+		ready         time.Time
 	}
-	jobs := make(chan job, 16)
-	var worker, replies sync.WaitGroup
+	jobs := make(chan simpleradio.Transmission, 16)
+	answers := make(chan job, 16)
+	var worker, replier sync.WaitGroup
 	worker.Go(func() {
-		for j := range jobs {
-			text, outcome := r.observe(ctx, j.t)
+		defer close(answers)
+		for t := range jobs {
+			text, outcome := r.observe(ctx, t)
 			if ctx.Err() != nil {
-				if j.owned {
-					r.busy.Store(false)
-				}
 				continue
 			}
-			if !j.owned {
-				r.record(j.t, "route", "", "busy", "ignored", 0, nil)
-				continue
+			if r.busy.Load() || len(answers) > 0 {
+				r.record(t, "route", "", "queued_behind_reply", "pending", 0, nil)
 			}
-			replies.Go(func() { defer r.busy.Store(false); r.reply(ctx, j.t, text, outcome) })
+			select {
+			case answers <- job{t: t, text: text, outcome: outcome, ready: time.Now()}:
+			default:
+				r.record(t, "route", "", "reply_queue_full", "ignored", 0, nil)
+			}
 		}
 	})
-	defer func() { close(jobs); worker.Wait(); replies.Wait() }()
+	replier.Go(func() {
+		for j := range answers {
+			if ctx.Err() != nil {
+				continue
+			}
+			r.busy.Store(true)
+			r.replyAt(ctx, j.t, j.text, j.outcome, j.t.ReceivedAt.Add(time.Since(j.ready)))
+			r.busy.Store(false)
+		}
+	})
+	defer func() { close(jobs); worker.Wait(); replier.Wait() }()
 	defer func() {
 		// Never wait for an arbitrary producer or drain an unbounded stream.
 		// Production receipts independently cover sends racing this snapshot.
@@ -67,13 +82,9 @@ func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmiss
 				r.record(t, "inbound", "", "capture_canceled", "ignored", 0, nil)
 				return
 			}
-			owned := r.busy.CompareAndSwap(false, true)
 			select {
-			case jobs <- job{t, owned}:
+			case jobs <- t:
 			default:
-				if owned {
-					r.busy.Store(false)
-				}
 				r.record(t, "inbound", "", "recognition_capacity", "ignored", 0, nil)
 			}
 		}

@@ -103,7 +103,7 @@ func TestSRSMVPOneRadioAndNoReplay(t *testing.T) {
 }
 
 func TestSRSMVPIdentityInvalidation(t *testing.T) {
-	for _, kind := range []string{"reconnect", "rename", "duplicate", "tune_away", "modulation", "unit", "seat", "empty_radios", "snapshot_replaced", "disconnect"} {
+	for _, kind := range []string{"reconnect", "rename", "duplicate", "unit", "seat", "snapshot_replaced", "disconnect"} {
 		t.Run(kind, func(t *testing.T) {
 			c, tr, w := mvpTestClient()
 			peer := c.clients[tr.route.origin]

@@ -81,7 +81,7 @@ func TestStreamRouteOneShotAndFailureStopsParts(t *testing.T) {
 			}
 			audio := tr.Audio
 			if mode == "oversize" {
-				audio = make(Audio, 16000*9)
+				audio = make(Audio, 16000*31) // over the 30 s reply bound
 			}
 			first := send(ctx, audio, time.Now().Add(time.Second))
 			second := send(ctx, tr.Audio, time.Now().Add(time.Second))

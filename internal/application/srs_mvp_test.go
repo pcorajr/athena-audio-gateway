@@ -42,7 +42,7 @@ func TestSRSMVPInvalidStartupBeforeNetwork(t *testing.T) {
 		"wrong modulation":   func(c *conf.Configuration) { c.SRSFrequencies[0].Modulation = 1 },
 		"expiry zero":        func(c *conf.Configuration) { c.AthenaResponseMaxAge = 0 },
 		"expiry negative":    func(c *conf.Configuration) { c.AthenaResponseMaxAge = -time.Second },
-		"speech limit":       func(c *conf.Configuration) { c.AthenaHermesMaxSpeech = 351 },
+		"speech limit":       func(c *conf.Configuration) { c.AthenaHermesMaxSpeech = bridge.DefaultMaxSpeechChars + 1 },
 		"timeout negative":   func(c *conf.Configuration) { c.AthenaHermesTimeout = -time.Second },
 		"diagnostic WAV":     func(c *conf.Configuration) { c.AthenaDebugAudioDir = "not-created" },
 		"persona":            func(c *conf.Configuration) { c.AthenaPersonas = []string{"hermes"} },

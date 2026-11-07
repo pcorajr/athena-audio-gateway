@@ -3,7 +3,7 @@ from pathlib import Path
 import unittest
 
 from integrations.hermes_radio.contract import (
-    ContractError, MAX_BODY_BYTES, encode_response, parse_request, response, strict_json,
+    ContractError, MAX_BODY_BYTES, MAX_SPEECH_CHARS, encode_response, parse_request, response, strict_json,
 )
 from integrations.hermes_radio.fixture_data import bridge_request, wire
 
@@ -75,10 +75,11 @@ class ContractTests(unittest.TestCase):
         for intent in ("cue", "action_preview", "unrecognized"):
             with self.assertRaises(ContractError):
                 encode_response(response(request, speech="No.", intent=intent))
-        for text in ("x" * 351, "unsafe\ntext"):
+        for text in ("x" * (MAX_SPEECH_CHARS + 1), "unsafe\ntext"):
             with self.assertRaises(ContractError):
                 encode_response(response(request, speech=text))
-        self.assertEqual(json.loads(encode_response(response(request, speech="x" * 350)))["speech"], "x" * 350)
+        self.assertEqual(json.loads(encode_response(response(request, speech="x" * MAX_SPEECH_CHARS)))["speech"],
+                         "x" * MAX_SPEECH_CHARS)
 
     def test_suppression_consistency_and_correlation(self):
         request = parse_request(wire(bridge_request()))

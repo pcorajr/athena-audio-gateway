@@ -12,7 +12,7 @@ from unittest.mock import Mock, patch
 import athena.state_service_client as public_client
 from athena.state_service_client import ClientQueryError, StateServiceClient
 
-from integrations.hermes_radio.contract import parse_request
+from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, parse_request
 from integrations.hermes_radio.facts import Facts, event_summary, render
 from integrations.hermes_radio.fixture_data import bridge_request, event_row, issue, state_frame, wire
 from integrations.hermes_radio.ownship import OwnshipReader
@@ -292,7 +292,7 @@ class OwnshipTests(unittest.TestCase):
         result = exchange(put(["warnings"], [issue("future_caveat")]))
         self.assertFalse(result["deliverable"])
         self.assertEqual(result["speech"], "")
-        result = exchange(put(["context", "state", "freshness", "stale_reason"], "x" * 400))
+        result = exchange(put(["context", "state", "freshness", "stale_reason"], "x" * (MAX_SPEECH_CHARS + 50)))
         self.assertFalse(result["deliverable"])
         self.assertEqual(result["speech"], "")
         self.assertEqual(result["suppression_reason"], "speech_budget_exceeded")

@@ -20,7 +20,7 @@ func TestSRSMVPStrictResponse(t *testing.T) {
 	base := `{"transmission_id":"synthetic-1","deliverable":true,"speech":"Synthetic status unavailable.","intent_class":"factual","state":"unavailable"}`
 	tests := map[string]string{
 		"wrong correlation":     strings.Replace(base, "synthetic-1", "other", 1),
-		"too long":              strings.Replace(base, "Synthetic status unavailable.", strings.Repeat("x", 351), 1),
+		"too long":              strings.Replace(base, "Synthetic status unavailable.", strings.Repeat("x", DefaultMaxSpeechChars+1), 1),
 		"cue":                   strings.Replace(base, "factual", "cue", 1),
 		"action":                strings.Replace(base, "factual", "action_preview", 1),
 		"unrecognized":          strings.Replace(base, "factual", "unrecognized", 1),

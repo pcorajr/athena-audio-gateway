@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -82,18 +83,24 @@ func TestTranscriptBeforeAdmissionAndSTTFailure(t *testing.T) {
 	}
 }
 
-func TestBusyReceptionTranscribedButNeverQueuedForReply(t *testing.T) {
+func TestBusyReceptionQueuedAndAnsweredInOrder(t *testing.T) {
 	r, tr, radio, _ := runnerFixture(t)
 	r.Transcript = &transcript.Writer{Root: t.TempDir()}
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	var once sync.Once
 	var recognized atomic.Int32
 	r.Recognize = func(context.Context, simpleradio.Audio) (string, error) {
 		recognized.Add(1)
 		return "Athena, synthetic", nil
 	}
 	base := r.Bridge
+	var mu sync.Mutex
+	var order []string
 	r.Bridge = bridgeFunc(func(ctx context.Context, req bridge.Request) (bridge.Response, error) {
-		close(entered)
+		mu.Lock()
+		order = append(order, req.TransmissionID)
+		mu.Unlock()
+		once.Do(func() { close(entered) })
 		<-release
 		return base.Exchange(ctx, req)
 	})
@@ -105,7 +112,6 @@ func TestBusyReceptionTranscribedButNeverQueuedForReply(t *testing.T) {
 	in <- tr
 	tr.TraceID = "busy-third"
 	in <- tr
-	close(in)
 	deadline := time.After(time.Second)
 	for recognized.Load() != 3 {
 		select {
@@ -115,21 +121,26 @@ func TestBusyReceptionTranscribedButNeverQueuedForReply(t *testing.T) {
 			time.Sleep(time.Millisecond)
 		}
 	}
+	time.Sleep(20 * time.Millisecond)
 	close(release)
+	close(in)
 	<-done
-	if radio.sends != 1 {
-		t.Fatal("busy command queued")
+	if radio.sends != 3 {
+		t.Fatalf("queued commands not answered: sends=%d", radio.sends)
 	}
-	inbound, busy := 0, 0
+	if strings.Join(order, ",") != "synthetic-1,busy-second,busy-third" {
+		t.Fatalf("answer order %v", order)
+	}
+	inbound, queued := 0, 0
 	for _, record := range records(t, r.Transcript.Root) {
 		if record.Kind == "inbound" {
 			inbound++
 		}
-		if record.Outcome == "busy" {
-			busy++
+		if record.Outcome == "queued_behind_reply" {
+			queued++
 		}
 	}
-	if inbound != 3 || busy != 2 {
-		t.Fatalf("inbound=%d busy=%d", inbound, busy)
+	if inbound != 3 || queued != 2 {
+		t.Fatalf("inbound=%d queued=%d", inbound, queued)
 	}
 }

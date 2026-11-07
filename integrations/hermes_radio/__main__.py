@@ -13,7 +13,10 @@ from .server import RadioServer, serve
 def main():
     parser = argparse.ArgumentParser(description="Loopback text-only Athena radio adapter")
     parser.add_argument("--port", type=int, default=8650)
-    parser.add_argument("--state-client-config", required=True, help="Explicit Athena client JSON document")
+    parser.add_argument("--state-client-config", help="Explicit Athena client JSON document (legacy picture source)")
+    parser.add_argument("--eye-host", default=os.environ.get("ATHENA_EYE_HOST"),
+                        help="DCS-gRPC host for the in-memory Athena Eye (simple mode)")
+    parser.add_argument("--eye-port", type=int, default=int(os.environ.get("ATHENA_EYE_PORT", "50051")))
     parser.add_argument("--openai-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     parser.add_argument("--model", default=os.environ.get("ATHENA_RADIO_MODEL", "gpt-5.4-mini"))
     parser.add_argument("--reasoning", choices=("none", "minimal", "low", "medium", "high"), default=None,
@@ -24,15 +27,32 @@ def main():
     parser.add_argument("--transcript-dir", default=os.environ.get("ATHENA_RADIO_TRANSCRIPT_DIR"))
     parser.add_argument("--speaker", choices=("Prometheus",), default="Prometheus")
     args = parser.parse_args()
-    cache = None
+    cache = feeder = None
     try:
+        transcript = Transcript(args.transcript_dir)
+        if not transcript.log(kind="adapter_start", outcome="starting", provider="openai-api", model=args.model):
+            return 1
+        if args.eye_host:
+            # Athena Eye mode: in-memory DCS-gRPC tracker + simple controller; no state service needed.
+            import logging
+            from .eye import build
+            from .simple_controller import SimpleController
+            logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
+            eye, feeder = build(args.eye_host, args.eye_port)
+            feeder.start()
+            transcript.log(kind="eye_start", outcome="starting", source="%s:%d" % (args.eye_host, args.eye_port))
+            controller = SimpleController(None, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"),
+                                          base_url=args.openai_base_url, eye=eye)
+            server = RadioServer(controller, port=args.port, request_timeout=args.request_timeout, speaker=args.speaker)
+            serve(server)
+            return 0
+        if not args.state_client_config:
+            print("radio_adapter_startup_failed: --state-client-config or --eye-host required", file=sys.stderr)
+            return 1
         provider = OpenAIProvider(os.environ.get("OPENAI_API_KEY"), base_url=args.openai_base_url,
                                   model=args.model, reasoning=args.reasoning, timeout=args.controller_timeout)
         tools = RadioTools.from_path(args.state_client_config)
         cache = SnapshotCache(tools, interval=args.cache_interval)
-        transcript = Transcript(args.transcript_dir)
-        if not transcript.log(kind="adapter_start", outcome="starting", provider="openai-api", model=args.model):
-            return 1
         if os.environ.get("ATHENA_RADIO_SIMPLE") == "1":
             from .simple_controller import SimpleController
             controller = SimpleController(tools, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"))
@@ -42,12 +62,14 @@ def main():
                              request_timeout=args.request_timeout, speaker=args.speaker)
         cache.start()
         serve(server)
-    except (ValueError, OSError, TypeError):
-        print("radio_adapter_startup_failed", file=sys.stderr)
+    except (ValueError, OSError, TypeError, ImportError) as error:
+        print("radio_adapter_startup_failed: %s" % type(error).__name__, file=sys.stderr)
         return 1
     finally:
         if cache is not None:
             cache.close()
+        if feeder is not None:
+            feeder.close()
     return 0
 
 

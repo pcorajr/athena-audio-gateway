@@ -43,11 +43,6 @@ func TestPacket108RadioRejectionReasons(t *testing.T) {
 			p.Coalition = coalitions.Red
 			c.clients[tr.route.origin] = p
 		}},
-		{"radio_pilot_radio_mismatch", func(c *Client, tr *Transmission) {
-			p := c.clients[tr.route.origin]
-			p.RadioInfo.Radios = nil
-			c.clients[tr.route.origin] = p
-		}},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			c, tr, _ := mvpTestClient()
@@ -60,6 +55,17 @@ func TestPacket108RadioRejectionReasons(t *testing.T) {
 			}
 		})
 	}
+	// 2026-11-07 hotfix: the pilot's SRS radio list can lag the actual transmission, so
+	// identity no longer requires an exact radio match (frequency is checked per transmission).
+	t.Run("pilot_radio_list_mismatch_accepted", func(t *testing.T) {
+		c, tr, _ := mvpTestClient()
+		p := c.clients[tr.route.origin]
+		p.RadioInfo.Radios = nil
+		c.clients[tr.route.origin] = p
+		if reason := c.MVPRejection(tr); reason != "" || !c.ValidMVP(tr) {
+			t.Fatalf("got %q want accepted", reason)
+		}
+	})
 }
 
 func TestPacket108MissingRouteRetainsPacketAdmissionReason(t *testing.T) {

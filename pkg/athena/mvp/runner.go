@@ -41,7 +41,8 @@ func LogTiming(t Timing) {
 }
 
 // Runner must be configured before use. Capture stays separate from reply
-// admission: busy arrivals are logged but never queued for a later answer.
+// admission: in Run, busy arrivals are queued and answered in order; the
+// synchronous Process API still answers only one exchange at a time.
 type Runner struct {
 	Gate               *admission.Gate
 	Bridge             bridge.Client
@@ -74,6 +75,12 @@ func (r *Runner) Process(ctx context.Context, t simpleradio.Transmission) {
 }
 
 func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, recognition string) {
+	r.replyAt(ctx, t, text, recognition, t.ReceivedAt)
+}
+
+// replyAt answers t with its MaxAge expiry measured from expiryBase (the
+// reception time, shifted by any time spent queued behind a previous reply).
+func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, recognition string, expiryBase time.Time) {
 	if t.TraceID == "" {
 		r.record(t, "route", "", "missing_transmission_id", "ignored", 0, nil)
 		return
@@ -109,7 +116,7 @@ func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, re
 		timing.Outcome = "rejected:" + reason
 		return
 	}
-	expires := t.ReceivedAt.Add(r.MaxAge)
+	expires := expiryBase.Add(r.MaxAge)
 	workCtx, cancel := context.WithDeadline(ctx, expires)
 	defer cancel()
 	valid := func() bool {

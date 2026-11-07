@@ -50,6 +50,11 @@ class RadioServer(ThreadingMixIn, HTTPServer):
         super().__init__(("127.0.0.1", port), RadioHandler)
 
     def process_request(self, request, client_address):
+        if getattr(self.adapter, "queues", False) is True:
+            # Queueing controller (simple/eye mode): every transmission gets a thread and the
+            # controller answers them in turn; nothing is dropped with 503.
+            super().process_request(request, client_address)
+            return
         if not self._active.acquire(blocking=False):
             try:
                 request.settimeout(self.request_timeout)

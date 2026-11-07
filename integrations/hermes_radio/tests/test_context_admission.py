@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import Mock
 
 from athena.state_service_client import ClientQueryError, StateServiceClient
+from dcs.common.v0 import common_pb2
 from metis.models import UnitData
 from metis.state_service.capabilities import capabilities_for_component
 from metis.state_service.direct_event_store import RecentNormalizedEventsPage
@@ -19,7 +20,7 @@ from metis.state_service.mission_scope import MissionScope
 from metis.state_service.publisher import GenerationPublisher
 from metis.state_service.restore import RestoreOutcome
 from metis.state_service.socket_protocol import StateQueryRequest, encode_server_frame
-from metis.state_service.units_stream import UnitStreamSnapshot
+from metis.state_service.units_stream import UnitStreamSnapshot, _proto_to_unit_data
 from metis.state_service.working_state import PublicationWindow
 
 from integrations.hermes_radio.contract import parse_request
@@ -40,12 +41,12 @@ RELEVANT = {
 
 
 def source_response(request, *, mode="normal", elapsed_us=0, health_status=None,
-                    had_success=True):
+                    had_success=True, source_unit=None):
     """Actual public producers, synthetic in-memory inputs; no store or DCS I/O."""
     identity = MissionSessionIdentity(mission_id_from_filename("synthetic.miz"), "synthetic.miz",
                                       "Synthetic Mission", 1, STAMP)
     scope = MissionScope(identity, "producer-synthetic-lineage", None, 0, None, RestoreOutcome.COLD_START)
-    unit = UnitData(unit_id=1, unit_name="Synthetic Unit", player_name="Prometheus",
+    unit = source_unit if source_unit is not None else UnitData(unit_id=1, unit_name="Synthetic Unit", player_name="Prometheus",
         lat=0.0, lon=0.0, alt=1000.0, heading=270.0, pitch=0.0, roll=0.0, coalition=3,
         unit_type="F-16", velocity_x=100.0, velocity_y=0.0, velocity_z=0.0, speed=100.0,
         group_id=1, group_name="Synthetic Group", number_in_group=1, callsign="TEST01")
@@ -109,6 +110,31 @@ def producer_exchange(intent="current_state", *, transform=lambda value: value, 
 
 
 class ContextAdmissionTests(unittest.TestCase):
+    def test_mapped_ownship_heading_does_not_claim_true_or_magnetic_reference(self):
+        source = common_pb2.Unit(id=1, name="Synthetic Ownship", player_name="Prometheus",
+            coalition=3, type="F-16C_50", number_in_group=1, callsign="TEST01")
+        source.position.lat, source.position.lon, source.position.alt = 0.0, 0.0, 3048.0
+        source.orientation.heading, source.orientation.yaw = 270.0, 275.0
+        source.group.id, source.group.name = 1, "Synthetic Group"
+        source.velocity.speed = 100.0
+        mapped = _proto_to_unit_data(source)
+        self.assertEqual(mapped.heading, 270.0)
+        self.assertEqual(source.orientation.yaw, 275.0)
+
+        def check_heading(frame):
+            self.assertEqual(frame["data"]["ownship"]["heading_deg"], 270.0)
+            return frame
+
+        result = producer_exchange(source_unit=mapped, transform=check_heading)
+        self.assertTrue(result["deliverable"])
+        self.assertEqual(result["intent_class"], "factual")
+        self.assertEqual(result["state"], "degraded")
+        self.assertEqual(result["speech"], "Prometheus, Athena. Freshness budget unavailable. "
+                         "F-16C_50, heading 270, heading reference unavailable, 194 knots.")
+        self.assertNotIn("true", result["speech"].lower())
+        self.assertNotIn("magnetic", result["speech"].lower())
+        self.assertNotIn("275", result["speech"])
+
     def assert_unavailable(self, result):
         self.assertTrue(result["deliverable"])
         self.assertEqual(result["state"], "unavailable")
@@ -149,7 +175,7 @@ class ContextAdmissionTests(unittest.TestCase):
                     self.assertTrue(result["deliverable"])
                     self.assertEqual(result["state"], "degraded")
                     self.assertIn("Freshness budget unavailable.", result["speech"])
-                    self.assertIn("F-16, heading 270 true, 194 knots." if intent == "current_state"
+                    self.assertIn("F-16, heading 270, heading reference unavailable, 194 knots." if intent == "current_state"
                                   else "No recorded events yet.", result["speech"])
 
     def test_producer_health_and_warning_invariants(self):

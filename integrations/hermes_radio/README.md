@@ -62,7 +62,7 @@ Keyword matches run first (case-insensitive, with optional Athena/polite wording
 
 | Phrases | Deterministic response |
 |---|---|
-| ownship / onship / status / how am I / my aircraft / where am I | Ownship heading true and speed |
+| ownship / onship / status / how am I / my aircraft / where am I | Reported ownship heading (reference unavailable) and speed |
 | picture | Known hostile air count and nearest known group's closest aircraft BRAA |
 | bogey dope / nearest threat / nearest bandit | Nearest known hostile aircraft BRAA |
 | threats / SAM | Nearest known hostile air-defence unit, or no SAM data |
@@ -133,11 +133,14 @@ retains its configured cumulative timeout; there is no new timeout or row budget
   Picture describes the nearest group's **closest aircraft**, not an invented
   centroid or formation size. Missing group identity is explicit. Limited pages,
   unknown types or missing positions say `Nearest returned`, not globally nearest.
-- Bearings are initial TRUE bearings, always labeled `true`; range is nautical
+- Geographic tactical bearings are initial TRUE bearings, always labeled `true`; range is nautical
   miles; aircraft altitude is thousands of feet MSL (producer `UnitData.alt` is
   documented MSL metres). No magnetic correction, aspect, inferred coordinates,
   intent, weapons range or site threat ranking is invented. Coincident/antipodal
   points have no unique bearing and say so. Missing positions/altitude stay missing.
+  Ownship heading is separate: the pinned producer maps `orientation.heading`, not
+  true-north yaw. Its reference is not reliably established, so the reported number
+  is qualified with `heading reference unavailable`, never labeled true or magnetic.
 - Air defence is only the listed types, including known radar, launcher and AAA
   components. It is not every ground unit, nor a claim a launcher is operational.
 - `mission_intel` currently returns identity plus null `airbases`, with
@@ -238,7 +241,7 @@ The later SRS-G combined integration target remains controller-owned.
 
 Packet104 intentionally changes the unrecognized fixture's old Go composition
 expectation: it must now accept factual/deliverable capabilities, not silence.
-Ownship speech also labels heading `true`. No Go test or bridge field is changed
+Ownship speech qualifies its heading with `heading reference unavailable`. No Go test or bridge field is changed
 here; the controller owns updating/revalidating downstream composition expectations.
 
 ## Whisper prompt (controller-owned activation)

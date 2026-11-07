@@ -153,7 +153,8 @@ def render(request, intent, frame):
         else:
             fields = [own["unit_type"] or "Aircraft type unavailable"]
             if own["heading_deg"] is not None:
-                fields.append(f"heading {round(own['heading_deg']) % 360:03d} true")
+                fields.append(f"heading {round(own['heading_deg']) % 360:03d}")
+                fields.append("heading reference unavailable")
             else:
                 fields.append("heading unavailable")
             if own["speed_kts"] is not None:

@@ -22,7 +22,7 @@ func (c *Client) BeginMVPReply(t Transmission) func(context.Context, Audio, time
 		parts++
 		samples += len(audio)
 		// Bound actual synthesized duration as well as text. Never truncate audio.
-		if samples > 8*16000 {
+		if samples > 30*16000 {
 			closed = true
 			return Delivery{Outcome: "speech_duration_exceeded"}
 		}

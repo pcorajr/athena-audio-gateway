@@ -33,7 +33,12 @@ def main():
         transcript = Transcript(args.transcript_dir)
         if not transcript.log(kind="adapter_start", outcome="starting", provider="openai-api", model=args.model):
             return 1
-        server = RadioServer(Controller(provider, tools, cache, transcript, timeout=args.controller_timeout), port=args.port,
+        if os.environ.get("ATHENA_RADIO_SIMPLE") == "1":
+            from .simple_controller import SimpleController
+            controller = SimpleController(tools, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"))
+        else:
+            controller = Controller(provider, tools, cache, transcript, timeout=args.controller_timeout)
+        server = RadioServer(controller, port=args.port,
                              request_timeout=args.request_timeout, speaker=args.speaker)
         cache.start()
         serve(server)

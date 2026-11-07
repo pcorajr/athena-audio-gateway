@@ -24,7 +24,7 @@ GUARD = (
     "Start with 'Prometheus,'. Do not use abbreviations containing periods. No markdown. If insufficient evidence say 'Prometheus, unable.' "
     "Historical dialogue is not current evidence. Not-found means unable to locate, never destroyed."
 )
-ADDRESS = re.compile(r"^\s*athena\b[\s,:.!?-]*", re.IGNORECASE)
+ADDRESS = re.compile(r"^[\s\-\u2013\u2014.,:;!?'\"]*athena\b[\s,:.!?-]*", re.IGNORECASE)
 FOLLOWUP = re.compile(r"\s*(?:what type is (?:it|that)|where did (?:it|that) go|where is (?:it|that)(?: now)?)\s*[?.!]?\s*", re.IGNORECASE)
 SENTENCE = re.compile(r"[.!?](?=\s|$)")
 

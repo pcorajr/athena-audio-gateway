@@ -31,7 +31,7 @@ import (
 // hold the channel open, so an over-long answer is suppressed rather than
 // truncated: half a transmission is worse than none, and a clipped sentence can
 // invert its own meaning.
-const DefaultMaxSpeechChars = 350
+const DefaultMaxSpeechChars = 900
 
 // DefaultModel is the model name the API server advertises for the agent.
 const DefaultModel = "hermes-agent"

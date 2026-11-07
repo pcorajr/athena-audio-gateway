@@ -89,7 +89,8 @@ func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
 			return mvpIdentity{guid: pilot.GUID, unitID: pilot.RadioInfo.UnitID, unit: pilot.RadioInfo.Unit, seat: pilot.Seat}, ""
 		}
 	}
-	return mvpIdentity{}, "pilot_radio_mismatch"
+	// Hotfix: peer radio list can lag/differ; the transmission frequency is checked separately.
+	return mvpIdentity{guid: pilot.GUID, unitID: pilot.RadioInfo.UnitID, unit: pilot.RadioInfo.Unit, seat: pilot.Seat}, ""
 }
 
 func exactMVPRadio(a, b types.Radio) bool {

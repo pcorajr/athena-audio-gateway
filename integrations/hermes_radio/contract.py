@@ -8,7 +8,7 @@ import unicodedata
 
 MAX_BODY_BYTES = 64 * 1024
 MAX_TRANSCRIPT_BYTES = 32000
-MAX_SPEECH_CHARS = 350
+MAX_SPEECH_CHARS = 900
 REQUEST_KEYS = frozenset({
     "transmission_id", "transcript", "speaker", "frequency_hz", "modulation",
     "received_at", "transcribed_at",

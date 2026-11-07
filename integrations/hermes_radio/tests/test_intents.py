@@ -4,14 +4,14 @@ import unittest
 from unittest.mock import Mock
 
 from integrations.hermes_radio.contract import ContractError
-from integrations.hermes_radio.hermes_client import HermesClassifier, classify, extract_intent, parse_intent
+from integrations.hermes_radio.hermes_client import INTENTS, HermesClassifier, classify, extract_intent, parse_intent
 from integrations.hermes_radio.tests.support import fake_hermes, model_reply
 
 
 class IntentTests(unittest.TestCase):
     def test_all_keywords_bypass_model(self):
         fallback = Mock()
-        for phrase in ("status", "How am I?", "my aircraft", "ownship", "where am I"):
+        for phrase in ("status", "How am I?", "my aircraft", "ownship", "onship", "where am I"):
             self.assertEqual(classify("Athena, " + phrase, fallback), "current_state")
         for phrase in ("recent events", "what happened", "any events", "SITREP"):
             self.assertEqual(classify(phrase, fallback), "recent_events")
@@ -29,7 +29,7 @@ class IntentTests(unittest.TestCase):
         fallback.classify.assert_called_once_with("statusful")
 
     def test_one_stateless_no_tools_http_request(self):
-        for intent in ("current_state", "recent_events", "unrecognized"):
+        for intent in sorted(INTENTS):
             with fake_hermes(model_reply(intent)) as (endpoint, calls):
                 client = HermesClassifier(endpoint, "synthetic-key", timeout=1)
                 self.assertEqual(classify("Give me a check", client), intent)

@@ -1,8 +1,4 @@
-"""Adapter-local ownship query: public codec plus exact projection validation.
-
-The pinned Athena client does not admit successful ownship. This narrowly
-implements that operation only; recent_events continues through the client.
-"""
+"""Bounded reads for ownship/mission_intel, unsupported by the pinned client."""
 import asyncio
 from collections.abc import Mapping
 import math
@@ -67,22 +63,53 @@ def validate_ownship(response, *, request_id):
         raise ClientQueryError("state_unavailable")
     if type(response.context) is not SocketResponseContext:
         _invalid()
-    validate_factual_context(response, "current_state")
-    context = response.context
     _exact(response.data, {"ownship"})
     _exact(response.limits, set())
+    validate_projection(response, rows_matched=0, rows_considered=0)
+    own = response.data["ownship"]
+    if own is None:
+        return response
+    if any(issue.code == "ownship_unavailable" for issue in response.warnings):
+        _invalid()
+    _exact(own, _OWN_KEYS)
+    position = own["position"]
+    if position is not None:
+        _exact(position, {"lat", "lon", "alt_m"})
+        _number(position["lat"], minimum=-90, maximum=90)
+        _number(position["lon"], minimum=-180, maximum=180)
+        position = GeoPosition(**position)
+    OwnshipView(**(dict(own) | {"position": position}))
+    for key in _OWN_KEYS - {"position", "heading_deg", "speed_kts"}:
+        value = own[key]
+        if value is not None and type(value) is str:
+            safe_text(value)
+    if own["heading_deg"] is not None:
+        _number(own["heading_deg"], minimum=0, maximum=360)
+    if own["speed_kts"] is not None:
+        _number(own["speed_kts"], minimum=0)
+    return response
+
+
+def validate_projection(response, *, rows_matched, rows_considered=None):
+    """Shared exact evidence contract from DomainQueryDispatcher._success."""
+    validate_factual_context(response, "current_state")
+    context = response.context
     _exact(response.evidence, _EVIDENCE_KEYS)
     evidence = response.evidence
     state = context.state
     if (type(evidence["generation"]) is not int or evidence["generation"] != state.generation or
             evidence["mission_id"] != context.mission.identity.mission_id or
             evidence["lineage_id"] != state.lineage_id or
-            evidence["derivation"] != "ownship.generation_projection.v1" or
+            evidence["derivation"] != response.operation + ".generation_projection.v1" or
             evidence["health_cut"] != "generation"):
         _invalid()
     for key in ("rows_considered", "rows_matched"):
-        if type(evidence[key]) is not int or evidence[key] != 0:
+        if type(evidence[key]) is not int or evidence[key] < 0:
             _invalid()
+    if (evidence["rows_matched"] != rows_matched or
+            evidence["rows_considered"] < rows_matched or
+            (rows_considered is not None and evidence["rows_considered"] != rows_considered)):
+        _invalid()
     _exact(evidence["provenance"], {"source", "generation"})
     if (evidence["provenance"]["source"] != state.source.value or
             type(evidence["provenance"]["generation"]) is not int or
@@ -103,30 +130,26 @@ def validate_ownship(response, *, request_id):
         _number(fresh.max_age_ms, minimum=0)
     if fresh.stale_reason is not None:
         safe_text(fresh.stale_reason)
-    own = response.data["ownship"]
-    if own is None:
-        return response
-    if any(issue.code == "ownship_unavailable" for issue in response.warnings):
+
+
+def validate_mission_intel(response, *, request_id):
+    """The pinned producer exposes identity plus explicit nulls, not airbases."""
+    if (type(response) is not StateQueryResponse or response.api_version != STATE_API_VERSION or
+            response.request_id != request_id or response.operation != "mission_intel" or
+            not response.ok or type(response.context) is not SocketResponseContext):
         _invalid()
-    _exact(own, _OWN_KEYS)
-    position = own["position"]
-    if position is not None:
-        _exact(position, {"lat", "lon", "alt_m"})
-        _number(position["lat"], minimum=-90, maximum=90)
-        _number(position["lon"], minimum=-180, maximum=180)
-        position = GeoPosition(**position)
-    OwnshipView(**(dict(own) | {"position": position}))
-    # OwnshipView checks leaf types/numbers but permits empty or unsafe text.
-    # Wire decoding already rejects unsafe text; require nonempty identities
-    # here too, rather than admitting a model constructor as identity proof.
-    for key in _OWN_KEYS - {"position", "heading_deg", "speed_kts"}:
-        value = own[key]
-        if value is not None and type(value) is str:
-            safe_text(value)
-    if own["heading_deg"] is not None:
-        _number(own["heading_deg"], minimum=0, maximum=360)
-    if own["speed_kts"] is not None:
-        _number(own["speed_kts"], minimum=0)
+    validate_projection(response, rows_matched=0, rows_considered=0)
+    _exact(response.limits, set())
+    _exact(response.data, {"mission_id", "mission_filename", "mission_name", "session_id",
+                           "scenario_start_identity", "brief", "objectives", "phase", "theatre", "airbases"})
+    identity = response.context.mission.identity
+    for key in ("mission_id", "mission_filename", "mission_name", "session_id", "scenario_start_identity"):
+        if type(response.data[key]) is not type(getattr(identity, key)) or response.data[key] != getattr(identity, key):
+            _invalid()
+    if any(response.data[key] is not None for key in ("brief", "objectives", "phase", "theatre", "airbases")):
+        _invalid()
+    if not any(issue.code == "partial_data" for issue in response.warnings):
+        _invalid()
     return response
 
 
@@ -143,7 +166,9 @@ class OwnshipReader:
             raise ClientQueryError("query_timeout")
         return remaining
 
-    def query(self, *, request_id):
+    def query(self, *, request_id, operation="ownship"):
+        if operation not in {"ownship", "mission_intel"}:
+            raise ClientQueryError("unsupported_operation")
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -152,7 +177,7 @@ class OwnshipReader:
             raise ClientQueryError("event_loop_blocking")
         deadline = time.monotonic() + self.config.query_timeout_ms / 1000
         try:
-            request = StateQueryRequest(STATE_API_VERSION, request_id, "ownship", {})
+            request = StateQueryRequest(STATE_API_VERSION, request_id, operation, {})
             wire = encode_client_frame(request, limits=self.config.limits)
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(self._remaining(deadline))
@@ -183,7 +208,8 @@ class OwnshipReader:
                             _invalid()
                         break
             decoded = decode_server_frame(bytes(received), limits=self.config.limits)
-            checked = validate_ownship(decoded, request_id=request_id)
+            validator = validate_ownship if operation == "ownship" else validate_mission_intel
+            checked = validator(decoded, request_id=request_id)
             self._remaining(deadline)
             return checked
         except ClientQueryError:

@@ -12,7 +12,7 @@
   "response": {
     "transmission_id": "synthetic-transmission",
     "deliverable": true,
-    "speech": "Prometheus, Athena. F-16, heading 270, 350 knots.",
+    "speech": "Prometheus, Athena. F-16, heading 270, heading reference unavailable, 350 knots.",
     "intent_class": "factual",
     "state": "ok"
   }

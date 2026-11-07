@@ -80,7 +80,7 @@ class OwnshipTests(unittest.TestCase):
                 with patch.object(facts._ownship, "query", side_effect=observe):
                     frames = [facts.query("current_state"), facts.query("current_state")]
                 result = render(parse_request(wire(bridge_request())), "current_state", frames[0])
-                self.assertEqual(result["speech"], "Prometheus, Athena. F-16, heading 270, 350 knots.")
+                self.assertEqual(result["speech"], "Prometheus, Athena. F-16, heading 270, heading reference unavailable, 350 knots.")
                 self.assertEqual(result["state"], "ok")
                 self.assertTrue(all(name.startswith("radio-state") for name in worker_names))
                 self.assertEqual(len(calls), 2)

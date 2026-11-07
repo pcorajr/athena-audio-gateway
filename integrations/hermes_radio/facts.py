@@ -1,4 +1,4 @@
-"""Two fixed factual reads and deterministic, caveat-preserving speech."""
+"""Fixed factual reads and deterministic, caveat-preserving speech."""
 from concurrent.futures import ThreadPoolExecutor
 import math
 import threading
@@ -9,6 +9,10 @@ from athena.state_service_client import ClientQueryError, StateServiceClient, lo
 from .context import RELEVANT_HEALTH, validate_factual_context
 from .contract import MAX_SPEECH_CHARS, response, safe_text
 from .ownship import OwnshipReader
+from .tactical import TACTICAL_INTENTS, collect, describe
+
+CAPABILITIES = ("Athena understands: ownship, picture, bogey dope, threats, mission status, "
+                "home plate, recent events.")
 
 _EVENT_LABELS = {
     "mission_started": "mission started", "mission_ended": "mission ended",
@@ -30,6 +34,7 @@ class Facts:
         self._ownship = OwnshipReader(config)
         self._events = StateServiceClient(config)
         self._limit = min(3, config.query_limits.max_rows, config.recent_events_limits.max_rows)
+        self._unit_limit = config.query_limits.max_rows
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="radio-state")
         self._active = threading.Lock()
 
@@ -47,6 +52,8 @@ class Facts:
             elif intent == "recent_events":
                 future = self._worker.submit(self._events.query, operation="recent_events",
                                              params={"limit": self._limit}, request_id=request_id)
+            elif intent in TACTICAL_INTENTS:
+                future = self._worker.submit(collect, intent, self._ownship, self._events, self._unit_limit)
             else:
                 raise ClientQueryError("unsupported_intent")
             return future.result()
@@ -60,7 +67,8 @@ class Facts:
 def _caveats(frame, intent):
     # The public recent-events client still owns row/protocol semantics. Shared
     # admission checks only supplied context consistency before either template.
-    validate_factual_context(frame, intent)
+    health_intent = "recent_events" if intent == "recent_events" else "current_state"
+    validate_factual_context(frame, health_intent)
     context = frame.context
     state, fresh = context.state, context.state.freshness
     caveats, status = [], "ok"
@@ -90,7 +98,7 @@ def _caveats(frame, intent):
         caveats.append("State caveat: " + fresh.stale_reason.replace("_", " ") + ".")
         if status == "ok":
             status = "degraded"
-    for component in RELEVANT_HEALTH[intent]:
+    for component in RELEVANT_HEALTH[health_intent]:
         health = context.component_health[component]
         if health.status.value != "healthy":
             caveats.append(component.value.replace("_", " ").capitalize() + " " + health.status.value + ".")
@@ -100,10 +108,13 @@ def _caveats(frame, intent):
     # silently discarded or rephrased into an unqualified factual answer.
     known = {"ownship_unavailable": "Ownship not confirmed.",
              "cached_state": "Cached state.",
-             "truncated_result": "More recorded events omitted."}
+             "truncated_result": ("More recorded events omitted." if intent == "recent_events"
+                                  else "Limited type counts." if intent == "count_units" else "Limited unit page."),
+             "partial_data": "Mission identity only."}
     for issue in frame.warnings:
         if (issue.code not in known or
-                (issue.code == "truncated_result" and intent != "recent_events") or
+                (issue.code == "truncated_result" and intent not in {"recent_events", "query_units", "count_units"}) or
+                (issue.code == "partial_data" and intent != "mission_intel") or
                 (issue.code == "ownship_unavailable" and intent != "current_state")):
             return None, "degraded"
         if issue.code != "ownship_unavailable":
@@ -128,6 +139,8 @@ def event_summary(event):
 
 
 def render(request, intent, frame):
+    if intent in TACTICAL_INTENTS:
+        return render_composed(request, intent, frame)
     if not frame.ok or frame.context is None:
         return response(request, speech="Athena not connected.", state="unavailable")
     caveats, state = _caveats(frame, intent)
@@ -140,7 +153,8 @@ def render(request, intent, frame):
         else:
             fields = [own["unit_type"] or "Aircraft type unavailable"]
             if own["heading_deg"] is not None:
-                fields.append(f"heading {own['heading_deg']:.0f}")
+                fields.append(f"heading {round(own['heading_deg']) % 360:03d}")
+                fields.append("heading reference unavailable")
             else:
                 fields.append("heading unavailable")
             if own["speed_kts"] is not None:
@@ -159,6 +173,22 @@ def render(request, intent, frame):
     else:
         return response(request, intent="unrecognized", reason="unrecognized_intent")
     speech = " ".join([request.speaker + ", Athena.", *caveats, body])
+    if len(speech) > MAX_SPEECH_CHARS:
+        return response(request, state=state, reason="speech_budget_exceeded")
+    return response(request, speech=speech, state=state)
+
+
+def render_composed(request, intent, frames):
+    body, caveats, state = describe(request, intent, frames)
+    ranks = {"ok": 0, "degraded": 1, "stale": 2, "ownship_ambiguous": 3}
+    for frame in frames:
+        qualifiers, status = _caveats(frame, "current_state" if frame.operation == "ownship" else frame.operation)
+        if qualifiers is None:
+            return response(request, state=status, reason="unsupported_state_caveat")
+        caveats.extend(qualifiers)
+        if ranks[status] > ranks[state]:
+            state = status
+    speech = " ".join([request.speaker + ", Athena.", *dict.fromkeys(caveats), body])
     if len(speech) > MAX_SPEECH_CHARS:
         return response(request, state=state, reason="speech_budget_exceeded")
     return response(request, speech=speech, state=state)

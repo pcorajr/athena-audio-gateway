@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from integrations.hermes_radio.contract import MAX_BODY_BYTES
-from integrations.hermes_radio.facts import Facts
+from integrations.hermes_radio.facts import CAPABILITIES, Facts
 from integrations.hermes_radio.fixture_data import bridge_request, state_frame, wire
 from integrations.hermes_radio.fixture_server import FixtureClassifier, FixtureFacts
 from integrations.hermes_radio.hermes_client import HermesClassifier
@@ -80,7 +80,7 @@ class ServerTests(unittest.TestCase):
         self.assertTrue(json.loads(raw)["deliverable"])
         classifier.classify.assert_not_called()
 
-    def test_model_failure_suppresses_and_never_queries_state(self):
+    def test_model_failure_returns_capabilities_and_never_queries_state(self):
         with fake_hermes(status=500) as (endpoint, model_calls):
             facts = Mock()
             adapter = Adapter(HermesClassifier(endpoint, "synthetic-key", timeout=1), facts)
@@ -88,9 +88,9 @@ class ServerTests(unittest.TestCase):
                 status, raw = post(server.server_port, wire(bridge_request("Unclear request")))
             result = json.loads(raw)
             self.assertEqual(status, 200)
-            self.assertFalse(result["deliverable"])
-            self.assertEqual(result["speech"], "")
-            self.assertEqual(result["intent_class"], "unrecognized")
+            self.assertTrue(result["deliverable"])
+            self.assertEqual(result["speech"], CAPABILITIES)
+            self.assertEqual(result["intent_class"], "factual")
             facts.query.assert_not_called()
             self.assertEqual(len(model_calls), 1)
 

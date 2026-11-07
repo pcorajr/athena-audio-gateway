@@ -166,9 +166,16 @@ class OwnshipReader:
             raise ClientQueryError("query_timeout")
         return remaining
 
-    def query(self, *, request_id, operation="ownship"):
-        if operation not in {"ownship", "mission_intel"}:
+    def query(self, *, request_id, operation="ownship", params=None):
+        if operation not in {"ownship", "mission_intel", "current_summary", "group_summary"}:
             raise ClientQueryError("unsupported_operation")
+        params = {} if params is None else params
+        if operation in {"current_summary", "group_summary"}:
+            if (set(params) != {"limit"} or type(params["limit"]) is not int or
+                    not 1 <= params["limit"] <= self.config.query_limits.max_rows):
+                raise ClientQueryError("invalid_params")
+        elif params:
+            raise ClientQueryError("invalid_params")
         try:
             asyncio.get_running_loop()
         except RuntimeError:
@@ -177,7 +184,7 @@ class OwnshipReader:
             raise ClientQueryError("event_loop_blocking")
         deadline = time.monotonic() + self.config.query_timeout_ms / 1000
         try:
-            request = StateQueryRequest(STATE_API_VERSION, request_id, operation, {})
+            request = StateQueryRequest(STATE_API_VERSION, request_id, operation, params)
             wire = encode_client_frame(request, limits=self.config.limits)
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(self._remaining(deadline))
@@ -208,8 +215,13 @@ class OwnshipReader:
                             _invalid()
                         break
             decoded = decode_server_frame(bytes(received), limits=self.config.limits)
-            validator = validate_ownship if operation == "ownship" else validate_mission_intel
-            checked = validator(decoded, request_id=request_id)
+            if operation in {"current_summary", "group_summary"}:
+                from .projections import validate_summary
+                checked = validate_summary(decoded, request_id=request_id, operation=operation,
+                                           params=params, config=self.config)
+            else:
+                validator = validate_ownship if operation == "ownship" else validate_mission_intel
+                checked = validator(decoded, request_id=request_id)
             self._remaining(deadline)
             return checked
         except ClientQueryError:

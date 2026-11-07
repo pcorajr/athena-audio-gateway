@@ -86,5 +86,7 @@ class FixtureLauncherTests(unittest.TestCase):
                                    capture_output=True, timeout=8)
         self.assertEqual(completed.returncode, 0)
         self.assertIn(b"--state-client-config", completed.stdout)
-        self.assertIn(b"--hermes-timeout", completed.stdout)
+        self.assertIn(b"--controller-timeout", completed.stdout)
+        self.assertIn(b"--openai-base-url", completed.stdout)
+        self.assertIn(b"--model", completed.stdout)
         self.assertIn(b"--request-timeout", completed.stdout)

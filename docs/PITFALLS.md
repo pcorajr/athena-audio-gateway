@@ -102,6 +102,18 @@ The rule that would have prevented it: **find the mechanism first**. If the
 mechanism is unknown, say so and stop, rather than shipping the most plausible
 guess.
 
+## 11. Admission-only logs are not a radio transcript
+
+The MVP discarded other speakers before Opus/STT and dropped arrivals while a
+reply was busy. Logging only inside the adapter could never show that traffic.
+Capture must precede admission, with explicit blank/error records for losses.
+Keep the bounded capture queue separate from reply permission: a busy arrival
+must not become a delayed command when the channel is idle again.
+
+Streaming also consumes one reception token for the whole reply, not once per
+sentence. Record intended text separately from successful local packet writes;
+neither generated text nor a completed HTTP request establishes audibility.
+
 ## Two techniques that paid for themselves
 
 **Quiet-floor measurement** distinguishes "SRS effects reached us" from "they

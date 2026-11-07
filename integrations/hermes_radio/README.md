@@ -1,4 +1,126 @@
-# Hermes radio text adapter
+# Athena radio v2
+
+The production entry point is now an **LLM-first OpenAI API controller**, not
+the legacy keyword classifier documented below. Gateway capture is independent
+of command admission. Initial commands must address Athena; the narrow bare
+followups `what type is it?`, `where did it go?`, and `where is it now?` continue
+an established Prometheus conversation only while its mission/health scope is
+still valid. Other speakers, ambiguous identity, wrong channel, and initial
+unaddressed traffic cannot gain transmit permission by being logged.
+
+## Current runtime (controller-owned deployment)
+
+Provide `OPENAI_API_KEY` securely through the process environment, never a CLI
+argument. `OPENAI_BASE_URL` defaults to `https://api.openai.com/v1`; only HTTPS
+is accepted. `ATHENA_RADIO_MODEL` defaults to the controller-selected
+`gpt-5.4-mini`. Reasoning effort is **omitted** by default: measured tool requests
+reject `reasoning_effort=low`. Optional `--reasoning` is explicit, never a fallback.
+The worker/reviewer model is unrelated to this voice-runtime selection.
+
+From the candidate checkout, using the already provisioned Athena interpreter:
+
+```sh
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH=/home/pcorajr/Ai-Workspace/projects/project-athena/src:$PWD
+export ATHENA_RADIO_TRANSCRIPT_DIR="$HOME/.hermes/cache/athena-radio"
+/home/pcorajr/Ai-Workspace/projects/project-athena/.venv/bin/python -B \
+  -m integrations.hermes_radio --state-client-config "$ATHENA_STATE_CLIENT_CONFIG" \
+  --model gpt-5.4-mini --controller-timeout 6 --request-timeout 2 \
+  --cache-interval 2 --port 8650
+```
+
+`ATHENA_STATE_CLIENT_CONFIG` in that command must name the existing approved
+client JSON, not a new server configuration. Its socket bounds/timeout remain
+owned by the unchanged public client. No DCS access, state service restart,
+credential discovery, profile changes, installation, or deployment is performed
+by this source. Packet106's default/controller deploys after focused GREEN,
+then commissions independent RV-1; tests are not deployment/voice acceptance.
+
+The gateway needs the new binary. Keep its approved SRS/STT/TTS configuration,
+and explicitly preserve `--athena-srs-mvp=true --mute=false --athena-live-tx=true
+--srs-frequencies=133.0AM --athena-command-frequency=133.0AM
+--athena-pilot-name=Prometheus --athena-hermes-endpoint=http://127.0.0.1:8650/radio/v1/exchange`.
+Both processes must share the same private transcript root. No key belongs in
+gateway flags. The existing legacy transcription flag does not disable v2's
+private audit trail; MVP recognizer content is no longer copied to general logs.
+
+## Capture, delivery, and streaming
+
+Daily local-time `transcript-YYYYMMDD.jsonl` and `.txt` append under the root
+above (directory 0700, files 0600 on Unix). Go and Python share an OS file lock;
+TXT escapes physical line breaks. JSONL retains exact text. Reception is observed
+before identity/admission; other speakers and busy arrivals still reach STT.
+Malformed, short, overflowed, queued-over-capacity, blank, failed, or canceled
+audio is recorded with a bounded reason, never called a successful transcription.
+There is no guarantee against kernel/network packet loss or physical RF collisions.
+Assembly is bounded to 64 concurrent origins; decode/STT queues are bounded and
+overflows are explicit blank/error records, not silent omissions or delayed commands.
+
+`received`, `inbound`, `adapter_ingress`, `route`, `tool`, `reply_generated`,
+`reply_intended`, `delivery`, and timing records share transmission IDs. Generated
+text is **not** proof it was spoken. `delivery` reports first/last successful local
+UDP writes (or failure), never audibility. Logging failures emit the fixed stderr
+code `athena_radio_transcript_write_failed`; the next record retries opening the
+sink without replaying the possibly appended record. No raw provider error/auth
+bodies, audio, or health-error strings enter these records.
+
+The existing URL negotiates `Accept: application/x-ndjson`. Each flushed line is
+one validated v1 Response; `[DONE]` terminates the stream. The Go bridge starts
+TTS on the first complete sentence while generation is still in progress. There
+are at most two parts, 32 words/350 characters total, and an 8-second synthesized
+audio cap. The route token is consumed once for the whole reply; each part checks
+identity, channel, cancellation, expiry, mute and live-TX. No sentence is retried.
+Text exceeding a bound is rejected, not clipped. A later failure cannot unsay an
+already transmitted first sentence; every sentence must carry its own caveats.
+
+## Tools and evidence limits
+
+Only `ownship`, `query_units`, `get_unit`, `count_units`, `group_summary`,
+`current_summary`, `mission_intel`, `recent_events`, and code-derived `braa` exist.
+Arguments are allowlisted and bounded. Public typed framing/models, correlation,
+health/freshness, projection evidence, scope and returned filters are validated.
+Unsupported summary projections use the same bounded raw-client seam as ownship,
+with exact projection validators; Athena source is unchanged.
+
+The cache refreshes confirmed ownship plus nearest ten returned hostiles/friendlies
+every two seconds. The source page is capped at min(100, configured max_rows);
+truncated pages explicitly remain `returned_page_only`, never global nearest.
+Category vocabulary is incomplete. Counts retain producer totals separately from
+filtered-page counts. BRAA uses true geographic bearing, nautical miles, feet MSL;
+missing position/altitude stays null. Heading reference and aspect are unavailable
+in the pinned producer. Mission intel has null brief/objectives/airbases. Stale,
+cached, paused, ended, inconsistent or unhealthy current state is unavailable.
+
+Ten exchanges plus referenced IDs are kept in memory, with no raw factual tool
+snapshots carried as conversation history. Mission/session/lineage changes and
+observed outages clear continuation/history. Refresh after an unavailable turn
+can restore live answers. Tools/speech remain untrusted data; no general Hermes
+session or shell tool is involved. Model wording remains probabilistic: offline
+tests prove transport/validation/interlocks, not live factual or audio quality.
+
+## Text smoke (not radio/audio)
+
+After controller deployment only, with the same `PYTHONPATH` and transcript root:
+
+```sh
+/home/pcorajr/Ai-Workspace/projects/project-athena/.venv/bin/python -B \
+  -m integrations.hermes_radio.text_smoke \
+  --question 'Athena, give me the picture.' --question 'what type is it?' \
+  --question 'where did it go?' --question 'Athena, how many hostiles are recorded?' \
+  --question 'Athena, summarize the groups.' --question 'Athena, current summary.' \
+  --question 'Athena, what is my aircraft doing?' --question 'Athena, mission intel.' \
+  --question 'Athena, recent events.' --question 'Athena, contacts within fifty miles?'
+```
+
+The smoke records `text_smoke_input/output` and reports first-sentence/total text
+latency. It cannot transmit audio. Actual first-audio <=4s and audibility require
+the controller's deployment and user voice test, not synthetic timing claims.
+
+## Legacy helper reference (not the production entry point)
+
+The remaining sections describe retained slice2 deterministic helpers and their
+regression fixtures. The old `--hermes-*` adapter launch flags below are historical
+and are **not** accepted by the v2 production CLI; use the current command above.
 
 This is a separate stdlib-only Python process. It accepts the gateway's existing
 text bridge, classifies a bounded read-only intent, queries Athena, and returns

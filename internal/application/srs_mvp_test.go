@@ -90,6 +90,7 @@ func (r *mvpRadioFake) TransmitMVP(_ context.Context, t simpleradio.Transmission
 }
 
 func TestSRSMVPApplicationUsesLocalBackendsAndLoggingChoice(t *testing.T) {
+	t.Setenv("ATHENA_RADIO_TRANSCRIPT_DIR", t.TempDir())
 	for _, logging := range []bool{false, true} {
 		recognizer, speaker, radio := &mvpRecognizerFake{}, &mvpSpeakerFake{}, &mvpRadioFake{}
 		cfg := admission.DefaultConfig()
@@ -111,8 +112,8 @@ func TestSRSMVPApplicationUsesLocalBackendsAndLoggingChoice(t *testing.T) {
 		runner.Record = func(mvp.Timing) {}
 		runner.Process(t.Context(), simpleradio.Transmission{TraceID: "synthetic-app", ClientName: "Prometheus", Radio: types.Radio{Frequency: 133000000}, Audio: make(simpleradio.Audio, 32000), ReceivedAt: time.Now()})
 		log.Logger = original
-		if recognizer.logging != logging || strings.Contains(output.String(), "synthetic transcript sentinel") != logging {
-			t.Fatal("transcript logging choice ignored")
+		if recognizer.logging || strings.Contains(output.String(), "synthetic transcript sentinel") {
+			t.Fatal("private transcript leaked into general logs")
 		}
 		if speaker.speech != "Synthetic unavailable answer." || len(radio.audio) != 1 || radio.audio[0] != 0.25 {
 			t.Fatal("local synthesis/volume path not used")

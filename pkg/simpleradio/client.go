@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/simpleradio/types"
 	"github.com/dharmab/skyeye/pkg/simpleradio/voice"
 	"github.com/rs/zerolog/log"
@@ -33,6 +34,8 @@ type Transmission struct {
 	Audio Audio
 	// ReceivedAt marks assembled reception, not physical PTT release.
 	ReceivedAt time.Time
+	// ReceptionError is a safe bounded reason when audio cannot be recognized.
+	ReceptionError string
 	// route binds MVP audio to the observed connection and identity generation.
 	route mvpRoute
 }
@@ -69,6 +72,7 @@ type Client struct {
 	mvpLastOrigin   types.GUID
 	mvpLastPacket   uint64
 	mvpChannelUntil time.Time
+	transcript      *transcript.Writer
 
 	// secureCoalitionRadios indicates if the client should only receive transmissions from the same coalition.
 	// Written by the TCP receiver goroutine (updateServerSettings) and read by the UDP receiver
@@ -136,6 +140,10 @@ func NewClient(config types.ClientConfiguration) (*Client, error) {
 		liveTX:       config.LiveTX,
 		pilotName:    config.PilotName,
 		mvpEpoch:     1,
+	}
+	if config.SRSMVP {
+		client.transcript = transcript.Default()
+		client.rxChan = make(chan Transmission, 16)
 	}
 
 	err := client.connectTCP()
@@ -237,7 +245,7 @@ func (c *Client) Run(ctx context.Context, wg *sync.WaitGroup) error {
 	udpVoiceRxChan := make(chan voiceDatagram, maxRxPackets)
 	queueSize := 128
 	if c.mvp {
-		queueSize = 0
+		queueSize = 16 // capture queue, never a reply queue
 	}
 	voiceBytesRxChan := make(chan transmissionPackets, queueSize)
 	wg.Go(func() { c.receiveVoice(ctx, udpVoiceRxChan, voiceBytesRxChan) })

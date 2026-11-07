@@ -131,6 +131,9 @@ type transmissionPackets struct {
 	packets    []voice.Packet
 	route      mvpRoute
 	receivedAt time.Time
+	traceID    string
+	origin     types.GUID
+	reason     string
 }
 
 // takeCompleted atomically detaches a complete utterance and resets assembly.
@@ -149,6 +152,10 @@ func (r *receiver) takeCompleted() (transmissionPackets, bool) {
 
 // receiveVoice listens for incoming UDP voice packets, decodes them into VoicePacket structs, and routes them to the out channel for audio decoding.
 func (c *Client) receiveVoice(ctx context.Context, in <-chan voiceDatagram, out chan<- transmissionPackets) {
+	if c.mvp {
+		c.receiveMVPVoice(ctx, in, out)
+		return
+	}
 	// t is a ticker which triggers the check for the end of a transmission.
 	t := time.NewTicker(frameLength)
 	defer t.Stop()

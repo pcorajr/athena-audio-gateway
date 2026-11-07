@@ -5,11 +5,13 @@ package mvp
 import (
 	"context"
 	"strings"
+
 	"sync/atomic"
 	"time"
 
 	"github.com/dharmab/skyeye/pkg/athena/admission"
 	"github.com/dharmab/skyeye/pkg/athena/bridge"
+	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/simpleradio"
 	"github.com/rs/zerolog/log"
 )
@@ -38,8 +40,8 @@ func LogTiming(t Timing) {
 		Str("outcome", t.Outcome).Msg("srs_mvp_timing_ms")
 }
 
-// Runner must be configured before use. Process rejects concurrent callers;
-// the production receive channel also drops arrivals instead of queueing them.
+// Runner must be configured before use. Capture stays separate from reply
+// admission: busy arrivals are logged but never queued for a later answer.
 type Runner struct {
 	Gate               *admission.Gate
 	Bridge             bridge.Client
@@ -49,37 +51,41 @@ type Runner struct {
 	Recognize          func(context.Context, simpleradio.Audio) (string, error)
 	Synthesize         func(context.Context, string) (simpleradio.Audio, error)
 	Record             func(Timing)
+	Transcript         *transcript.Writer
 	busy               atomic.Bool
 	lastTransmissionID string // guarded by busy; transport also consumes its route token
 }
 
 func (r *Runner) Run(ctx context.Context, in <-chan simpleradio.Transmission) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case t, ok := <-in:
-			if !ok {
-				return
-			}
-			r.Process(ctx, t)
-		}
-	}
+	r.runCapture(ctx, in)
 }
 
-// Process owns one exchange through final write. Errors are never converted
-// into substitute speech, retried, or logged with transcript/response contents.
+// Process captures one transmission and, if idle/admitted, owns its reply.
+// Detailed text goes only to the private transcript writer, not general logs.
 func (r *Runner) Process(ctx context.Context, t simpleradio.Transmission) {
-	if !r.busy.CompareAndSwap(false, true) {
+	owned := r.busy.CompareAndSwap(false, true)
+	text, outcome := r.observe(ctx, t)
+	if !owned {
+		r.record(t, "route", "", "busy", "ignored", 0, nil)
 		return
 	}
 	defer r.busy.Store(false)
+	r.reply(ctx, t, text, outcome)
+}
+
+func (r *Runner) reply(ctx context.Context, t simpleradio.Transmission, text, recognition string) {
 	if t.TraceID == "" || t.TraceID == r.lastTransmissionID {
+		r.record(t, "route", "", "missing_id_or_replay", "ignored", 0, nil)
 		return
 	}
 	r.lastTransmissionID = t.TraceID
 	timing := Timing{TransmissionID: t.TraceID, Received: 0, STTDone: -1, ReplyReceived: -1, TTSDone: -1, FirstSend: -1, LastSend: -1, Outcome: "rejected"}
 	defer func() {
+		route := "ignored"
+		if timing.ReplyReceived >= 0 {
+			route = "LLM"
+		}
+		r.record(t, "exchange_outcome", "", timing.Outcome, route, 0, map[string]int64{"stt_done": timing.STTDone, "reply_received": timing.ReplyReceived, "tts_done": timing.TTSDone, "first_send": timing.FirstSend, "last_send": timing.LastSend})
 		if r.Record != nil {
 			r.Record(timing)
 		} else {
@@ -101,9 +107,8 @@ func (r *Runner) Process(ctx context.Context, t simpleradio.Transmission) {
 		timing.Outcome = "expired_or_invalidated"
 		return
 	}
-	text, err := r.Recognize(workCtx, t.Audio)
 	timing.STTDone = time.Since(t.ReceivedAt).Milliseconds()
-	if err != nil || strings.TrimSpace(text) == "" {
+	if recognition != "recognized" || strings.TrimSpace(text) == "" {
 		timing.Outcome = "stt_failed_or_empty"
 		return
 	}
@@ -116,6 +121,10 @@ func (r *Runner) Process(ctx context.Context, t simpleradio.Transmission) {
 		modulation = bridge.ModulationFM
 	}
 	req := bridge.Request{TransmissionID: t.TraceID, Transcript: text, Speaker: t.ClientName, FrequencyHz: uint64(t.Radio.Frequency), Modulation: modulation, ReceivedAt: t.ReceivedAt.UTC(), TranscribedAt: time.Now().UTC()}
+	if streaming, ok := r.Bridge.(bridge.StreamClient); ok {
+		r.streamReply(ctx, workCtx, t, req, expires, valid, streaming, &timing)
+		return
+	}
 	resp, err := r.Bridge.Exchange(workCtx, req)
 	if err == nil {
 		timing.ReplyReceived = time.Since(t.ReceivedAt).Milliseconds()
@@ -132,6 +141,7 @@ func (r *Runner) Process(ctx context.Context, t simpleradio.Transmission) {
 		timing.Outcome = "suppressed"
 		return
 	}
+	r.record(t, "reply_intended", resp.Speech, "generated", "LLM", 1, nil)
 	audio, err := r.Synthesize(workCtx, resp.Speech)
 	timing.TTSDone = time.Since(t.ReceivedAt).Milliseconds()
 	if err != nil || len(audio) == 0 {
@@ -153,4 +163,5 @@ func (r *Runner) Process(ctx context.Context, t simpleradio.Transmission) {
 		timing.LastSend = delivery.LastSend.Sub(t.ReceivedAt).Milliseconds()
 	}
 	timing.Outcome = delivery.Outcome
+	r.record(t, "delivery", resp.Speech, delivery.Outcome, "LLM", 1, map[string]int64{"first_send": timing.FirstSend, "last_send": timing.LastSend})
 }

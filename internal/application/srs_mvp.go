@@ -4,9 +4,9 @@ import (
 	"context"
 
 	"github.com/dharmab/skyeye/pkg/athena/mvp"
+	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/pcm"
 	"github.com/dharmab/skyeye/pkg/simpleradio"
-	"github.com/rs/zerolog/log"
 )
 
 // runSRSMVP deliberately bypasses persona, GCI and the asynchronous legacy
@@ -17,18 +17,17 @@ func (a *Application) runSRSMVP(ctx context.Context) {
 
 func (a *Application) srsMVPRunner() *mvp.Runner {
 	return &mvp.Runner{
-		Gate: a.admissionGate, Bridge: a.hermesBridge, Radio: a.srsClient,
+		Transcript: transcript.Default(),
+		Gate:       a.admissionGate, Bridge: a.hermesBridge, Radio: a.srsClient,
 		MaxAge: a.athenaResponseMaxAge, MaxSpeech: a.athenaMaxSpeech,
 		Recognize: func(ctx context.Context, audio simpleradio.Audio) (string, error) {
 			if err := tryLock(ctx, a.recognizerLock); err != nil {
 				return "", err
 			}
 			defer unlock(a.recognizerLock)
-			text, err := a.recognizer.Recognize(ctx, audio, a.enableTranscriptionLogging)
-			if err == nil && a.enableTranscriptionLogging {
-				log.Info().Str("text", text).Msg("MVP transcript")
-			}
-			return text, err
+			// U30 capture goes ONLY to the private transcript sink, never the
+			// recognizer's general logs or trace export.
+			return a.recognizer.Recognize(ctx, audio, false)
 		},
 		Synthesize: func(ctx context.Context, speech string) (simpleradio.Audio, error) {
 			if err := tryLock(ctx, a.speakerLock); err != nil {

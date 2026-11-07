@@ -21,11 +21,17 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 		case received := <-voicePacketsChan:
 			voicePackets := received.packets
 			if len(voicePackets) == 0 {
+				if c.mvp {
+					c.captureFailure(received, "empty_packets")
+				}
 				continue
 			}
 			decoder, err := opus.NewDecoder(int(rate.Wideband.Hertz()), channels)
 			if err != nil {
 				log.Error().Err(err).Msg("failed to create Opus decoder")
+				if c.mvp {
+					c.captureFailure(received, "decoder_failed")
+				}
 				continue
 			}
 			transmissionPCM := make([]float32, 0)
@@ -55,12 +61,11 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 					route:      received.route,
 				}
 				if c.mvp {
-					if !c.ValidMVP(t) {
-						continue
-					}
+					t.TraceID = received.traceID
 					select {
 					case c.rxChan <- t:
 					default:
+						c.captureFailure(received, "recognition_queue_full")
 					}
 				} else {
 					select {
@@ -71,6 +76,9 @@ func (c *Client) decodeVoice(ctx context.Context, voicePacketsChan <-chan transm
 				}
 			} else {
 				log.Debug().Msg("decoded transmission PCM is empty")
+				if c.mvp {
+					c.captureFailure(received, "decode_failed_or_empty")
+				}
 			}
 		case <-ctx.Done():
 			log.Info().Msg("stopping voice decoder due to context cancellation")

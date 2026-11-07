@@ -48,10 +48,14 @@ class FixtureFacts:
 def main():
     parser = argparse.ArgumentParser(description="Synthetic-only adapter fixture server")
     parser.add_argument("--port", type=int, default=0)
-    parser.add_argument("--scenario", choices=SCENARIOS, required=True)
+    parser.add_argument("--scenario", choices=SCENARIOS + ("streaming",), required=True)
     args = parser.parse_args()
     try:
-        server = RadioServer(Adapter(FixtureClassifier(args.scenario), FixtureFacts(args.scenario)),
+        selected = Adapter(FixtureClassifier(args.scenario), FixtureFacts(args.scenario))
+        if args.scenario == "streaming":
+            from .stream_fixture import adapter
+            selected = adapter()
+        server = RadioServer(selected,
                              port=args.port, request_timeout=2.0)
         def ready(bound):
             print(json.dumps({"ready": True,

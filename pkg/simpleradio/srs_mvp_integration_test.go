@@ -24,6 +24,10 @@ import (
 // It is not a replacement adapter: the accepted adapter supplies its actual
 // HTTP validation/rendering handler and deterministic fake state/model peers.
 func startTextFixture(t *testing.T, scenario string) string {
+	return startTextFixtureWithAck(t, scenario, "")
+}
+
+func startTextFixtureWithAck(t *testing.T, scenario, ack string) string {
 	t.Helper()
 	root, src, python := os.Getenv("SRSMVP_TEXT_ADAPTER_ROOT"), os.Getenv("SRSMVP_ATHENA_SRC"), os.Getenv("SRSMVP_PYTHON")
 	for name, path := range map[string]string{"adapter root": root, "Athena src": src, "Python": python} {
@@ -35,6 +39,7 @@ func startTextFixture(t *testing.T, scenario string) string {
 	cmd.Dir = root
 	// Do not inherit credentials, model routes or production configuration.
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir(), "PYTHONPATH=" + src + string(os.PathListSeparator) + root, "PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1"}
+	cmd.Env = append(cmd.Env, "SRSMVP_STREAM_ACK="+ack)
 	cmd.Stderr = io.Discard
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -128,9 +133,9 @@ func TestSRSMVPTextRoundTrip(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					text := "What is my current status?"
+					text := "status" // exact legacy helper fixture; v2 has separate LLM composition
 					if scenario == "recent_events" {
-						text = "What are the latest recorded events?"
+						text = "recent events"
 					}
 					if scenario == "unrecognized" {
 						text = "Synthetic unrelated question about cooking."
@@ -176,25 +181,23 @@ func TestSRSMVPTextRoundTrip(t *testing.T) {
 					if exchanges != 1 || len(timings) != 1 {
 						t.Fatalf("exchange/replay count=%d timings=%d", exchanges, len(timings))
 					}
-					// Unrecognized requests are suppressed without querying state.
-					wantState := map[string]bridge.State{"current_state": bridge.StateOK, "recent_events": bridge.StateOK, "unavailable": bridge.StateUnavailable, "stale": bridge.StateStale, "ambiguous": bridge.StateOwnshipAmbiguous, "unrecognized": bridge.StateUnavailable}[scenario]
+					// Legacy helpers remain regression-tested, not the primary v2 router.
+					wantState := map[string]bridge.State{"current_state": bridge.StateOK, "recent_events": bridge.StateOK, "unavailable": bridge.StateUnavailable, "stale": bridge.StateStale, "ambiguous": bridge.StateOwnshipAmbiguous, "unrecognized": bridge.StateOK}[scenario]
 					if observed.State != wantState {
 						t.Fatalf("scenario %s state=%s", scenario, observed.State)
 					}
-					wantDeliverable := scenario != "unrecognized"
+					wantDeliverable := true // legacy slice2 help; not the v2 production router
 					if observed.Deliverable != wantDeliverable {
 						t.Fatalf("scenario deliverable=%v", observed.Deliverable)
 					}
 					if scenario == "unrecognized" {
-						if observed.IntentClass != bridge.IntentUnrecognized || observed.SuppressionReason != "unrecognized_intent" || observed.Speech != "" {
+						if observed.IntentClass != bridge.IntentFactual || !strings.HasPrefix(observed.Speech, "Athena understands:") {
 							t.Fatalf("unexpected unrecognized suppression: intent=%q reason=%q speech=%q", observed.IntentClass, observed.SuppressionReason, observed.Speech)
 						}
 						if observed.TransmissionID != tr.TraceID || timings[0].TransmissionID != tr.TraceID {
 							t.Fatalf("unrecognized correlation: response=%q timing=%q want=%q", observed.TransmissionID, timings[0].TransmissionID, tr.TraceID)
 						}
-						if syntheses != 0 || timings[0].TTSDone != -1 {
-							t.Fatalf("unrecognized reply reached synthesis: calls=%d tts_done=%d", syntheses, timings[0].TTSDone)
-						}
+
 					}
 					wantWrites := 0
 					if wantDeliverable && (mode == "normal" || mode == "duplicate") {

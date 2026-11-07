@@ -45,6 +45,8 @@ class RadioServer(ThreadingMixIn, HTTPServer):
         safe_text(speaker)
         self.adapter, self.request_timeout, self.speaker = adapter, request_timeout, speaker
         self._active = threading.Lock()
+        self._owner_lock = threading.Lock()
+        self._owner = None
         super().__init__(("127.0.0.1", port), RadioHandler)
 
     def process_request(self, request, client_address):
@@ -58,16 +60,28 @@ class RadioServer(ThreadingMixIn, HTTPServer):
                 self.shutdown_request(request)
             return
         try:
+            with self._owner_lock:
+                self._owner = request
             super().process_request(request, client_address)
         except Exception:
-            self._active.release()
+            self.exchange_finished(request)
             raise
+
+    def exchange_finished(self, request):
+        # Release after computation/generator exhaustion, BEFORE the final
+        # response bytes. Otherwise an immediate next text turn can see 503
+        # after receiving a complete previous reply. Socket teardown is not
+        # controller work; an old handler must not release a newer owner's lock.
+        with self._owner_lock:
+            if self._owner is request:
+                self._owner = None
+                self._active.release()
 
     def process_request_thread(self, request, client_address):
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self._active.release()
+            self.exchange_finished(request)
 
     def handle_error(self, request, client_address):
         # No tracebacks/URLs/transcripts/facts in default server logs.
@@ -138,8 +152,35 @@ class RadioHandler(BaseHTTPRequestHandler):
             self._stop_timer()
             if self._expired.is_set():
                 return
+            # Native v2 negotiation retains the exact v1 sentence envelope.
+            # Flush EACH generated sentence before requesting the next token.
+            if self.headers.get("Accept") == "application/x-ndjson":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/x-ndjson")
+                self.send_header("Connection", "close")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                stream = (self.server.adapter.stream(request) if hasattr(self.server.adapter, "stream")
+                          else iter([self.server.adapter.exchange(request)]))
+                try:
+                    for part in stream:
+                        self.wfile.write(encode_response(part) + b"\n")
+                        self.wfile.flush()
+                    self.server.exchange_finished(self.request)
+                    self.wfile.write(b"[DONE]\n")
+                    self.wfile.flush()
+                except (OSError, TimeoutError):
+                    recorder = getattr(self.server.adapter, "transcript", None)
+                    if recorder is not None:
+                        recorder.log(kind="bridge_transport", request=request, outcome="write_failed_not_radio_delivery")
+                finally:
+                    close = getattr(stream, "close", None)
+                    if close is not None:
+                        close()
+                return
             # No second HTTP request on this connection; protocol 1.0 close.
             wire = encode_response(self.server.adapter.exchange(request))
+            self.server.exchange_finished(self.request)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(wire)))

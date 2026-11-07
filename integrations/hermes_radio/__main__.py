@@ -3,34 +3,46 @@ import argparse
 import os
 import sys
 
-from .facts import Facts
-from .hermes_client import HermesClassifier
-from .server import Adapter, RadioServer, serve
+from .controller import Controller
+from .openai_provider import OpenAIProvider
+from .tools import RadioTools, SnapshotCache
+from .transcript import Transcript
+from .server import RadioServer, serve
 
 
 def main():
     parser = argparse.ArgumentParser(description="Loopback text-only Athena radio adapter")
     parser.add_argument("--port", type=int, default=8650)
     parser.add_argument("--state-client-config", required=True, help="Explicit Athena client JSON document")
-    parser.add_argument("--hermes-endpoint", default=os.environ.get("ATHENA_RADIO_HERMES_ENDPOINT"))
-    parser.add_argument("--hermes-timeout", type=float, required=True, help="Classification deadline in seconds; no retries")
-    parser.add_argument("--request-timeout", type=float, required=True, help="HTTP header/body deadline in seconds")
-    parser.add_argument("--speaker", default="Prometheus")
+    parser.add_argument("--openai-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
+    parser.add_argument("--model", default=os.environ.get("ATHENA_RADIO_MODEL", "gpt-5.4-mini"))
+    parser.add_argument("--reasoning", choices=("none", "minimal", "low", "medium", "high"), default=None,
+                        help="Omitted by default; selected mini rejects low reasoning with tools")
+    parser.add_argument("--controller-timeout", type=float, default=6.0)
+    parser.add_argument("--request-timeout", type=float, default=2.0, help="HTTP header/body deadline in seconds")
+    parser.add_argument("--cache-interval", type=float, default=2.0)
+    parser.add_argument("--transcript-dir", default=os.environ.get("ATHENA_RADIO_TRANSCRIPT_DIR"))
+    parser.add_argument("--speaker", choices=("Prometheus",), default="Prometheus")
     args = parser.parse_args()
-    facts = None
+    cache = None
     try:
-        classifier = HermesClassifier(args.hermes_endpoint, os.environ.get("ATHENA_RADIO_HERMES_KEY"),
-                                      timeout=args.hermes_timeout)
-        facts = Facts.from_path(args.state_client_config)
-        server = RadioServer(Adapter(classifier, facts), port=args.port,
+        provider = OpenAIProvider(os.environ.get("OPENAI_API_KEY"), base_url=args.openai_base_url,
+                                  model=args.model, reasoning=args.reasoning, timeout=args.controller_timeout)
+        tools = RadioTools.from_path(args.state_client_config)
+        cache = SnapshotCache(tools, interval=args.cache_interval)
+        transcript = Transcript(args.transcript_dir)
+        if not transcript.log(kind="adapter_start", outcome="starting", provider="openai-api", model=args.model):
+            return 1
+        server = RadioServer(Controller(provider, tools, cache, transcript, timeout=args.controller_timeout), port=args.port,
                              request_timeout=args.request_timeout, speaker=args.speaker)
+        cache.start()
         serve(server)
     except (ValueError, OSError, TypeError):
         print("radio_adapter_startup_failed", file=sys.stderr)
         return 1
     finally:
-        if facts is not None:
-            facts.close()
+        if cache is not None:
+            cache.close()
     return 0
 
 

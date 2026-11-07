@@ -25,7 +25,8 @@ def main():
     parser.add_argument("--request-timeout", type=float, default=2.0, help="HTTP header/body deadline in seconds")
     parser.add_argument("--cache-interval", type=float, default=2.0)
     parser.add_argument("--transcript-dir", default=os.environ.get("ATHENA_RADIO_TRANSCRIPT_DIR"))
-    parser.add_argument("--speaker", choices=("Prometheus",), default="Prometheus")
+    parser.add_argument("--speaker", default=os.environ.get("ATHENA_RADIO_SPEAKER", "Prometheus,Player,Client"),
+                        help="comma-separated, case-insensitive SRS pilot names")
     args = parser.parse_args()
     cache = feeder = None
     try:
@@ -38,11 +39,11 @@ def main():
             from .eye import build
             from .simple_controller import SimpleController
             logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-            eye, feeder = build(args.eye_host, args.eye_port)
+            eye, feeder = build(args.eye_host, args.eye_port, player=args.speaker)
             feeder.start()
             transcript.log(kind="eye_start", outcome="starting", source="%s:%d" % (args.eye_host, args.eye_port))
             controller = SimpleController(None, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"),
-                                          base_url=args.openai_base_url, eye=eye)
+                                          base_url=args.openai_base_url, eye=eye, speaker=args.speaker)
             server = RadioServer(controller, port=args.port, request_timeout=args.request_timeout, speaker=args.speaker)
             serve(server)
             return 0
@@ -55,7 +56,8 @@ def main():
         cache = SnapshotCache(tools, interval=args.cache_interval)
         if os.environ.get("ATHENA_RADIO_SIMPLE") == "1":
             from .simple_controller import SimpleController
-            controller = SimpleController(tools, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"))
+            controller = SimpleController(tools, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"),
+                                          speaker=args.speaker)
         else:
             controller = Controller(provider, tools, cache, transcript, timeout=args.controller_timeout)
         server = RadioServer(controller, port=args.port,

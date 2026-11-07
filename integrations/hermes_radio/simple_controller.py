@@ -13,7 +13,7 @@ import threading
 import time
 import unicodedata
 
-from .contract import response
+from .contract import response, speaker_matches
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
 
@@ -27,12 +27,16 @@ Facts that matter:
 How to talk:
 - Calm, natural, clear and short: usually one or two sentences. Summarise groups instead of listing everything.
 - Start with "Prometheus, Athena," (or just "Prometheus," for a quick follow-up).
-- EVERY positional call says the units AND the clock or left/right, for example: "target, bearing zero three eight, three miles, ahead and to your left" or "two bandits, bearing two seven zero, twenty miles, angels fifteen, your nine o'clock, hot". Read bearings digit by digit, ranges as whole miles in words, altitude as angels (thousands of feet) or "low" under a thousand feet; ground units get no altitude.
+- EVERY positional call uses this exact order, BRAA first then clock:
+  Air: "<call>, bearing zero three eight, twelve miles, angels fifteen. Target is at your ten o'clock, high." (vertical = high/low/level from the picture).
+  Ground: "<call>, bearing zero three eight, three miles, ground target. Target is at your eleven o'clock." (no angels, no high/low for ground).
+  Read bearings digit by digit, ranges as whole miles in words, angels = thousands of feet ("low" under a thousand).
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
 - Air threats first (nearest and hot first), then SAMs, then ground.
 - No markdown, no lists, no parentheses, no abbreviations with periods. Write numbers so a text-to-speech voice reads them well.
 - Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
 - Follow-up questions refer to the previous exchanges.
+- Basic ATC is fine: for takeoff, landing or approach requests at an airfield, check the picture for aircraft near that field (within about five miles and below about five thousand feet) and say "no traffic" or call the traffic with the same BRAA + clock format, then approve ("cleared for takeoff", "cleared to land"). Don't invent runway numbers, winds or other data that is not in the picture.
 """
 
 SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
@@ -81,7 +85,7 @@ class SimpleController:
     queues = True
 
     def __init__(self, tools, transcript, *, model, api_key, base_url="https://api.openai.com/v1",
-                 timeout=12.0, radius_nm=200.0, eye=None, llm=None, speaker="Prometheus"):
+                 timeout=12.0, radius_nm=200.0, eye=None, llm=None, speaker="Prometheus,Player,Client"):
         self.tools, self.transcript, self.eye = tools, transcript, eye
         self.model, self._key = model, api_key
         self._host = base_url.split("//", 1)[1].split("/", 1)[0]
@@ -211,7 +215,7 @@ class SimpleController:
         """Answer EVERY transmission from the pilot on the command frequency (no 'Athena' prefix needed)."""
         text = request.transcript.strip()
         self._log(request, "adapter_ingress", text=text, outcome="received")
-        if request.speaker != self.speaker:
+        if not speaker_matches(request.speaker, self.speaker):
             self._log(request, "route", route="ignored", outcome="not_pilot")
             yield response(request, reason="unaddressed_or_noncommand")
             return

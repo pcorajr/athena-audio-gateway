@@ -104,7 +104,7 @@ def parse_request(raw, *, speaker="Prometheus"):
         raise ContractError()
     for key in ("transmission_id", "transcript", "speaker"):
         safe_text(data[key])
-    if data["speaker"] != speaker or data.get("addressee", "") != "":
+    if not speaker_matches(data["speaker"], speaker) or data.get("addressee", "") != "":
         raise ContractError()
     if len(data["transcript"].encode("utf-8")) > MAX_TRANSCRIPT_BYTES:
         raise ContractError()
@@ -146,3 +146,9 @@ def encode_response(value):
     if len(raw) > MAX_BODY_BYTES:
         raise ContractError()
     return raw
+
+
+def speaker_matches(name, allowed):
+    """Case-insensitive match against a comma-separated list of pilot names."""
+    name = (name or "").strip().casefold()
+    return bool(name) and any(name == item.strip().casefold() for item in str(allowed).split(","))

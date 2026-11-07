@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 
-PLAYER = "Prometheus"
+PLAYER = "Prometheus,Player,Client"
 M_TO_FT = 3.28084
 MS_TO_KT = 1.943844
 NM = 1852.0
@@ -181,6 +181,12 @@ def closure_kt(bearing, own_track, own_speed, tgt_track, tgt_speed):
     return ((vo[0] - vt[0]) * los[0] + (vo[1] - vt[1]) * los[1]) * MS_TO_KT
 
 
+def _is_pilot(name, allowed):
+    """Case-insensitive match of name against a comma-separated pilot list ("Prometheus,Player,Client")."""
+    name = (name or "").strip().casefold()
+    return bool(name) and any(name == item.strip().casefold() for item in str(allowed).split(","))
+
+
 def _three(deg):
     return "%03d" % (int(round(deg)) % 360 or 360)
 
@@ -324,7 +330,7 @@ class Eye:
     def ownship(self):
         with self.lock:
             for u in self.units.values():
-                if u.get("player") == self.player:
+                if _is_pilot(u.get("player"), self.player):
                     return u
         return None
 
@@ -389,7 +395,7 @@ class Eye:
         return ev
 
     def _is_me(self, obj):
-        return bool(obj) and obj.get("player") == self.player
+        return bool(obj) and _is_pilot(obj.get("player"), self.player)
 
     def _apply(self, ev):
         kind, ini, tgt = ev["kind"], ev["initiator"], ev["target"]
@@ -589,6 +595,8 @@ class Eye:
             alt_ft = sum(alts) / len(alts) * M_TO_FT
             g["alt_ft"] = int(round(alt_ft, -2))
             g["angels"] = "low" if alt_ft < 1000 else int(round(alt_ft / 1000.0))
+            own_ft = (own.get("alt_m") or 0) * M_TO_FT
+            g["vertical"] = "high" if alt_ft - own_ft > 1000 else "low" if own_ft - alt_ft > 1000 else "level"
             g["speed_kt"] = int(round((lead["speed_ms"] or 0) * MS_TO_KT))
             g["heading_true"] = _three(lead["track"] or 0)
             g["aspect"] = aspect_of(brg, lead["track"] or 0, lead["speed_ms"])
@@ -596,6 +604,7 @@ class Eye:
                                                     lead["track"], lead["speed_ms"])))
         else:
             g["moving"] = (lead["speed_ms"] or 0) > 2
+            g["vertical"] = "ground target"
         names = sorted({m[2]["group"] for m in members if m[2]["group"]})
         if names:
             g["groups"] = names[:3]
@@ -611,7 +620,7 @@ class Eye:
             self._settle_shots(now)
             own = None
             for u in self.units.values():
-                if u.get("player") == self.player:
+                if _is_pilot(u.get("player"), self.player):
                     own = u
                     break
             age = lambda t: None if t is None else round(now - t, 1)  # noqa: E731
@@ -959,8 +968,8 @@ class GrpcFeeder:
             self.stop.wait(2)
 
 
-def build(host, port):
-    eye = Eye(source="%s:%d" % (host, port))
+def build(host, port, player=PLAYER):
+    eye = Eye(player, source="%s:%d" % (host, port))
     return eye, GrpcFeeder(eye, host, port)
 
 

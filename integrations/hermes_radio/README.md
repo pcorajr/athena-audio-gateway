@@ -173,7 +173,10 @@ export PYTHONPATH=/home/pcorajr/Ai-Workspace/projects/project-athena/src:$PWD
 ```
 
 The endpoint is `POST http://127.0.0.1:8650/radio/v1/exchange`. `--port` changes
-only the port; no non-loopback bind exists. `--speaker` defaults to `Prometheus`.
+only the port; no non-loopback bind exists. `--speaker` (env `ATHENA_RADIO_SPEAKER`)
+is a comma-separated, case-insensitive pilot list, default `Prometheus,Player,Client`
+(single-player SRS reports the pilot as `player`); the gateway's
+`--athena-pilot-name` takes the same list.
 `--hermes-endpoint` may supply the same full URL instead of the environment.
 No credentials are accepted on the command line or printed. SIGINT/SIGTERM
 close the listener and drain the single bounded exchange and state worker.

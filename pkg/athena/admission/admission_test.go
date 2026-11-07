@@ -89,11 +89,6 @@ func TestRejectsEverythingElse(t *testing.T) {
 			want:   RejectSpeakerNotAuthorized,
 		},
 		{
-			name:   "case-mismatched pilot name",
-			mutate: func(c *Candidate) { c.SpeakerName = "prometheus" },
-			want:   RejectSpeakerNotAuthorized,
-		},
-		{
 			name:   "pilot name substring",
 			mutate: func(c *Candidate) { c.SpeakerName = "Prometheus 2" },
 			want:   RejectSpeakerNotAuthorized,
@@ -186,6 +181,55 @@ func TestIdentityIsResolvedPerCallNotCached(t *testing.T) {
 	after := g.Admit(validCandidate())
 	if !after.Admitted {
 		t.Errorf("post-reconnect: expected admission, got %s", after)
+	}
+}
+
+// 2026-11-07: the pilot setting is a comma-separated, case-insensitive list
+// (single-player SRS reports the pilot as "player").
+func TestPilotNameListIsCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	cfg := testConfig()
+	cfg.PilotName = "Prometheus, Player ,Client"
+	g, err := NewGate(cfg)
+	if err != nil {
+		t.Fatalf("NewGate: %v", err)
+	}
+	for _, name := range []string{"Prometheus", "prometheus", "player", "PLAYER", " Client "} {
+		c := validCandidate()
+		c.SpeakerName = name
+		if got := g.Admit(c); !got.Admitted {
+			t.Errorf("%q: expected admission, got %s", name, got)
+		}
+	}
+	for _, name := range []string{"Prometheus 2", "Players", "Viper 1-1", ",", "Player,Client"} {
+		c := validCandidate()
+		c.SpeakerName = name
+		if got := g.Admit(c); got.Admitted || got.Rejection != RejectSpeakerNotAuthorized {
+			t.Errorf("%q: expected %q, got %s", name, RejectSpeakerNotAuthorized, got)
+		}
+	}
+}
+
+func TestPilotNameMatches(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, list string
+		want       bool
+	}{
+		{"Prometheus", "Prometheus", true},
+		{"prometheus", "Prometheus", true},
+		{"player", "Prometheus,Player,Client", true},
+		{"Client", "Prometheus,Player,Client", true},
+		{"", "Prometheus,Player,Client", false},
+		{"  ", "Prometheus,,Client", false},
+		{"Athena", "Prometheus,Player,Client", false},
+		{"Prometheus,Player", "Prometheus,Player,Client", false},
+	} {
+		if got := PilotNameMatches(tc.name, tc.list); got != tc.want {
+			t.Errorf("PilotNameMatches(%q, %q) = %v, want %v", tc.name, tc.list, got, tc.want)
+		}
 	}
 }
 

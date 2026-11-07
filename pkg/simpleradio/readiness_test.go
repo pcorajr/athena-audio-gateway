@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/dharmab/skyeye/pkg/athena/transcript"
-	"github.com/dharmab/skyeye/pkg/simpleradio/types"
 )
 
 func TestPacket108ReadinessOnMetadataSyncWithoutPTT(t *testing.T) {
@@ -19,7 +18,7 @@ func TestPacket108ReadinessOnMetadataSyncWithoutPTT(t *testing.T) {
 	c.syncMVPClient(peer)
 	c.syncMVPClient(peer) // no duplicate status for unchanged metadata
 	duplicate := peer
-	duplicate.GUID = types.NewGUID()
+	duplicate.GUID = "zzzzduplicate000000000" // sorts after peer: identity is kept
 	c.syncMVPClient(duplicate)
 	c.removeClient(duplicate)
 	c.removeClient(peer)
@@ -29,7 +28,8 @@ func TestPacket108ReadinessOnMetadataSyncWithoutPTT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"pilot_missing", "ready", "pilot_ambiguous", "ready", "pilot_missing", "transport_unavailable"}
+	// Duplicate pilot names resolve deterministically (no pilot_ambiguous state).
+	want := []string{"pilot_missing", "ready", "pilot_missing", "transport_unavailable"}
 	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
 	if len(lines) != len(want) {
 		t.Fatalf("unexpected records: %s", raw)

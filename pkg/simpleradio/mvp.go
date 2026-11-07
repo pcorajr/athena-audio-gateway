@@ -39,7 +39,7 @@ func validateMVPConfig(cfg types.ClientConfiguration) error {
 	if !cfg.SRSMVP {
 		return nil
 	}
-	if len(cfg.Radios) != 1 || strings.TrimSpace(cfg.PilotName) == "" || strings.TrimSpace(cfg.ClientName) == strings.TrimSpace(cfg.PilotName) {
+	if len(cfg.Radios) != 1 || strings.TrimSpace(cfg.PilotName) == "" || pilotListMatch(cfg.ClientName, cfg.PilotName) {
 		return errors.New("MVP requires one radio and a distinct pilot name")
 	}
 	r := cfg.Radios[0]
@@ -50,8 +50,8 @@ func validateMVPConfig(cfg types.ClientConfiguration) error {
 	return nil
 }
 
-// Caller holds clientsLock. Count names across the entire live snapshot, not
-// just on-frequency clients: a duplicate display name is ambiguous.
+// Caller holds clientsLock. Names are matched across the entire live snapshot,
+// not just on-frequency clients.
 func (c *Client) mvpIdentityLocked() mvpIdentity {
 	identity, _ := c.mvpIdentityReasonLocked()
 	return identity
@@ -61,19 +61,32 @@ func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
 	if !c.mvp || len(c.clientInfo.RadioInfo.Radios) != 1 {
 		return mvpIdentity{}, "radio_configuration"
 	}
+	// The pilot setting is a comma-separated list (e.g. "Prometheus,Player,Client"):
+	// the earliest list entry present wins. Duplicates are resolved deterministically
+	// (peer on the command radio first, then lowest GUID) so the identity never flips
+	// between syncs just because of map iteration order.
 	var pilot types.ClientInfo
-	count := 0
+	bestRank, bestOnRadio, found := 0, false, false
 	for _, peer := range c.clients {
-		if strings.TrimSpace(peer.Name) == strings.TrimSpace(c.pilotName) {
-			count++
-			pilot = peer
+		rank := pilotListRank(peer.Name, c.pilotName)
+		if rank < 0 {
+			continue
+		}
+		onRadio := false
+		for _, radio := range peer.RadioInfo.Radios {
+			if exactMVPRadio(radio, c.clientInfo.RadioInfo.Radios[0]) {
+				onRadio = true
+			}
+		}
+		better := !found || rank < bestRank ||
+			(rank == bestRank && onRadio && !bestOnRadio) ||
+			(rank == bestRank && onRadio == bestOnRadio && peer.GUID < pilot.GUID)
+		if better {
+			pilot, bestRank, bestOnRadio, found = peer, rank, onRadio, true
 		}
 	}
-	if count == 0 {
+	if !found {
 		return mvpIdentity{}, "pilot_missing"
-	}
-	if count != 1 {
-		return mvpIdentity{}, "pilot_ambiguous"
 	}
 	if pilot.GUID == "" {
 		return mvpIdentity{}, "pilot_guid_missing"
@@ -81,15 +94,8 @@ func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
 	if pilot.GUID == c.clientInfo.GUID {
 		return mvpIdentity{}, "pilot_is_self"
 	}
-	if pilot.Coalition != c.clientInfo.Coalition {
-		return mvpIdentity{}, "pilot_coalition_mismatch"
-	}
-	for _, radio := range pilot.RadioInfo.Radios {
-		if exactMVPRadio(radio, c.clientInfo.RadioInfo.Radios[0]) {
-			return mvpIdentity{guid: pilot.GUID, unitID: pilot.RadioInfo.UnitID, unit: pilot.RadioInfo.Unit, seat: pilot.Seat}, ""
-		}
-	}
-	// Hotfix: peer radio list can lag/differ; the transmission frequency is checked separately.
+	// Coalition check removed: single-player SRS can report a different coalition.
+	// Peer radio list can lag/differ; the transmission frequency is checked separately.
 	return mvpIdentity{guid: pilot.GUID, unitID: pilot.RadioInfo.UnitID, unit: pilot.RadioInfo.Unit, seat: pilot.Seat}, ""
 }
 
@@ -460,4 +466,25 @@ func waitMVP(ctx context.Context, delay time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+// pilotListMatch reports whether name equals (case-insensitively) any entry of
+// the comma-separated pilot list.
+func pilotListMatch(name, list string) bool {
+	return pilotListRank(name, list) >= 0
+}
+
+// pilotListRank returns the index of name in the comma-separated pilot list
+// (case-insensitive, whitespace-trimmed), or -1.
+func pilotListRank(name, list string) int {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return -1
+	}
+	for i, candidate := range strings.Split(list, ",") {
+		if strings.EqualFold(name, strings.TrimSpace(candidate)) {
+			return i
+		}
+	}
+	return -1
 }

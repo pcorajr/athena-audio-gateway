@@ -214,7 +214,7 @@ func (g *Gate) Admit(c Candidate) Decision {
 	if name == "" {
 		return reject(RejectUnresolvedSpeaker)
 	}
-	if name != strings.TrimSpace(g.cfg.PilotName) {
+	if !PilotNameMatches(name, g.cfg.PilotName) {
 		return reject(RejectSpeakerNotAuthorized)
 	}
 
@@ -252,4 +252,19 @@ func (g *Gate) matchesFrequency(hz uint64) bool {
 
 func reject(r Rejection) Decision {
 	return Decision{Admitted: false, Rejection: r}
+}
+
+// PilotNameMatches reports whether name equals (case-insensitively) any entry of
+// the comma-separated pilot list, e.g. "Prometheus,Player,Client".
+func PilotNameMatches(name, list string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, candidate := range strings.Split(list, ",") {
+		if strings.EqualFold(name, strings.TrimSpace(candidate)) {
+			return true
+		}
+	}
+	return false
 }

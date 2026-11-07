@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/dharmab/skyeye/pkg/pcm/rate"
 	"github.com/dharmab/skyeye/pkg/simpleradio"
@@ -33,6 +34,18 @@ func NewWhisperRecognizer(model *whisper.Model, callsign string, opts ...Option)
 	return r
 }
 
+// leadInSilence is prepended to every sample: radio audio starts abruptly and
+// whisper tends to drop the first word without it.
+const leadInSilence = 400 * time.Millisecond
+
+// padLeadIn returns a new slice with leadInSilence of zero samples (16 kHz)
+// followed by sample. The input slice is not modified.
+func padLeadIn(sample []float32) []float32 {
+	n := int(leadInSilence.Seconds() * float64(rate.Wideband.Hertz()))
+	padded := make([]float32, n, n+len(sample))
+	return append(padded, sample...)
+}
+
 // Recognize implements [Recognizer.Recognize] using whisper.cpp.
 func (r *whisperRecognizer) Recognize(ctx context.Context, sample []float32, enableTranscriptionLogging bool) (string, error) {
 	maxSize := int(simpleradio.MaxTransmissionDuration.Seconds()) * int(rate.Wideband.Hertz())
@@ -40,6 +53,8 @@ func (r *whisperRecognizer) Recognize(ctx context.Context, sample []float32, ena
 		log.Warn().Int("length", len(sample)).Int("maxLength", maxSize).Msg("clamping sample to maximum size")
 		sample = sample[:maxSize]
 	}
+
+	sample = padLeadIn(sample)
 
 	wCtx, err := r.model.NewContext()
 	if err != nil {

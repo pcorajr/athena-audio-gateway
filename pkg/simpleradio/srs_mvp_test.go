@@ -103,7 +103,9 @@ func TestSRSMVPOneRadioAndNoReplay(t *testing.T) {
 }
 
 func TestSRSMVPIdentityInvalidation(t *testing.T) {
-	for _, kind := range []string{"reconnect", "rename", "duplicate", "unit", "seat", "snapshot_replaced", "disconnect"} {
+	// "duplicate" is no longer an invalidation: duplicate pilot names resolve
+	// deterministically (see TestPacket108RadioRejectionReasons/pilot_duplicate_resolved).
+	for _, kind := range []string{"reconnect", "rename", "unit", "seat", "snapshot_replaced", "disconnect"} {
 		t.Run(kind, func(t *testing.T) {
 			c, tr, w := mvpTestClient()
 			peer := c.clients[tr.route.origin]
@@ -114,9 +116,6 @@ func TestSRSMVPIdentityInvalidation(t *testing.T) {
 				c.mvpWriter = w
 			case "rename":
 				peer.Name = "other"
-				c.syncClient(peer)
-			case "duplicate":
-				peer.GUID = "other-guid"
 				c.syncClient(peer)
 			case "tune_away":
 				peer.RadioInfo.Radios = []types.Radio{{Frequency: 250000000}}

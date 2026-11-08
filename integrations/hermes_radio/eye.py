@@ -1923,9 +1923,12 @@ class Eye:
             "Nothing inside fifty miles. " + self._group_json(own, *hostile_raw[far[0]])["call"] if far
             else "No bandits within one hundred fifty miles.")
         ground = [i for i, (dom, _) in enumerate(hostile_raw) if dom == "ground" and dist(i) <= CLOSE_TIER_NM]
-        pic["ground_targets_within_20nm"] = [
-            {"call": self._group_json(own, *hostile_raw[i])["call"], "category": hostile_raw[i][1][0][2]["category"],
-             "type": hostile_raw[i][1][0][2].get("type")} for i in ground[:12]]  # nearest first; filtered by request
+        rows = []
+        for i in ground:  # every hostile ground group inside 20 nm, nearest first; the request filters, then caps
+            g = self._group_json(own, *hostile_raw[i])
+            rows.append({"call": g["call"], "category": g.get("category"),
+                         "member_categories": sorted({m[2]["category"] for m in hostile_raw[i][1]})})
+        pic["ground_targets_within_20nm"] = rows
         pic["ground_empty_call"] = "No ground targets within twenty miles."
         close = []
         for i in air:

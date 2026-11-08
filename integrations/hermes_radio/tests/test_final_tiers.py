@@ -117,5 +117,54 @@ class Final8ReviewTests(unittest.TestCase):
         self.assertEqual(parse_sse(lines)[0], 502)
 
 
+class Final8bReviewTests(unittest.TestCase):
+    def test_many_close_bandits_fit_two_frames_and_stay_pending(self):
+        eye, _ = make_eye(*(contact(i, "MiG-29S", distance=5 + i * 2, bearing=i * 60) for i in range(1, 6)))
+        for llm in (lambda m: "Prometheus, Athena, loud and clear.", None):
+            c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                                 llm=llm or (lambda m: (_ for _ in ()).throw(TimeoutError("down"))))
+            frames = list(c.stream(req("Athena, radio check")))
+            self.assertLessEqual(len(frames), 2)
+        pending = eye.picture().get("_close_bandits") or []
+        self.assertGreaterEqual(len(pending), 1)  # not all five were consumed in two replies
+
+    def test_debrief_reply_carries_close_bandit(self):
+        class Memory:
+            generation = 1
+            identity = "fixture"
+
+            def schedule_debrief(self):
+                return True
+
+            def publish(self, *a, **k):
+                pass
+
+            def summary(self):
+                return None
+        eye, _ = make_eye(contact(1, "MiG-29S", distance=5))
+        eye.memory = Memory()
+        said = speech(eye, "Athena, generate briefing")
+        self.assertIn("debrief written", said)
+        self.assertIn("MiG-29S", said)
+
+    def test_ground_selection_uncapped_mixed_groups_and_friendly(self):
+        units = [contact(i, "Ural-375", "red", "GROUND", distance=2 + i, bearing=i * 25) for i in range(1, 14)]
+        units.append(contact(40, "Infantry AK", "red", "GROUND", distance=18, bearing=200))
+        eye, _ = make_eye(*units)
+        self.assertIn("eighteen miles", speech(eye, "Athena, infantry picture"))
+        mixed, _ = make_eye(contact(1, "Ural-375", "red", "GROUND", distance=6, group="g"),
+                            contact(2, "Infantry AK", "red", "GROUND", distance=6.05, group="g"),
+                            contact(3, "Infantry AK", "red", "GROUND", distance=6.1, group="g"))
+        self.assertNotIn("No enemy infantry", speech(mixed, "Athena, infantry picture"))
+        self.assertEqual(speech(mixed, "Athena, friendly ground picture"), "Prometheus, Athena, LLM.")
+
+    def test_incomplete_response_falls_back(self):
+        import json
+        from integrations.hermes_radio.codex_llm import parse_sse
+        lines = ["data: " + json.dumps({"type": "response.output_text.done", "text": "partial"}),
+                 "data: " + json.dumps({"type": "response.incomplete", "response": {}})]
+        self.assertEqual(parse_sse(lines)[0], 502)
+
+
 if __name__ == "__main__":
     unittest.main()

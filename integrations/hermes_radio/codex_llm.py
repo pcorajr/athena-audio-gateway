@@ -123,7 +123,7 @@ def parse_sse(lines):
             deltas.append(event.get("delta", ""))
         elif kind == "response.output_text.done" and event.get("text"):
             done = event["text"] if done is None else done + event["text"]
-        elif kind in ("response.failed", "error"):
+        elif kind in ("response.failed", "response.incomplete", "error"):
             failed = json.dumps(event)[:300]
         elif kind == "response.completed":
             completed = _completed_text(event.get("response"))

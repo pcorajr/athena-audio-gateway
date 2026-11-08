@@ -328,11 +328,15 @@ def requested_calls(klass, text, pic):
         return None
     if klass == "long_picture" and "picture_long_range_top3" in pic:
         return pic["picture_long_range_top3"] or ["No bandits within one hundred fifty miles."]
-    if klass == "ground_picture" and "ground_targets_within_20nm" in pic:
+    if klass == "ground_picture" and "ground_targets_within_20nm" in pic and not re.search(
+            r"\b(friendl\w*|blue|own|our)\b", text, re.I):
         rows = pic["ground_targets_within_20nm"]
         cats = next((c for pattern, c in CATEGORY_ASK if pattern.search(text)), None)
         if cats:
-            rows = [r for r in rows if CATEGORY_ALIASES.get(r.get("category"), r.get("category")) in cats]
+            def matches(r):
+                found = [r.get("category")] + list(r.get("member_categories") or [])
+                return any(CATEGORY_ALIASES.get(c, c) in cats for c in found)
+            rows = [r for r in rows if matches(r)]
         calls = [r["call"] if isinstance(r, dict) else r for r in rows[:3]]
         if calls:
             return calls
@@ -594,13 +598,17 @@ class SimpleController:
         """Prepend each not-yet-called bandit inside 20 nm (current geometry) after the callsign prefix; only
         calls actually present in the final text are acknowledged, the rest stay pending."""
         prefix = "Prometheus, Athena, "
+        added = 0
         for row in close_bandits or []:
             call = row["call"]
             if call in answer:
                 announced.append(row["key"])
                 continue
-            if len(answer) + len(call) + 1 > MAX_SPEECH_CHARS:
+            # one new call per reply, and the whole reply must fit the first-sentence + one-part transport budget
+            # (two frames); anything not added stays pending for the next reply
+            if added or len(answer) + len(call) + 1 > PART_CHARS:
                 continue
+            added += 1
             if answer.startswith(prefix):
                 answer = prefix + call + " " + answer[len(prefix):]
             else:
@@ -808,11 +816,16 @@ class SimpleController:
             generation = memory.generation if memory is not None else None
             queued = memory.schedule_debrief() if memory is not None else False
             try:
-                summary = debrief_summary(self.picture())
+                dpic = self.picture()
+                summary = debrief_summary(dpic)
             except Exception:  # noqa: BLE001 - the report is the deliverable; the spoken part is best effort
-                summary = ""
+                dpic, summary = {}, ""
             answer = ("Prometheus, Athena, debrief written. " + summary).strip() if queued else (
                 ("Prometheus, Athena, debrief unavailable. " + summary).strip())
+            said = []
+            answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), said)
+            if said and self.eye is not None and hasattr(self.eye, "mark_announced"):
+                self.eye.mark_announced(said)
             self._log(request, "reply_generated", text=answer, outcome="intended", part=1)
             if memory is not None:
                 memory.publish("radio_call", {"request": text, "reply": answer, "report_status": "queued" if queued else "unavailable"},

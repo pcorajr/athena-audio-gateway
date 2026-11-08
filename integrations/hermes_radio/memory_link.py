@@ -50,6 +50,8 @@ def request(payload, *, path=None, timeout=0.12):
             if len(chunks) > MAX_FRAME:
                 raise ValueError("memory response too large")
         reply = json.loads(chunks)
+        if time.monotonic() >= deadline:
+            raise TimeoutError("memory deadline")
         if not isinstance(reply, dict) or not reply.get("ok"):
             raise ValueError("memory request failed")
         return reply

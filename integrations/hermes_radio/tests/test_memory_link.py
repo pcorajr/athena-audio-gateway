@@ -107,6 +107,31 @@ class MemoryLinkTests(unittest.TestCase):
         payload["nested"].append(2)
         self.assertEqual(link.queue[0][1]["payload"], {"nested": [1]})
 
+    def controller(self):
+        from integrations.hermes_radio.simple_controller import SimpleController
+        from integrations.hermes_radio.tests.test_eye import FakeTranscript
+        eye = Eye()
+        eye.memory = self.link()
+        with eye.memory.lock:
+            eye.memory.bindings[eye.memory.identity] = "mission-fixture"
+        return SimpleController(None, FakeTranscript(), model="fixture", api_key="fixture", eye=eye,
+                                llm=lambda messages: "Prometheus, copy.")
+
+    def test_optional_picture_memory_and_silent_outage(self):
+        controller = self.controller()
+        with patch("integrations.hermes_radio.memory_link.request", return_value={"memory": {"takeoff_airfield": "Kutaisi"}}):
+            self.assertEqual(controller.picture()["memory"]["takeoff_airfield"], "Kutaisi")
+        with patch("integrations.hermes_radio.memory_link.request", side_effect=OSError):
+            self.assertNotIn("memory", controller.picture())
+
+    def test_debrief_reply_only_after_receipt(self):
+        from integrations.hermes_radio.tests.test_eye import req
+        controller = self.controller()
+        with patch("integrations.hermes_radio.memory_link.request", return_value={"path": "/fixture/report.md"}):
+            self.assertEqual(controller.exchange(req("Athena, debrief"))["speech"], "debrief written")
+        with patch("integrations.hermes_radio.memory_link.request", side_effect=OSError):
+            self.assertEqual(controller.exchange(req("debrief"))["speech"], "Debrief unavailable.")
+
 
 if __name__ == "__main__":
     unittest.main()

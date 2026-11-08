@@ -21,6 +21,7 @@ PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the r
 Every turn you get a live PICTURE (JSON) from the Athena Eye tracking system. It is your only source of truth: ownship (Prometheus' aircraft), contact groups already computed from Prometheus (bearing, range in nautical miles, altitude, aspect, closure, and "clock" = clock position relative to Prometheus' nose with ahead/behind/left/right), nearby airbases, Prometheus' own shots and their results, recent kills and losses, recent events and alive totals. data_age_s tells you how old the data is; if it is old or the picture is not connected, say so briefly and still give what you have. Never invent contacts, kills or numbers that are not in the picture.
 
 Facts that matter:
+- Optional memory is mission history, not a replacement for the live Eye: takeoff airfield, weapons used, observed kill/loss timeline and labelled disagreements. Never turn an unclear audit verdict into a confirmed fact.
 - Every unit listed in contacts and totals is ALIVE. Something is dead or killed ONLY if it appears in recent_kills_and_losses, my_kills_this_mission or a shot result says kill. In my_kills_this_mission, confidence confirmed = a kill: say it plainly ("splash one T-55"), never "likely", even when inferred is true. Only confidence likely, or a recent_kills_and_losses row "no longer showing, likely destroyed", is "likely destroyed".
 - my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
 - ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words.
@@ -214,7 +215,14 @@ class SimpleController:
     # ---------------------------------------------------------------- picture
     def picture(self):
         if self.eye is not None:
-            return self.eye.picture()
+            pic = self.eye.picture()
+            # memory6: optional light enrichment; the link owns a <=120 ms whole-exchange deadline.
+            memory = getattr(self.eye, "memory", None)
+            if memory is not None:
+                section = memory.summary()
+                if section is not None:
+                    pic["memory"] = section
+            return pic
         return self._state_service_picture()
 
     def _state_service_picture(self):
@@ -393,6 +401,16 @@ class SimpleController:
 
     def _answer(self, request, text):
         start = time.monotonic()
+        # memory6: deterministic file receipt, never an LLM promise that a report exists.
+        memory = getattr(self.eye, "memory", None)
+        if re.fullmatch(r"\s*(?:athena[, ]+)?debrief[.!?]?\s*", text, re.I):
+            path = memory.debrief() if memory is not None else None
+            answer = "debrief written" if path else "Debrief unavailable."
+            self._log(request, "reply_generated", text=answer, outcome="intended", part=1)
+            if memory is not None:
+                memory.publish("radio_call", {"request": text, "reply": answer, "report": path})
+            yield response(request, speech=answer, state="ok")
+            return
         klass = call_class(text)
         report = None
         if klass == "kill_report" and self.eye is not None and hasattr(self.eye, "pilot_report"):
@@ -439,6 +457,8 @@ class SimpleController:
         answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
         llm_ms = round((time.monotonic() - t_llm) * 1000)
         self.history.append((text, answer))
+        if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
+            memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"})
         for index, part in enumerate(split_parts(answer), 1):
             self._log(request, "reply_generated", text=part, outcome="intended", part=index,
                       timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})

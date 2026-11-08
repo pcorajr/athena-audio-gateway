@@ -110,9 +110,9 @@ class AirPictureTests(unittest.TestCase):
         for count in (0, 4, 30):
             with self.subTest(alerts=count):
                 pic = deepcopy(base)
-                pic["rwr_alert_to_announce"] = ["Spike, SA-11 at your three o'clock."] * count
+                pic["rwr_alert_to_announce"] = ["Spike, SA-11 at your three o'clock, contact number %d." % i for i in range(count)]
                 pic["_rwr_keys"] = ["rwr-%d" % i for i in range(count)]
-                pic["splash_to_announce"] = ["Splash one T-55."] * count
+                pic["splash_to_announce"] = ["Splash one T-55, target number %d." % i for i in range(count)]
                 pic["_splash_keys"] = ["splash-%d" % i for i in range(count)]
                 rwr_keys, splash_keys = pic["_rwr_keys"], pic["_splash_keys"]
                 controller = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused",
@@ -127,8 +127,8 @@ class AirPictureTests(unittest.TestCase):
                 self.assertLessEqual(len(speech), MAX_SPEECH_CHARS)
                 for call in base["picture_top3"]:
                     self.assertIn(call, speech)
-                rwr_count = speech.count("Spike, SA-11 at your three o'clock.")
-                splash_count = speech.count("Splash one T-55.")
+                rwr_count = sum(1 for i in range(count) if "Spike, SA-11 at your three o'clock, contact number %d." % i in speech)
+                splash_count = sum(1 for i in range(count) if "Splash one T-55, target number %d." % i in speech)
                 expected = rwr_keys[:rwr_count] + splash_keys[:splash_count]
                 if expected:
                     mark.assert_called_once_with(expected)
@@ -136,7 +136,7 @@ class AirPictureTests(unittest.TestCase):
                     mark.assert_not_called()
                 if count == 4:
                     self.assertEqual(rwr_count + splash_count, count * 2)
-                    self.assertGreater(len(frames[1]["speech"]), 420)
+                    self.assertEqual(len(frames), 2)  # everything fits; second frame carries the rest
                 if count == 30:
                     self.assertLess(rwr_count + splash_count, count * 2)
 

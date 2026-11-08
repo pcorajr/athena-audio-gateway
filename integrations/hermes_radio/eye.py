@@ -168,6 +168,7 @@ ROCKET_PAT = re.compile(r"(hydra|s-5|s_5|s-8|s_8|s-13|s_13|s-24|s_24|s-25|s_25|z
                         r"lau|ffar|rocket|apkws|m151|m156|m257|m274|mk1|wp|hvar|rp-3)", re.I)
 
 
+SHELL_PAT = re.compile(r"(shells?\.|\buor\b|-uor-|uor-|uof|ubr|ofz|bzt|ozt|\d+\s?mm)", re.I)
 def weapon_kind(name, burst=False):
     if burst:
         return "gun"
@@ -176,9 +177,10 @@ def weapon_kind(name, burst=False):
         return "rocket"
     if BOMB_PAT.search(n):
         return "bomb"
-    if AAM_PAT.search(n):
+    if AAM_PAT.search(n) and not SHELL_PAT.search(n):
         return "air-to-air missile"
-    if re.search(r"(gsh|m61|gau|cannon|gun|_he|_ap|mg_|bullet|shell|20mm|30mm|23mm|vulcan|defa|aden)", n, re.I):
+    if SHELL_PAT.search(n) or re.search(r"(gsh|m61|gau|cannon|gun|_he|_ap|mg_|bullet|shell|\d+\s?mm|vulcan|defa|aden|uor|uof|ubr|"
+                 r"ofz|bzt|ozt|\bhei?\b|\bapi\b|tracer|\bflak\b|\bzu-?23\b|\bks-?19\b|\bs-?60\b)", n, re.I):
         return "gun"
     return "missile"
 
@@ -1250,6 +1252,8 @@ class Eye:
                     continue
                 if not self._hostile_to(coal, own):
                     continue
+                if weapon_kind(r.get("type")) in ("gun", "bomb", "rocket"):
+                    continue  # AAA shells, bombs and rockets are not missile launches
                 res = self._where(own, r["lat"], r["lon"], r.get("alt"))
                 if res is None:
                     continue
@@ -2016,8 +2020,18 @@ class Eye:
         pic["threats"] = self._threats_json(own, now)
         alerts = self.cockpit.pending_alerts(self.announced, now) + self._pending_threat_alerts(now)
         if alerts:
-            pic["rwr_alert_to_announce"] = [a["call"] for a in alerts]
-            pic["_rwr_keys"] = [a["key"] for a in alerts]
+            calls, keys, extra = [], [], []
+            for a in alerts:
+                if a["call"] in calls:
+                    extra.append(a["key"])  # same words already queued: mark it with the first one
+                    continue
+                calls.append(a["call"])
+                keys.append(a["key"])
+            calls, keys = calls[:2], keys[:2]
+            if extra:
+                keys[0] = [keys[0]] + extra if not isinstance(keys[0], list) else keys[0] + extra
+            pic["rwr_alert_to_announce"] = calls
+            pic["_rwr_keys"] = keys
         pic["my_shots_last_15_min"] = self._shots_json(own, now)
         pic["last_attack_age_s"] = (round(now - max(self._last_activity(s, now) for s in self.shots), 1)
                                     if self.shots else None)

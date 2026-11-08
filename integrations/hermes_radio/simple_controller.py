@@ -804,8 +804,16 @@ class SimpleController:
                 remaining = MAX_SPEECH_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                     for i, alert in enumerate(pic.get(field) or []):
-                        if len(alert) + 1 > remaining:
-                            continue  # keep this alert pending for a later transmission
+                        if field == "splash_to_announce" and klass == "kill_confirm":
+                            # the confirmation itself reads the kill; mark the splash as said, don't repeat it
+                            if keys and i < len(keys):
+                                announced.append(keys[i])
+                            continue
+                        alert = alert.strip()
+                        if alert and alert[-1] not in ".!?":
+                            alert += "."
+                        if alert in alerts or len(alert) + 1 > remaining:
+                            continue  # duplicate, or keep this alert pending for a later transmission
                         remaining -= len(alert) + 1
                         alerts.append(alert)
                         if keys and i < len(keys):
@@ -814,7 +822,10 @@ class SimpleController:
         else:
             answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
         if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
-            self.eye.mark_announced(announced)
+            flat = []
+            for key in announced:
+                flat.extend(key if isinstance(key, list) else [key])
+            self.eye.mark_announced(flat)
         llm_ms = round((time.monotonic() - t_llm) * 1000)
         self.history.append((text, answer))
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery

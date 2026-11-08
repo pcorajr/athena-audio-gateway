@@ -125,7 +125,7 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(call_class("Athena, bomb impact."), "impact")
         self.assertIn("splash one T-55", say(c, "Athena, bomb impact."))
         eye.pic["my_shots_last_15_min"] = {"shots": [{"weapon": "AGM_65D", "age_s": 5, "result": "pending"}]}
-        self.assertIn("still tracking", say(c, "Athena, impact"))
+        self.assertIn("no result yet", say(c, "Athena, impact"))
 
     def test_loadout_is_compact_and_skips_pods(self):
         line = loadout_calls(BASE["ownship"])[0]
@@ -166,6 +166,83 @@ class RoutingTests(unittest.TestCase):
         c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
                              llm=lambda messages: "LLM ANSWER")
         self.assertNotEqual(say(c, "Athena, mission status"), "debrief written")
+
+
+
+class ReviewFixTests(unittest.TestCase):
+    """RV-1 round-6 findings: identity, generic remaining, likely impact, '?' tags."""
+
+    def controller(self, eye, llm=None):
+        return SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                                llm=llm or (lambda messages: "LLM ANSWER"))
+
+    def test_same_type_kills_one_second_apart_are_both_new(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = [kill("T-55", 30.0)]
+        c = self.controller(eye)
+        self.assertIn("splash one T-55", say(c, "confirm kill"))
+        eye.pic["my_kills_this_mission"] = [kill("T-55", 31.0), kill("T-55", 30.0)]
+        self.assertIn("splash one T-55", say(c, "confirm kill"))
+
+    def test_identical_rows_are_distinct_kills(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = [kill("Paratrooper AKS-74", 100, "infantry"),
+                                            kill("Paratrooper AKS-74", 100, "infantry")]
+        c = self.controller(eye)
+        self.assertIn("two Paratrooper AKS-74", say(c, "confirm kills"))
+        self.assertIn("No new kills", say(c, "confirm kills"))
+
+    def test_stable_ids_win_and_llm_latency_does_not_replay(self):
+        import time as _time
+        eye = FakeEye()
+        k = kill("T-55", 10)
+        k["seq"] = 7
+        eye.pic["my_kills_this_mission"] = [k]
+
+        def slow(messages):
+            _time.sleep(0.05)
+            return "LLM ANSWER"
+        c = self.controller(eye, slow)
+        say(c, "confirm kill")
+        k2 = dict(k, age_s=400)  # same seq, very different age: still the same kill
+        eye.pic["my_kills_this_mission"] = [k2]
+        self.assertIn("No new kills", say(c, "confirm kill"))
+
+    def test_pilot_and_wingman_same_type_are_separate(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = [kill("T-55", 20)]
+        eye.pic["recent_kills_and_losses_last_10_min"] = [
+            {"age_s": 20, "event": "killed", "by_me": False, "friendly_loss": False, "weapon": "AGM_65H",
+             "victim": {"type": "T-55", "category": "armor", "coalition": "red"},
+             "killer": {"type": "A-10C_2", "name": "Wingman", "coalition": "blue"}}]
+        c = self.controller(eye)
+        self.assertIn("splash one T-55", say(c, "confirm kill"))
+        self.assertIn("T-55", say(c, "confirm wingman kill"))
+
+    def test_generic_remaining_reports_surviving_armor_not_scenery(self):
+        eye = FakeEye()
+        eye.pic["alive_totals_by_coalition"] = {"red": {"armor": 2}}
+        eye.pic["my_kills_this_mission"] = [kill("T-55", 40), kill("MOST(ROAD)BIG-CRUSH", 20, "scenery")]
+        answer = say(self.controller(eye), "- Confirm kill, tell me what remains.")
+        self.assertIn("two enemy armor", answer)
+        self.assertNotIn("structures remaining", answer)
+
+    def test_impact_likely_and_pending_without_flight_evidence(self):
+        eye = FakeEye()
+        eye.pic["my_shots_last_15_min"] = {"shots": [
+            {"weapon": "GBU_38", "age_s": 9, "result": "likely kill (inferred: target no longer showing)",
+             "intended_target": {"type": "T-55"}}]}
+        c = self.controller(eye)
+        self.assertIn("Likely kill on T-55", say(c, "Athena, bomb impact"))
+        eye.pic["my_shots_last_15_min"] = {"shots": [{"weapon": "GBU_38", "age_s": 4, "result": "pending"}]}
+        answer = say(c, "Athena, impact")
+        self.assertIn("no result yet", answer)
+        self.assertNotIn("tracking", answer)
+
+    def test_confirm_tag_with_question_mark_is_still_an_ack(self):
+        for text in ("I'm running in to kill the last armor, confirm?", "Athena, weapons hot, confirm?"):
+            self.assertEqual(call_class(text, {"last_attack_age_s": 20}), "intent", text)
+        self.assertNotEqual(call_class("Athena, what's my time to impact?"), "intent")
 
 
 if __name__ == "__main__":

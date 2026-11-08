@@ -130,6 +130,8 @@ INTENT_ACKS = (
                 r"rockets? away)\b", re.I), "copy, weapon away."),
     (re.compile(r"\b(off target|coming off)\b", re.I), "copy, off target."),
 )
+CONFIRM_TAG = re.compile(r"[,.]?\s*\bconfirm\b[.?!]*\s*$", re.I)
+GENUINE_QUESTION = re.compile(r"\b(what|how|when|where|which|who|did|does|is|are|any)\b", re.I)
 IMPACT_ASK = re.compile(r"\b(bomb impact|weapon impact|impact|did (it|that) hit|any hits?)\b", re.I)
 DEBRIEF_ASK = re.compile(r"\b(debrief\w*|mission (end(ed|ing)?|complete|over|summary|report|briefing)|"
                          r"end(ing)? (of )?(the |this |my )?mission|provide (a |the |me a )?(brief|briefing|summary)|"
@@ -190,7 +192,7 @@ def call_class(text, pic=None):
         re.search(r"\b(targets?|enemy|hostiles?|bandits?)\b", t, re.I) or GROUND_ASK.search(t))
     if DAMAGE_ASK.search(t) and not target_damage:
         return "damage"
-    if intent_ack(t) and not _QUESTION.search(t):
+    if intent_ack(t) and (not _QUESTION.search(t) or (CONFIRM_TAG.search(t) and not GENUINE_QUESTION.search(t))):
         return "intent"  # round 6: "running in ..., confirm" is an acknowledgement, not a kill check
     if IMPACT_ASK.search(t):
         return "impact"
@@ -263,7 +265,11 @@ def impact_calls(pic):
         return ["Hit observed on %s, no kill yet." % target]
     if result == "miss":
         return ["No hit observed."]
-    return ["Copy, weapon still tracking, no result yet."]
+    if result.startswith("likely"):
+        return ["Likely kill on %s, target no longer showing." % target]
+    if shot.get("in_flight") or shot.get("weapon_in_flight"):
+        return ["Copy, weapon still in flight, no result yet."]
+    return ["Copy, no result yet."]
 
 
 def requested_calls(klass, text, pic):
@@ -521,35 +527,67 @@ class SimpleController:
         return out
 
     # ---------------------------------------------------------------- kill confirmation (round 6)
-    def _kill_rows(self, pic, wingman):
-        """Kill rows (time, target, category, weapon, confidence) for the pilot or the friendly flight."""
-        now = time.time()
-        if not wingman:
-            return [(now - (k.get("age_s") or 0), spoken_target(k.get("target"), k.get("category")),
-                     k.get("category"), k.get("weapon"), k.get("confidence") or "confirmed")
-                    for k in pic.get("my_kills_this_mission") or []]
-        mine = ((pic.get("ownship") or {}).get("coalition"))
+    def _kill_rows(self, pic, wingman, pic_time):
+        """Kill rows (key, target, category, weapon, confidence, abs_time) for the pilot or the friendly flight.
+
+        key is the Eye's stable per-kill id/seq when published, else None (matched by owner, target, weapon
+        and picture-time reconstructed event time). pic_time is taken right after the picture, never after
+        the LLM call, so model latency cannot shift identities.
+        """
+        owner = "wingman" if wingman else "me"
         rows = []
+        if not wingman:
+            for k in pic.get("my_kills_this_mission") or []:
+                key = k.get("seq", k.get("kill_id", k.get("id")))
+                rows.append(((owner, "id", key) if key is not None else None,
+                             spoken_target(k.get("target"), k.get("category")), k.get("category"), k.get("weapon"),
+                             k.get("confidence") or "confirmed", pic_time - (k.get("age_s") or 0)))
+            return rows
+        mine = ((pic.get("ownship") or {}).get("coalition"))
         for r in pic.get("recent_kills_and_losses_last_10_min") or []:
             killer, victim = r.get("killer") or {}, r.get("victim") or {}
             if r.get("by_me") or r.get("friendly_loss") or not killer or (mine and killer.get("coalition") != mine):
                 continue
-            rows.append((now - (r.get("age_s") or 0), spoken_target(victim.get("type"), victim.get("category")),
-                         victim.get("category"), r.get("weapon"), "likely" if r.get("inferred") else "confirmed"))
+            key = r.get("seq", r.get("kill_id"))
+            rows.append(((owner, "id", key) if key is not None else None,
+                         spoken_target(victim.get("type"), victim.get("category")), victim.get("category"),
+                         r.get("weapon"), "likely" if r.get("inferred") else "confirmed",
+                         pic_time - (r.get("age_s") or 0)))
         return rows
 
-    def _is_confirmed(self, row):
-        return any(abs(t - row[0]) <= 3 and target == row[1] for t, target in self._confirmed_kills)
+    def _split_new(self, rows, owner):
+        """(new, all) with one-to-one matching against kills already read back for this owner."""
+        unused = [c for c in self._confirmed_kills if c[0] == owner]
+        new = []
+        for row in rows:
+            match = None
+            for c in unused:
+                if row[0] is not None or c[1] is not None:
+                    if row[0] is not None and c[1] == row[0]:
+                        match = c
+                        break
+                    continue
+                if c[2] == row[1] and c[3] == row[3] and abs(c[4] - row[5]) <= 2.0:
+                    match = c
+                    break
+            if match is None:
+                new.append(row)
+            else:
+                unused.remove(match)
+        return new
 
     @staticmethod
     def _count_line(rows, label):
         counts = Counter(r[1] for r in rows)
         return "%s %s." % (label, ", ".join("%s %s" % (words(n), t) for t, n in counts.items()))
 
-    def kill_confirm_calls(self, text, pic):
+    def kill_confirm_calls(self, text, pic, pic_time=None):
         wingman = bool(WINGMAN_ASK.search(text))
+        owner = "wingman" if wingman else "me"
         cats = next((c for pattern, c in CATEGORY_ASK if pattern.search(text)), None)
-        rows = self._kill_rows(pic, wingman)
+        all_rows = self._kill_rows(pic, wingman, time.time() if pic_time is None else pic_time)
+        fresh = self._split_new(all_rows, owner)
+        rows = all_rows
         if cats:
             rows = [r for r in rows if r[2] in cats]
         lines = []
@@ -561,7 +599,7 @@ class SimpleController:
             if not lines:
                 lines.append("No %skills yet." % ("wingman " if wingman else ""))
         else:
-            new = [r for r in rows if not self._is_confirmed(r)]
+            new = [r for r in fresh if not cats or r[2] in cats]
             confirmed = [r for r in new if r[4] == "confirmed"]
             likely = [r for r in new if r[4] != "confirmed"]
             if len(confirmed) == 1 and not likely:
@@ -575,10 +613,12 @@ class SimpleController:
                 lines.append("No new %skills since your last check." % ("wingman " if wingman else "")
                              if rows else "No %skills showing." % ("wingman " if wingman else ""))
         lines = [" ".join(line.split()) for line in lines]
-        self._confirmed_kills.extend((r[0], r[1]) for r in rows)
-        del self._confirmed_kills[:-500]
+        # remember only the kills not already remembered (no duplicate cache entries)
+        remembered = fresh if TOTAL_ASK.search(text) else [r for r in fresh if not cats or r[2] in cats]
+        self._confirmed_kills.extend((owner, r[0], r[1], r[3], r[5]) for r in remembered)
+        del self._confirmed_kills[:-1000]
         if REMAIN_ASK.search(text):
-            lines.append(self.remaining_line(pic, cats or ([rows[-1][2]] if rows else None)))
+            lines.append(self.remaining_line(pic, cats))
         return lines
 
     @staticmethod
@@ -590,8 +630,11 @@ class SimpleController:
             n = sum(enemy.get(c, 0) for c in cats)
             label = CATEGORY_WORDS.get(cats[0], "enemy " + str(cats[0]))
             return ("%s %s remain." % (words(n).capitalize(), label)) if n else "No %s remaining." % label
-        n = sum(v for k, v in enemy.items() if k not in ("fighter", "attack", "bomber", "helicopter", "transport"))
-        return "%s enemy ground units remain." % words(n).capitalize()
+        ground = [(k, v) for k, v in enemy.items() if v and k in CATEGORY_WORDS and k not in ("scenery", "static")]
+        if not ground:
+            return "No enemy ground units remaining."
+        parts = ["%s %s" % (words(v), CATEGORY_WORDS[k]) for k, v in sorted(ground, key=lambda kv: -kv[1])]
+        return "Remaining: %s." % ", ".join(parts)
 
     # ---------------------------------------------------------------- llm
     def ask(self, messages):
@@ -662,6 +705,7 @@ class SimpleController:
             except Exception:  # noqa: BLE001 - never block the answer on bookkeeping
                 report = None
         pic, error = self._picture_with_retry()
+        pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
         klass = call_class(text, pic)
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
@@ -696,7 +740,7 @@ class SimpleController:
             except Exception as failure:  # noqa: BLE001 - one retry, then a spoken fallback
                 self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
                           attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
-        calls = (self.kill_confirm_calls(text, pic) if klass == "kill_confirm" and pic.get("ownship")
+        calls = (self.kill_confirm_calls(text, pic, pic_time) if klass == "kill_confirm" and pic.get("ownship")
                  and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
         if calls is not None:
             age = (pic.get("data_age_s") or {}).get("units")

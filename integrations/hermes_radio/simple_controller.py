@@ -470,14 +470,16 @@ class SimpleController:
 
     def _answer(self, request, text):
         start = time.monotonic()
-        # memory6: deterministic file receipt, never an LLM promise that a report exists.
+        # memory6: owner's immediate acknowledgement; report I/O runs off-turn.
         memory = getattr(self.eye, "memory", None)
         if re.fullmatch(r"\s*(?:athena[, ]+)?debrief[.!?]?\s*", text, re.I):
-            path = memory.debrief() if memory is not None else None
-            answer = "debrief written" if path else "Debrief unavailable."
+            generation = memory.generation if memory is not None else None
+            queued = memory.schedule_debrief() if memory is not None else False
+            answer = "debrief written" if queued else "Debrief unavailable."
             self._log(request, "reply_generated", text=answer, outcome="intended", part=1)
             if memory is not None:
-                memory.publish("radio_call", {"request": text, "reply": answer, "report": path})
+                memory.publish("radio_call", {"request": text, "reply": answer, "report_status": "queued" if queued else "unavailable"},
+                               generation=generation)
             yield response(request, speech=answer, state="ok")
             return
         klass = call_class(text)
@@ -554,7 +556,8 @@ class SimpleController:
         llm_ms = round((time.monotonic() - t_llm) * 1000)
         self.history.append((text, answer))
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
-            memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"})
+            memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"},
+                           generation=pic.get("_memory_generation") if isinstance(pic, dict) else None)
         # Fixed replies are budgeted above: first sentence, then all remaining calls
         # in the second frame. The gateway allows two frames, not 420-char chunks.
         parts = split_parts(answer, MAX_SPEECH_CHARS if calls is not None else PART_CHARS)

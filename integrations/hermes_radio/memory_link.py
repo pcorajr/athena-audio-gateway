@@ -8,6 +8,7 @@ All socket I/O runs on the publisher thread except explicitly bounded queries.
 from collections import deque
 import copy
 import json
+import logging
 import os
 from pathlib import Path
 import socket
@@ -67,37 +68,53 @@ class MemoryLink:
         self.wake = threading.Event()
         self.stop = threading.Event()
         self.identity = None
+        self.generation = 0
         self.bindings = {}
         self.dropped = 0
         self.sent = 0
         self.failures = 0
         self._last = {}
         self.thread = None
+        self.debrief_thread = None
+        self.debrief_status = None
         if start:
             self.thread = threading.Thread(target=self._run, name="eye-memory", daemon=True)
             self.thread.start()
 
-    def set_identity(self, session_id, filename, source):
+    def invalidate(self):
+        """Fence snapshots/in-flight metadata; queued facts keep their identity."""
+        with self.lock:
+            self.generation += 1
+            self.identity = None
+            self._last.clear()
+            return self.generation
+
+    def set_identity(self, session_id, filename, source, *, generation=None):
         identity = None if session_id is None else (int(session_id), str(filename), str(source))
         with self.lock:
+            if generation is not None and generation != self.generation:
+                return False
             if self.identity != identity:
                 self._last.clear()
+                if generation is None:
+                    self.generation += 1
             self.identity = identity
         self.wake.set()
+        return True
 
     @property
     def mission_key(self):
         with self.lock:
             return self.bindings.get(self.identity)
 
-    def publish(self, kind, payload, *, at=None):
+    def publish(self, kind, payload, *, at=None, generation=None):
         """Bounded local enqueue only; no filesystem or socket work on the Eye."""
         try:
             row = {"schema_version": SCHEMA_VERSION, "id": str(uuid.uuid4()),
                    "time": time.time() if at is None else at, "type": str(kind),
                    "payload": copy.deepcopy(payload)}
             with self.lock:
-                if self.identity is None:
+                if self.identity is None or (generation is not None and generation != self.generation):
                     self.dropped += 1
                     return False
                 if len(self.queue) >= self.capacity:
@@ -111,7 +128,8 @@ class MemoryLink:
                 self.dropped += 1
             return False
 
-    def capture_picture(self, pic):
+    def capture_picture(self, pic, *, at=None):
+        generation = pic.get("_memory_generation", self.generation)
         own = pic.get("ownship") or {}
         facts = {"loadout": own.get("loadout"), "fuel": own.get("fuel"),
                  "life_damage": {k: own[k] for k in ("life", "life0", "damage", "health") if k in own},
@@ -126,10 +144,13 @@ class MemoryLink:
             # Keep full evidence; changes include freshness and per-shot results.
             token = json.dumps(payload, sort_keys=True, default=str)
             with self.lock:
+                if self.identity is None or generation != self.generation:
+                    self.dropped += 1
+                    continue
                 changed = self._last.get(kind) != token
                 self._last[kind] = token
             if changed:
-                self.publish(kind, {"value": payload})
+                self.publish(kind, {"value": payload}, generation=generation, at=at)
 
     def _send_one(self):
         with self.lock:
@@ -174,11 +195,13 @@ class MemoryLink:
                 self.wake.wait(0.2)
 
     def summary(self):
+        generation = self.generation
         key = self.mission_key
         if key is None:
             return None
         try:
-            return request({"operation": "summary", "mission": key}, path=self.path, timeout=0.12)["memory"]
+            result = request({"operation": "summary", "mission": key}, path=self.path, timeout=0.12)["memory"]
+            return result if generation == self.generation else None
         except (OSError, ValueError, KeyError, TimeoutError):
             return None
 
@@ -191,6 +214,34 @@ class MemoryLink:
         except (OSError, ValueError, KeyError, TimeoutError):
             return None
 
+    def schedule_debrief(self):
+        """Accept a report job without holding a radio turn during disk/socket I/O.
+
+        The requested short radio acknowledgement means queued, not a file receipt.
+        Completion/failure is retained here and in the operator log.
+        """
+        with self.lock:
+            key = self.bindings.get(self.identity)
+            if key is None:
+                return False
+            if self.debrief_thread and self.debrief_thread.is_alive():
+                return (self.debrief_status or {}).get("mission_key") == key
+            self.debrief_status = {"state": "queued", "mission_key": key}
+
+            def write():
+                try:
+                    path = request({"operation": "debrief", "mission": key}, path=self.path, timeout=4)["path"]
+                    status = {"state": "written", "mission_key": key, "path": path}
+                except (OSError, ValueError, KeyError, TimeoutError) as error:
+                    status = {"state": "failed", "mission_key": key, "error": type(error).__name__}
+                with self.lock:
+                    self.debrief_status = status
+                logging.getLogger(__name__).info("memory debrief: %s", status)
+
+            self.debrief_thread = threading.Thread(target=write, name="eye-debrief", daemon=True)
+            self.debrief_thread.start()
+            return True
+
     def close(self):
         self.stop.set()
         self.wake.set()
@@ -202,3 +253,22 @@ def attach(eye):
     if os.environ.get("ATHENA_MEMORY_ENABLED", "0") == "1":
         eye.memory = MemoryLink(eye)
     return eye
+
+
+def source_matches():
+    """Startup reuse check: query only the local socket, never a DCS endpoint."""
+    from metis.state_service.memory_source import resolve_source
+    try:
+        source = resolve_source()
+        health = request({"operation": "health"})
+        return health.get("source") == source.name and health.get("endpoint") == source.target
+    except (OSError, ValueError, KeyError, TimeoutError):
+        return False
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Check optional local memory source before Eye startup")
+    parser.add_argument("--check-source", action="store_true", required=True)
+    parser.parse_args()
+    raise SystemExit(0 if source_matches() else 1)

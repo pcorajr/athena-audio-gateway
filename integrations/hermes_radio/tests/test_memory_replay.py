@@ -32,9 +32,9 @@ async def replay(*, report_root=None):
         link = None
         try:
             await asyncio.wait_for(runtime.ready.wait(), 2)
-            mission = await runtime.attach(dict(session_id=61107, filename="memory6-offline-fixture.miz",
-                name="Offline-fixture-memory6", theatre="Caucasus", real_time=0.))
             clock = [datetime(2026, 11, 7, 18, 30, tzinfo=timezone.utc).timestamp()]
+            mission = await runtime.attach(dict(session_id=61107, filename="memory6-offline-fixture.miz",
+                name="Offline-fixture-memory6", theatre="Caucasus", real_time=0., now=clock[0]))
             eye = Eye(clock=lambda: clock[0], source="fixture.invalid:50051")
             for unit in fx.UNITS:
                 eye.on_unit(unit)
@@ -56,8 +56,8 @@ async def replay(*, report_root=None):
             wrong = {"kind": "kill", "mission_time": 111., "initiator": {"name": fx.PROMETHEUS["name"]},
                      "target": {"name": fx.UNITS[1]["name"]}, "weapon": "fixture-wrong-weapon", "fixture_fault": True}
             link.publish("event", wrong, at=clock[0])
-            link.capture_picture(eye.picture())
-            link.publish("radio_call", {"request": "picture", "reply": "Fixture reply", "delivery": "generated"})
+            link.capture_picture(eye.picture(), at=clock[0])
+            link.publish("radio_call", {"request": "picture", "reply": "Fixture reply", "delivery": "generated"}, at=clock[0])
             async with asyncio.timeout(3):
                 while True:
                     with link.lock:
@@ -82,8 +82,15 @@ async def replay(*, report_root=None):
                 assert await asyncio.to_thread(main, ["--mission", "last", "--socket", str(root / "s")]) == 0
             path = Path(receipt["path"])
             text = path.read_text()
-            assert "Eye-vs-Memory audit" in text and "fixture-wrong-weapon" in text
-            assert "Verdict: Eye wrong" in text
+            assert "Eye vs Memory audit" in text and "fixture-wrong-weapon" in text
+            assert "| Eye wrong |" in text
+            main, appendix = text.split("## Appendix: raw evidence references")
+            assert "13:30:00" in main and "America/New_York" in main
+            assert "Red CAP 1-1 (Su-27)" in main and "F-16C_50" in main
+            assert "{" not in main and "mission_key" not in main
+            assert "raw #" in appendix and "sha256" in appendix
+            assert "You fired AIM-120C; hit Red CAP 1-1 (Su-27) at 13:30:02; destroyed Red CAP 1-1 (Su-27) at 13:30:03" in main
+            assert "Captured duration: 00:00:04" in main
             return {"raw_events": len(records["raw_events"]), "observations": len(records["observations"]),
                     "dropped": link.dropped, "health_latency_ms": round(latency, 3),
                     "source": health["endpoint"], "connected": health["connected"], "report": str(path)}

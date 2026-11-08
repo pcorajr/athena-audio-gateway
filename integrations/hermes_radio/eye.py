@@ -449,6 +449,11 @@ class Eye:
     # -- lifecycle
     def reset(self, reason):
         with self.lock:
+            if self.memory is not None:
+                self.memory.invalidate()
+                self.cockpit = CockpitState(clock=self.clock)
+                self.fuel = self.fuel_at = None
+                self._own_cache = None
             self.units = {}
             self.last_known = OrderedDict()
             self.events = deque()
@@ -593,6 +598,10 @@ class Eye:
         now = self.clock()
         kind = next((k for k in msg if k != "time"), None)
         with self.lock:
+            if kind == "mission_start" and self.memory is not None:
+                # Fence before raw-debug or any derived publication. A full reset
+                # prevents old units/cockpit data being sampled under the next identity.
+                self.reset("mission_start")
             # Raw stream health: every message counts (also noise kinds), it proves the stream is alive.
             self.events_rx_at = now
             self.events_total += 1
@@ -600,6 +609,7 @@ class Eye:
             while self.event_rx and now - self.event_rx[0] > 300:
                 self.event_rx.popleft()
             self._raw_debug(kind, msg, now)
+            memory_generation = self.memory.generation if self.memory is not None else None
         if kind is None:
             return None
         body = msg.get(kind) or {}
@@ -628,10 +638,14 @@ class Eye:
             return None  # noise
         wake = False
         with self.lock:
+            if self.memory is not None and memory_generation != self.memory.generation:
+                with self.memory.lock:
+                    self.memory.dropped += 1
+                return None  # normalized across a reset: the mission is ambiguous
             self.events_at = now
             if kind == "mission_start":
-                # New mission: drop old events/shots. Units are NOT wiped here (the first unit snapshot
-                # may already have arrived); the feeder resubscribes the unit streams for a full resend.
+                # Without memory retain the early unit snapshot; with memory the
+                # full reset above fences old state. The feeder requests a full resend.
                 self.events.clear()
                 self.shots.clear()
                 self.vanished.clear()
@@ -736,7 +750,7 @@ class Eye:
             self._resolve(ev, "hit")
         elif kind == "kill" and me:
             self._resolve(ev, "kill")
-            self._record_my_kill(tgt, ev.get("weapon"), "kill event", ev["t"])
+            self._record_my_kill(tgt, ev.get("weapon"), "kill event", ev["t"], mission_time=ev.get("mission_time"))
         return (kind in ("shot", "shooting_start", "shooting_end") and bool(ini) and
                 (me or bool(ini.get("player")))) or (kind == "birth" and bool(ini) and bool(ini.get("player")))
 
@@ -903,9 +917,9 @@ class Eye:
         s["resolved_t"] = ev["t"]
         target = s["hit_target"] if hit else unit
         how = ("hit then %s event" if hit else "%s event after my attack on it") % ev["kind"]
-        self._record_my_kill(target, s["weapon"], how, ev["t"])
+        self._record_my_kill(target, s["weapon"], how, ev["t"], mission_time=ev.get("mission_time"))
 
-    def _record_my_kill(self, target, weapon, how, t, inferred=False, likely=False):
+    def _record_my_kill(self, target, weapon, how, t, inferred=False, likely=False, mission_time=None):
         if not target:
             return None
         tid = target.get("id")
@@ -923,7 +937,9 @@ class Eye:
              "inferred": inferred, "likely": likely, "confidence": "likely" if likely else "confirmed",
              "splash_call": splash + (", likely" if likely else "")}
         self.my_kills.append(k)
-        self._log_store({"kind": "kill_by_me", "target": _brief(target), "weapon": weapon, "how": how,
+        shooter = self._own_locked() or {}
+        self._log_store({"kind": "kill_by_me", "target": dict(_brief(target), id=tid), "weapon": weapon, "how": how,
+                         "shooter": dict(_brief(shooter) or {}, id=shooter.get("id")), "mission_time": mission_time,
                          "inferred": inferred, "confidence": k["confidence"]})
         return k
 
@@ -1228,10 +1244,10 @@ class Eye:
     def on_cockpit_packet(self, pkt, src=None):
         """One AthenaExport packet (cockpit.CockpitListener). Payload -> the same stores diff as the Eval loadout
         (source "cockpit"); new RWR locks/launches -> durable log + rwr_alert_to_announce."""
-        res = self.cockpit.ingest(pkt, src)
-        if self.memory is not None:  # memory6: retain cockpit changes even between radio pictures
-            self.memory.publish("cockpit_input", {"packet": pkt, "derived": res}, at=self.clock())
         with self.lock:
+            res = self.cockpit.ingest(pkt, src)
+            if self.memory is not None:  # same reset fence as derived cockpit facts
+                self.memory.publish("cockpit_input", {"packet": pkt, "derived": res}, at=self.clock())
             for a in res["alerts"]:
                 self._log_store({"kind": "rwr_alert", "signal": a["signal"], "emitter": a["type"],
                                  "clock": a["clock"], "call": a["call"]})
@@ -1616,7 +1632,10 @@ class Eye:
             own = self._own_locked()
             self._own_cache = (own,)
             try:
-                return self._picture_locked(own)
+                pic = self._picture_locked(own)
+                if self.memory is not None:
+                    pic["_memory_generation"] = self.memory.generation if self.memory.identity is not None else -1
+                return pic
             finally:
                 self._own_cache = None
 
@@ -2047,6 +2066,8 @@ class GrpcFeeder:
         self.channel = None
         self._calls_lock = threading.Lock()
         self._session_lock = threading.Lock()
+        self._metadata_lock = threading.Lock()
+        self._metadata_thread = None
         self._unit_calls = set()
         self._events_call = None
         self._events_subscribed = None  # eye clock
@@ -2157,6 +2178,7 @@ class GrpcFeeder:
     def _check_session(self, stub):
         """New DCS-gRPC session id = new mission: wipe the eye and resubscribe unit streams."""
         from dcs.mission.v0 import mission_pb2
+        generation = self.eye.memory.generation if self.eye.memory is not None else None
         try:
             sid = stub.GetSessionId(mission_pb2.GetSessionIdRequest(), timeout=5).session_id
         except Exception as error:  # noqa: BLE001 - older servers may lack it
@@ -2164,20 +2186,42 @@ class GrpcFeeder:
                 raise
             return
         with self._session_lock:
-            if self.eye.memory is not None:  # memory6: bind claims to memory's canonical mission key
+            with self.eye.lock:
+                if self.eye.memory is not None and generation != self.eye.memory.generation:
+                    return  # a boundary was observed during this session lookup
+                old, self.eye.session_id = self.eye.session_id, sid
+                if old is not None and sid != old:
+                    LOG.info("eye: new DCS session (mission change); resetting picture")
+                    self.eye.reset("session_changed")
+                    self._refresh_world = True
+                    self.resubscribe_units()
+                elif old is None and self.eye.memory is not None:
+                    self.eye.memory.invalidate()
+                generation = self.eye.memory.generation if self.eye.memory is not None else None
+        self._resolve_memory_identity(sid, generation)
+
+    def _resolve_memory_identity(self, sid, generation):
+        """Optional metadata never runs on a subscription thread or under session lock."""
+        memory = self.eye.memory
+        if memory is None or self.stop.is_set():
+            return
+        with self._metadata_lock:
+            if generation != memory.generation or memory.identity is not None or (self._metadata_thread and self._metadata_thread.is_alive()):
+                return
+
+            def resolve():
                 from dcs.hook.v0 import hook_pb2, hook_pb2_grpc
                 try:
                     filename = hook_pb2_grpc.HookServiceStub(self._chan()).GetMissionFilename(
                         hook_pb2.GetMissionFilenameRequest(), timeout=2).name
-                    self.eye.memory.set_identity(sid, filename, "%s:%d" % (self.host, self.port))
-                except Exception:  # memory identity enrichment must not stop Eye streams
-                    self.eye.memory.set_identity(None, None, None)
-            old, self.eye.session_id = self.eye.session_id, sid
-            if old is not None and sid != old:
-                LOG.info("eye: new DCS session (mission change); resetting picture")
-                self.eye.reset("session_changed")
-                self._refresh_world = True
-                self.resubscribe_units()
+                    with self.eye.lock:
+                        if not self.stop.is_set() and self.eye.session_id == sid:
+                            memory.set_identity(sid, filename, "%s:%d" % (self.host, self.port), generation=generation)
+                except Exception:
+                    LOG.info("eye: memory identity unavailable; Eye continues without memory")
+
+            self._metadata_thread = threading.Thread(target=resolve, name="eye-memory-identity", daemon=True)
+            self._metadata_thread.start()
 
     def resubscribe_units(self):
         """Cancel live unit streams; they reconnect at once and DCS-gRPC resends every unit."""

@@ -50,6 +50,7 @@ class MemoryLinkTests(unittest.TestCase):
         with patch.object(feeder, "_chan", return_value=None), patch(
                 "dcs.hook.v0.hook_pb2_grpc.HookServiceStub", side_effect=OSError):
             feeder._check_session(stub)
+            feeder._metadata_thread.join(1)
         self.assertEqual(eye.session_id, 2)
         self.assertIsNone(eye.memory.identity)
 
@@ -92,6 +93,10 @@ class MemoryLinkTests(unittest.TestCase):
         takeoff = next(r for r in rows if r["type"] == "event" and r["payload"]["kind"] == "takeoff")
         self.assertEqual(takeoff["payload"]["place"], "Kutaisi")
         self.assertTrue(takeoff["payload"]["mine"])
+        kill = next(r["payload"] for r in rows if r["type"] == "kill_by_me")
+        self.assertEqual(kill["shooter"]["id"], fx.PROMETHEUS["id"])
+        self.assertEqual(kill["target"]["id"], fx.UNITS[1]["id"])
+        self.assertEqual(kill["mission_time"], 111.)
 
     def test_request_deadline_includes_dribbling_response(self):
         with tempfile.TemporaryDirectory(prefix="ml") as tmp:
@@ -145,13 +150,144 @@ class MemoryLinkTests(unittest.TestCase):
         with patch("integrations.hermes_radio.memory_link.request", side_effect=OSError):
             self.assertNotIn("memory", controller.picture())
 
-    def test_debrief_reply_only_after_receipt(self):
+    def test_debrief_is_queued_without_blocking_next_turn(self):
         from integrations.hermes_radio.tests.test_eye import req
         controller = self.controller()
-        with patch("integrations.hermes_radio.memory_link.request", return_value={"path": "/fixture/report.md"}):
-            self.assertEqual(controller.exchange(req("Athena, debrief"))["speech"], "debrief written")
+        memory = controller.eye.memory
+        entered, release = threading.Event(), threading.Event()
+        def slow(payload, **kwargs):
+            if payload["operation"] == "debrief":
+                entered.set()
+                release.wait(3)
+                return {"path": "/fixture/report.md"}
+            return {"memory": {}}
+        with patch("integrations.hermes_radio.memory_link.request", side_effect=slow):
+            try:
+                started = time.monotonic()
+                self.assertEqual(controller.exchange(req("Athena, debrief"))["speech"], "debrief written")
+                self.assertTrue(entered.wait(1))
+                self.assertLess(time.monotonic() - started, .5)
+                self.assertEqual(memory.debrief_status["state"], "queued")
+                self.assertTrue(controller.exchange(req("Athena, radio check"))["speech"])
+                self.assertFalse(release.is_set())
+                self.assertEqual(memory.debrief_status["state"], "queued")
+            finally:
+                release.set()
+                memory.debrief_thread.join(1)
+        self.assertEqual(memory.debrief_status["state"], "written")
         with patch("integrations.hermes_radio.memory_link.request", side_effect=OSError):
-            self.assertEqual(controller.exchange(req("debrief"))["speech"], "Debrief unavailable.")
+            self.assertEqual(controller.exchange(req("debrief"))["speech"], "debrief written")
+            memory.debrief_thread.join(1)
+        self.assertEqual(memory.debrief_status["state"], "failed")
+        memory.invalidate()
+        self.assertEqual(controller.exchange(req("debrief"))["speech"], "Debrief unavailable.")
+
+    def test_slow_metadata_does_not_serialize_concurrent_subscriptions_or_reset(self):
+        from types import SimpleNamespace
+        from integrations.hermes_radio.eye import GrpcFeeder
+        eye = Eye()
+        eye.memory = self.link()
+        eye.session_id = 1
+        feeder = GrpcFeeder(eye, "fixture.invalid")
+        entered, release = threading.Event(), threading.Event()
+        subscriptions = []
+        def filename(*args, **kwargs):
+            entered.set()
+            release.wait(5)
+            return SimpleNamespace(name="new.miz")
+        def stream(*args):
+            subscriptions.append(threading.current_thread().name)
+            return iter(())
+        stub = SimpleNamespace(GetSessionId=lambda *a, **k: SimpleNamespace(session_id=2), StreamUnits=stream, StreamEvents=stream)
+        with patch.object(feeder, "_chan", return_value=None), patch(
+                "dcs.mission.v0.mission_pb2_grpc.MissionServiceStub", return_value=stub), patch(
+                "dcs.hook.v0.hook_pb2_grpc.HookServiceStub", return_value=SimpleNamespace(GetMissionFilename=filename)):
+            workers = [threading.Thread(target=feeder._units, args=(str(i), "GROUP_CATEGORY_AIRPLANE", 1, 1)) for i in range(3)]
+            workers.append(threading.Thread(target=feeder._events))
+            try:
+                for worker in workers:
+                    worker.start()
+                self.assertTrue(entered.wait(1))
+                for worker in workers:
+                    worker.join(.3)
+                self.assertTrue(all(not worker.is_alive() for worker in workers))
+                self.assertEqual(len(subscriptions), 4)
+                self.assertEqual(eye.session_id, 2)
+                self.assertEqual(eye.reset_reason, "session_changed")
+                self.assertIsNone(eye.memory.identity)
+                self.assertTrue(feeder._session_lock.acquire(blocking=False))
+                feeder._session_lock.release()
+            finally:
+                release.set()
+                for worker in workers:
+                    worker.join(1)
+                feeder._metadata_thread.join(1)
+        self.assertEqual(eye.memory.identity, (2, "new.miz", "fixture.invalid:50051"))
+
+    def test_mission_start_and_stale_picture_are_fenced_during_metadata(self):
+        from types import SimpleNamespace
+        from integrations.hermes_radio.eye import GrpcFeeder
+        eye = Eye()
+        link = eye.memory = self.link(100)
+        eye.session_id = 1
+        eye.on_unit(fx.PROMETHEUS)
+        eye.on_event(fx.shot(fx.PROMETHEUS, 55, "old-weapon"))
+        old_picture = eye.picture()
+        old_count = len(link.queue)
+        feeder = GrpcFeeder(eye, "fixture.invalid")
+        entered, release = threading.Event(), threading.Event()
+        def filename(*args, **kwargs):
+            entered.set()
+            release.wait(3)
+            return SimpleNamespace(name="new.miz")
+        stub = SimpleNamespace(GetSessionId=lambda *a, **k: SimpleNamespace(session_id=2))
+        with patch.object(feeder, "_chan", return_value=None), patch(
+                "dcs.hook.v0.hook_pb2_grpc.HookServiceStub", return_value=SimpleNamespace(GetMissionFilename=filename)):
+            try:
+                eye.on_event({"time": 0., "mission_start": {}})
+                self.assertIsNone(link.identity)
+                self.assertFalse(eye.units)
+                feeder._check_session(stub)
+                self.assertTrue(entered.wait(1))
+                link.capture_picture(old_picture)
+                self.assertFalse(link.publish("transition_fact", {}))
+                self.assertEqual(len(link.queue), old_count)
+                self.assertGreater(link.dropped, 0)
+            finally:
+                release.set()
+                feeder._metadata_thread.join(1)
+        link.capture_picture(old_picture)  # captured before reset, published after new identity
+        self.assertEqual(len(link.queue), old_count)
+        eye.on_unit(fx.PROMETHEUS)
+        eye.on_event(fx.shot(fx.PROMETHEUS, 56, "new-weapon"))
+        link.capture_picture(eye.picture())
+        self.assertTrue(all(identity[0] == 1 for identity, _ in list(link.queue)[:old_count]))
+        self.assertTrue(all(identity[0] == 2 for identity, _ in list(link.queue)[old_count:]))
+        self.assertNotIn("old-weapon", json.dumps(list(link.queue)[old_count:]))
+        self.assertNotIn("new-weapon", json.dumps(list(link.queue)[:old_count]))
+
+    def test_metadata_completion_from_before_boundary_cannot_install(self):
+        from types import SimpleNamespace
+        from integrations.hermes_radio.eye import GrpcFeeder
+        eye = Eye()
+        link = eye.memory = self.link()
+        feeder = GrpcFeeder(eye, "fixture.invalid")
+        entered, release = threading.Event(), threading.Event()
+        def filename(*args, **kwargs):
+            entered.set()
+            release.wait(3)
+            return SimpleNamespace(name="old.miz")
+        stub = SimpleNamespace(GetSessionId=lambda *a, **k: SimpleNamespace(session_id=1))
+        with patch.object(feeder, "_chan", return_value=None), patch(
+                "dcs.hook.v0.hook_pb2_grpc.HookServiceStub", return_value=SimpleNamespace(GetMissionFilename=filename)):
+            try:
+                feeder._check_session(stub)
+                self.assertTrue(entered.wait(1))
+                eye.on_event({"time": 0., "mission_start": {}})
+            finally:
+                release.set()
+                feeder._metadata_thread.join(1)
+        self.assertIsNone(link.identity)
 
 
 if __name__ == "__main__":

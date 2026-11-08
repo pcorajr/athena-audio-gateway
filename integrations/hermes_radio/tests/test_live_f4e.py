@@ -157,5 +157,26 @@ class Radio7bReviewTests(unittest.TestCase):
         self.assertEqual("k1" in marked, "splash one t-55" in speech.lower(), speech)
 
 
+class Radio7cReviewTests(unittest.TestCase):
+    def test_wingman_same_type_kill_does_not_consume_pilot_splash(self):
+        pic = base()
+        pic["last_attack_age_s"] = 20
+        pic["my_kills_this_mission"] = [{"target": "T-55", "category": "armor", "weapon": "GBU-38", "age_s": 5,
+                                         "seq": 1, "confidence": "confirmed"}]
+        pic["friendly_kills_this_mission"] = pic["my_kills_this_mission"] + [
+            {"target": "T-55", "category": "armor", "weapon": "AGM-65H", "age_s": 4, "seq": 2,
+             "confidence": "confirmed", "shooter": "Wingman 1-2"}]
+        pic["splash_to_announce"] = ["Splash one T-55."]
+        pic["_splash_keys"] = ["pilot-t55"]
+        eye = FakeEye(pic)
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda messages: "LLM")
+        speech = c.exchange(req("Athena, confirm wingman kill"))["speech"]
+        self.assertIn("wingman splash one T-55", speech)
+        # the pilot's own T-55 is either announced separately (and acknowledged) or left pending
+        own_said = speech.count("Splash one T-55.") == 1
+        self.assertEqual("pilot-t55" in eye.marked, own_said, speech)
+
+
 if __name__ == "__main__":
     unittest.main()

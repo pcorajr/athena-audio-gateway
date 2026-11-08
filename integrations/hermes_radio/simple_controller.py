@@ -627,6 +627,7 @@ class SimpleController:
         prefix = "wingman " if wingman else ""
         cats = next((c for pattern, c in CATEGORY_ASK if pattern.search(text)), None)
         self._confirm_covers_own_splashes = not wingman and not cats  # own, unfiltered: every pending splash is read
+        self._confirm_is_own = not wingman  # splash_to_announce holds only the pilot's kills
         rows = self._kill_rows(pic, wingman, time.time() if pic_time is None else pic_time)
         if cats:
             rows = [r for r in rows if r[2] in cats]
@@ -792,6 +793,7 @@ class SimpleController:
                           attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
         self._pending_ack = None
         self._confirm_covers_own_splashes = False
+        self._confirm_is_own = False
         calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
                  and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
         if calls is not None:
@@ -817,7 +819,8 @@ class SimpleController:
                     for i, alert in enumerate(pic.get(field) or []):
                         if field == "splash_to_announce" and klass == "kill_confirm" and (
                                 getattr(self, "_confirm_covers_own_splashes", False)
-                                or _splash_target(alert) in " ".join(calls).lower()):
+                                or (getattr(self, "_confirm_is_own", False)
+                                    and _splash_target(alert) in " ".join(calls).lower())):
                             # the confirmation itself reads the kill; mark the splash as said, don't repeat it
                             if keys and i < len(keys):
                                 announced.append(keys[i])

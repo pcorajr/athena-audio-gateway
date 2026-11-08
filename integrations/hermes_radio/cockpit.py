@@ -1,0 +1,387 @@
+"""Athena Eye cockpit feed (round 3): UDP JSON packets from AthenaExport.lua on the DCS PC.
+
+AthenaExport.lua (infra/dcs-client in project-athena) runs inside DCS Export.lua and sends ~5 packets
+a second to Athena UDP 7778: own position/attitude, IAS/TAS/GS, AGL, G, AoA, fuel (kg), gear/flaps,
+payload by station + gun rounds, RWR emitters, locked target and warning lights. This module parses
+the packets, keeps the latest cockpit state, tracks RWR lock/launch alerts and renders the
+`cockpit` section of the eye picture. It is standalone (no DCS-gRPC needed).
+"""
+from collections import deque
+import json
+import logging
+import socket
+import threading
+import time
+
+COCKPIT_PORT = 7778
+FRESH_S = 5.0            # cockpit data older than this is stale
+PAYLOAD_FRESH_S = 10.0   # payload comes at 1 Hz; prefer it over the Eval loadout while this fresh
+ALERT_ANNOUNCE_S = 90.0  # a new RWR lock/launch is announced at the start of the next reply within this window
+KG_TO_LB = 2.20462
+M_TO_FT = 3.28084
+MS_TO_KT = 1.943844
+LOG = logging.getLogger("athena.cockpit")
+
+# DCS wsType: level1 4 = weapon; level2 4 missile, 5 bomb, 6 shell, 7 rockets (NURS), 8 torpedo.
+WS_WEAPON = 4
+WS_KIND = {4: "missile", 5: "bomb", 6: "gun", 7: "rocket", 8: "torpedo"}
+AMMO_CATEGORY = {"gun": 0, "missile": 1, "rocket": 2, "bomb": 3, "torpedo": 4}
+
+# RWR signal types (DCS spells one "missle_radio_guided").
+SIGNAL_LEVEL = {"search": 0, "track": 1, "lock": 2, "launch": 3}
+_HOURS = "twelve one two three four five six seven eight nine ten eleven twelve".split()
+
+
+def signal_of(sig):
+    s = str(sig or "").lower()
+    if "missile" in s or "missle" in s or "launch" in s:
+        return "launch"
+    if s == "lock" or "lock" in s:
+        return "lock"
+    if "track" in s:
+        return "track"
+    return "search"
+
+
+def rwr_clock(azimuth_deg):
+    """Relative azimuth (deg, clockwise from the nose; negative = left) -> clock hour 1..12."""
+    hour = int(((float(azimuth_deg) % 360.0) + 15.0) // 30.0) % 12
+    return 12 if hour == 0 else hour
+
+
+def clock_words(hour):
+    return "%s o'clock" % _HOURS[hour]
+
+
+def _f(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value != value or value in (float("inf"), float("-inf")):
+        return None
+    return float(value)
+
+
+def _r(value, places=0, scale=1.0):
+    v = _f(value)
+    if v is None:
+        return None
+    v = round(v * scale, places)
+    return int(v) if places == 0 else v
+
+
+def _list(value):
+    """Lua tables may arrive as [] or {} (empty) or {"1": ...} objects."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value[k] for k in sorted(value, key=lambda k: (len(str(k)), str(k)))]
+    return []
+
+
+def parse_packet(data):
+    """bytes/str -> packet dict, or None for anything that is not an AthenaExport v1 JSON object."""
+    try:
+        if isinstance(data, (bytes, bytearray)):
+            data = bytes(data).decode("utf-8", "replace")
+        pkt = json.loads(data)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(pkt, dict) or pkt.get("v") != 1:
+        return None
+    return pkt
+
+
+def payload_to_stores(pay):
+    """Packet `pay` -> eye stores snapshot {"ammo": [{type, name, count, category}], "fuel": None}.
+    Same shape as the DCS-gRPC Eval getAmmo() snapshot, so the round-2 stores diff/attribution works
+    with either source. Fuel tanks and empty pylons/pods are skipped (wsType level1 != weapon)."""
+    if not isinstance(pay, dict):
+        return None
+    totals = {}
+    for st in _list(pay.get("st")):
+        if not isinstance(st, dict):
+            continue
+        count = _f(st.get("c"))
+        if not count or count <= 0:
+            continue
+        lv = st.get("l") if isinstance(st.get("l"), list) else []
+        if lv and lv[0] != WS_WEAPON:
+            continue
+        name = st.get("n") or ("weapon %s" % ".".join(str(x) for x in lv) if lv else "unknown weapon")
+        kind = WS_KIND.get(lv[1]) if len(lv) > 1 else None
+        row = totals.setdefault(name, {"type": name, "name": name, "count": 0,
+                                       "category": AMMO_CATEGORY.get(kind) if kind else None})
+        row["count"] += int(count)
+    ammo = list(totals.values())
+    gun = _f(pay.get("gun"))
+    if gun is not None and gun > 0:
+        ammo.append({"type": "gun", "name": "gun rounds", "count": int(gun), "category": 0})
+    return {"ammo": ammo, "fuel": None}
+
+
+def _gear_word(v):
+    if v is None:
+        return None
+    if v >= 0.99:
+        return "down"
+    if v <= 0.01:
+        return "up"
+    return "in transit"
+
+
+class CockpitState:
+    """Latest cockpit packet + slow parts (payload, mechanics, warnings, radar targets) + RWR alerts."""
+
+    def __init__(self, clock=time.time):
+        self.clock = clock
+        self.lock = threading.RLock()
+        self.latest, self.at, self.src = None, None, None
+        self.packets, self.bad, self.started_at, self.stopped_at = 0, 0, None, None
+        self.slow = {}       # key -> (value, t) for pay/mech/warn/tgt
+        self.emitters = {}   # emitter key -> highest signal level seen while it stays on the RWR
+        self.alerts = deque(maxlen=50)
+        self.status = "no cockpit packets yet"
+
+    # -- ingest
+    def ingest(self, pkt, src=None):
+        """Apply one parsed packet. Returns {"payload": snapshot-or-None, "alerts": [new alerts]}."""
+        now = self.clock()
+        out = {"payload": None, "alerts": [], "event": pkt.get("ev")}
+        with self.lock:
+            self.packets += 1
+            self.src = src
+            if pkt.get("ev") == "start":
+                self.started_at, self.stopped_at = now, None
+                self.slow.clear()
+                self.emitters.clear()
+                self.status = "cockpit feed started"
+                return out
+            if pkt.get("ev") == "stop":
+                self.stopped_at = now
+                self.emitters.clear()
+                self.status = "cockpit feed stopped (left the aircraft or mission ended)"
+                return out
+            self.latest, self.at = pkt, now
+            self.status = "ok"
+            for key in ("pay", "mech", "warn", "tgt"):
+                if key in pkt:
+                    self.slow[key] = (pkt[key], now)
+            if "pay" in pkt:
+                out["payload"] = payload_to_stores(pkt["pay"])
+            if isinstance(pkt.get("rwr"), dict):
+                out["alerts"] = self._rwr_alerts(pkt["rwr"], now)
+        return out
+
+    def _rwr_alerts(self, rwr, now):
+        seen, new = set(), []
+        for e in _list(rwr.get("e")):
+            if not isinstance(e, dict):
+                continue
+            key = str(e.get("id") if e.get("id") is not None else e.get("type"))
+            sig = signal_of(e.get("sig"))
+            level = SIGNAL_LEVEL[sig]
+            seen.add(key)
+            before = self.emitters.get(key, -1)
+            if level > before:
+                self.emitters[key] = level
+                if sig in ("lock", "launch"):
+                    az = _f(e.get("az"))
+                    hour = rwr_clock(az) if az is not None else None
+                    what = "Missile launch" if sig == "launch" else "Spike"
+                    where = (" at your %s" % clock_words(hour)) if hour else ""
+                    alert = {"key": "rwr-%s-%s-%d" % (key, sig, int(now)), "t": now, "signal": sig,
+                             "type": e.get("type") or "unknown emitter", "clock": hour,
+                             "call": "%s, %s%s." % (what, e.get("type") or "unknown emitter", where)}
+                    self.alerts.append(alert)
+                    new.append(alert)
+        for key in list(self.emitters):  # gone from the RWR: a new lock later is a new alert
+            if key not in seen:
+                del self.emitters[key]
+        return new
+
+    # -- queries
+    def age(self, now=None):
+        with self.lock:
+            now = self.clock() if now is None else now
+            return None if self.at is None else now - self.at
+
+    def fresh(self, now=None):
+        a = self.age(now)
+        return a is not None and a <= FRESH_S and self.stopped_at is None
+
+    def payload_fresh(self, now=None):
+        with self.lock:
+            now = self.clock() if now is None else now
+            pay = self.slow.get("pay")
+            return pay is not None and now - pay[1] <= PAYLOAD_FRESH_S and self.stopped_at is None
+
+    def pending_alerts(self, announced, now=None):
+        with self.lock:
+            now = self.clock() if now is None else now
+            return [a for a in self.alerts if a["key"] not in announced and now - a["t"] <= ALERT_ANNOUNCE_S]
+
+    def ownship(self):
+        """Pseudo ownship from the cockpit (used when DCS-gRPC has no own unit). None when stale."""
+        with self.lock:
+            p = self.latest
+            if p is None or not self.fresh() or _f(p.get("lat")) is None:
+                return None
+            coal = {1: "red", 2: "blue"}.get(p.get("coal"), "unknown")
+            spd = _f(p.get("gs")) if _f(p.get("gs")) is not None else _f(p.get("tas"))
+            return {"id": -1, "name": p.get("unit") or "", "type": p.get("ac") or "", "callsign": "",
+                    "group": p.get("group") or "", "coalition": coal, "group_category": "", "category": "fighter",
+                    "player": p.get("pilot"), "lat": _f(p.get("lat")), "lon": _f(p.get("lon")),
+                    "alt_m": _f(p.get("alt")), "heading": _f(p.get("hdg")) or 0.0, "track": _f(p.get("hdg")) or 0.0,
+                    "speed_ms": spd or 0.0, "seen": self.at, "source": "cockpit"}
+
+    def locked_targets(self):
+        with self.lock:
+            p = self.latest or {}
+            return [t for t in _list(p.get("lock")) if isinstance(t, dict)] if self.fresh() else []
+
+    # -- picture
+    def to_picture(self, now=None):
+        with self.lock:
+            now = self.clock() if now is None else now
+            p = self.latest
+            if p is None:
+                return {"available": False, "reason": "no cockpit feed yet: AthenaExport.lua on the DCS PC sends "
+                        "UDP %d (Export.lua loader line + Athena firewall)" % COCKPIT_PORT,
+                        "packets": self.packets, "status": self.status}
+            age = now - self.at
+            out = {"available": True, "fresh": age <= FRESH_S and self.stopped_at is None, "age_s": round(age, 1),
+                   "aircraft": p.get("ac"), "pilot": p.get("pilot")}
+            if self.stopped_at is not None:
+                out["note"] = self.status
+            if age > 60:
+                out["note"] = "cockpit feed silent for %d s (old values not shown)" % int(age)
+                return out
+            mech = (self.slow.get("mech") or (None, None))[0] or {}
+            if isinstance(mech, dict) and mech:
+                cfg = {"gear": _gear_word(_f(mech.get("gear"))),
+                       "flaps_pct": _r(mech.get("flaps"), 0, 100.0),
+                       "speedbrake": None if _f(mech.get("sb")) is None else ("out" if _f(mech["sb"]) > 0.05 else "in"),
+                       "hook": None if _f(mech.get("hook")) is None else ("down" if _f(mech["hook"]) > 0.5 else "up"),
+                       "canopy": None if _f(mech.get("canopy")) is None else
+                       ("open" if _f(mech["canopy"]) > 0.05 else "closed"),
+                       "wheel_brakes": None if _f(mech.get("brakes")) is None else _f(mech["brakes"]) > 0.05}
+                out["config"] = {k: v for k, v in cfg.items() if v is not None}
+            flight = {"ias_kt": _r(p.get("ias"), 0, MS_TO_KT), "tas_kt": _r(p.get("tas"), 0, MS_TO_KT),
+                      "gs_kt": _r(p.get("gs"), 0, MS_TO_KT), "mach": _r(p.get("mach"), 2),
+                      "alt_msl_ft": _r(p.get("alt_msl") if p.get("alt_msl") is not None else p.get("alt"), -1,
+                                       M_TO_FT),
+                      "agl_ft": _r(p.get("agl"), -1, M_TO_FT), "vs_fpm": _r(p.get("vs"), -1, M_TO_FT * 60),
+                      "g": _r(p.get("g"), 1), "aoa_deg": _r(p.get("aoa"), 1),
+                      "heading_true": _r(p.get("hdg"), 0), "heading_mag": _r(p.get("hdg_mag"), 0),
+                      "pitch_deg": _r(p.get("pitch"), 0), "bank_deg": _r(p.get("bank"), 0)}
+            out["flight"] = {k: (int(v) if k.endswith("_ft") or k == "vs_fpm" else v)
+                             for k, v in flight.items() if v is not None}
+            fi, fe = _f(p.get("fuel_int")), _f(p.get("fuel_ext"))
+            if fi is not None or fe is not None:
+                out["fuel"] = {"internal_lb": _r(fi, -1, KG_TO_LB), "external_lb": _r(fe, -1, KG_TO_LB),
+                               "total_lb": _r((fi or 0) + (fe or 0), -1, KG_TO_LB),
+                               "total_kg": _r((fi or 0) + (fe or 0), 0)}
+                out["fuel"] = {k: int(v) for k, v in out["fuel"].items() if v is not None}
+            pay = self.slow.get("pay")
+            if pay is not None:
+                snap = payload_to_stores(pay[0]) or {"ammo": []}
+                stations = []
+                for st in _list((pay[0] or {}).get("st")):
+                    if isinstance(st, dict) and _f(st.get("c")) and (not st.get("l") or st["l"][0] == WS_WEAPON):
+                        stations.append({"station": st.get("i"), "weapon": st.get("n"), "count": int(st["c"])})
+                out["payload"] = {"age_s": round(now - pay[1], 1), "stations": stations,
+                                  "by_weapon": {a["name"]: a["count"] for a in snap["ammo"] if a["type"] != "gun"},
+                                  "gun_rounds": next((a["count"] for a in snap["ammo"] if a["type"] == "gun"), 0),
+                                  "selected_station": (pay[0] or {}).get("cur")}
+            out["rwr"] = self._rwr_json(p)
+            warn = self.slow.get("warn")
+            if warn is not None and _list(warn[0]):
+                out["warning_lights"] = [str(w) for w in _list(warn[0])][:12]
+            tgt = self.slow.get("tgt")
+            if tgt is not None:
+                out["radar_contacts"] = len([t for t in _list(tgt[0]) if isinstance(t, dict)])
+            return out
+
+    def _rwr_json(self, p):
+        rwr = p.get("rwr")
+        if not isinstance(rwr, dict):
+            return {"available": False,
+                    "reason": "no RWR data (aircraft without exportable RWR, or sensor export disabled on the server)"}
+        threats = []
+        for e in _list(rwr.get("e")):
+            if not isinstance(e, dict):
+                continue
+            sig = signal_of(e.get("sig"))
+            az = _f(e.get("az"))
+            hour = rwr_clock(az) if az is not None else None
+            row = {"type": e.get("type") or "unknown emitter", "signal": sig, "clock": hour,
+                   "clock_words": clock_words(hour) if hour else None,
+                   "power": _r(e.get("pw"), 2), "priority": e.get("pr")}
+            verb = {"search": "searching", "track": "tracking you", "lock": "locked on you",
+                    "launch": "MISSILE LAUNCH"}[sig]
+            row["call"] = "%s %s%s" % (row["type"], verb, (" at your %s" % row["clock_words"]) if hour else "")
+            threats.append({k: v for k, v in row.items() if v is not None})
+        threats.sort(key=lambda t: (-SIGNAL_LEVEL[t["signal"]], -(t.get("priority") or 0), -(t.get("power") or 0)))
+        out = {"threats": threats[:10], "count": len(threats)}
+        if not threats:
+            out["note"] = "RWR clean"
+        else:
+            out["highest"] = threats[0]["signal"]
+        return out
+
+
+class CockpitListener:
+    """UDP listener thread: AthenaExport packets -> eye.on_cockpit_packet(pkt, src)."""
+
+    def __init__(self, eye, host="0.0.0.0", port=COCKPIT_PORT):
+        self.eye, self.host, self.port = eye, host, port
+        self.stop = threading.Event()
+        self.sock = None
+        self.thread = None
+        self.error = None
+
+    def start(self):
+        try:
+            # No SO_REUSEADDR: a second adapter on the same port must fail loudly, not split the packets.
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.bind((self.host, self.port))
+            self.sock.settimeout(0.5)
+        except OSError as error:
+            self.error = "%s: %s" % (type(error).__name__, error)
+            LOG.warning("cockpit: cannot listen on UDP %s:%d (%s)", self.host, self.port, self.error)
+            self.eye.cockpit.status = "listener failed: %s" % self.error
+            return self
+        self.port = self.sock.getsockname()[1]
+        LOG.info("cockpit: listening on UDP %s:%d", self.host, self.port)
+        self.thread = threading.Thread(target=self._run, name="eye-cockpit", daemon=True)
+        self.thread.start()
+        return self
+
+    def _run(self):
+        while not self.stop.is_set():
+            try:
+                data, addr = self.sock.recvfrom(65535)
+            except socket.timeout:
+                continue
+            except OSError:
+                if self.stop.is_set():
+                    return
+                time.sleep(0.2)
+                continue
+            pkt = parse_packet(data)
+            if pkt is None:
+                with self.eye.cockpit.lock:
+                    self.eye.cockpit.bad += 1
+                continue
+            try:
+                self.eye.on_cockpit_packet(pkt, src=addr[0])
+            except Exception:  # noqa: BLE001 - one bad packet must never kill the listener
+                LOG.exception("cockpit: packet handling failed")
+
+    def close(self):
+        self.stop.set()
+        if self.sock is not None:
+            try:
+                self.sock.close()
+            except OSError:
+                pass

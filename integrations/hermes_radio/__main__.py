@@ -17,6 +17,10 @@ def main():
     parser.add_argument("--eye-host", default=os.environ.get("ATHENA_EYE_HOST"),
                         help="DCS-gRPC host for the in-memory Athena Eye (simple mode)")
     parser.add_argument("--eye-port", type=int, default=int(os.environ.get("ATHENA_EYE_PORT", "50051")))
+    parser.add_argument("--cockpit-port", type=int, default=int(os.environ.get("ATHENA_COCKPIT_PORT", "7778")),
+                        help="UDP port for the AthenaExport.lua cockpit feed from the DCS PC (eye mode; 0 = off)")
+    parser.add_argument("--cockpit-host", default=os.environ.get("ATHENA_COCKPIT_HOST", "0.0.0.0"),
+                        help="address the cockpit feed listener binds to")
     parser.add_argument("--openai-base-url", default=os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1"))
     parser.add_argument("--model", default=os.environ.get("ATHENA_RADIO_MODEL", "gpt-5.4-mini"))
     parser.add_argument("--reasoning", choices=("none", "minimal", "low", "medium", "high"), default=None,
@@ -33,7 +37,7 @@ def main():
                         help="file the eye keeps current with callsign + nearby airfields for the gateway's "
                              "--athena-dynamic-prompt-file; default: <transcript dir>/whisper-prompt-dynamic.txt")
     args = parser.parse_args()
-    cache = feeder = None
+    cache = feeder = listener = None
     try:
         transcript = Transcript(args.transcript_dir)
         if not transcript.log(kind="adapter_start", outcome="starting", provider="openai-api", model=args.model):
@@ -49,6 +53,12 @@ def main():
                                 prompt_path=args.whisper_prompt_out or str(transcript.root / "whisper-prompt-dynamic.txt"))
             feeder.start()
             transcript.log(kind="eye_start", outcome="starting", source="%s:%d" % (args.eye_host, args.eye_port))
+            if args.cockpit_port:
+                from .cockpit import CockpitListener
+                listener = CockpitListener(eye, host=args.cockpit_host, port=args.cockpit_port).start()
+                transcript.log(kind="cockpit_start", outcome="listening" if listener.error is None else "failed",
+                               source="udp %s:%d" % (args.cockpit_host, args.cockpit_port),
+                               error=listener.error or "")
             controller = SimpleController(None, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"),
                                           base_url=args.openai_base_url, eye=eye, speaker=args.speaker)
             server = RadioServer(controller, port=args.port, request_timeout=args.request_timeout, speaker=args.speaker)
@@ -79,6 +89,8 @@ def main():
             cache.close()
         if feeder is not None:
             feeder.close()
+        if listener is not None:
+            listener.close()
     return 0
 
 

@@ -25,6 +25,12 @@ Facts that matter:
 - ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds; fuel_fraction is internal fuel (0.5 = half). If loadout is not available, say so with the reason in a few words.
 - event_stream.state other than "live" means shot and kill reports may be missing; mention it only when asked about shots or kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
+- cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), fuel in pounds, payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
+- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you."
+- "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
+- Fuel state: cockpit.fuel.total_lb in pounds (say internal and external only if asked); else ownship.fuel_fraction.
+- Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
+- If the picture has rwr_alert_to_announce, START the answer with it, before anything else, e.g. "Prometheus, Athena, spike, SA-11 at your three o'clock." Then answer the question.
 
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "airborne", "weapons hot", "target destroyed") get ONE short sentence and NO picture.
@@ -50,6 +56,37 @@ _UNSAFE = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp", "Zs"})
 _JUNK = re.compile(r"^[\W_]*$")
 PART_CHARS = 420
 FALLBACK = "Prometheus, Athena, say again, I had a problem on my end."
+
+# Question focus (round 3): a one-line hint telling the model which picture section answers the question.
+FOCUS_RULES = (
+    ("lock", re.compile(r"\b(what am i locked|what('?s| is| do i have) (my )?(locked|lock|target)|my (lock|target)\b|"
+                        r"locked target|what have i got locked|what('?s| is) on my radar)", re.I),
+     "cockpit.locked_target (call, unit, side); null = nothing locked"),
+    ("rwr", re.compile(r"\b(rwr|paint\w*|spik\w*|radar warning|threat warning|nails|mud spike|"
+                       r"(locking|locked on|lock on|tracking|targeting|looking at) me\b|am i (being )?locked\b(?! on)|"
+                       r"anyone locking|launch|missile inbound|threats? on me)", re.I),
+     "cockpit.rwr.threats (type, signal, clock); empty with fresh cockpit = RWR clean"),
+    ("fuel", re.compile(r"\b(fuel|bingo|joker|gas)\b", re.I),
+     "cockpit.fuel.total_lb (pounds), else ownship.fuel_fraction"),
+    ("gear", re.compile(r"\b(gear|wheels|flaps|speed ?brakes?|hook|configured|configuration)\b", re.I),
+     "cockpit.config"),
+    ("flight", re.compile(r"\b(airspeed|indicated|ground ?speed|how fast|altitude|agl|above ground|g load|"
+                          r"how many g|angle of attack|aoa|mach|vertical speed)\b", re.I),
+     "cockpit.flight"),
+    ("loadout", re.compile(r"\b(what do i have left|have left|weapons? (left|remaining|status)|stores|winchester|"
+                           r"ammo|rounds left|loadout)\b", re.I),
+     "ownship.loadout (or cockpit.payload)"),
+)
+
+
+def focus_of(text):
+    """Which cockpit/picture sections the question is about (list of names), in rule order."""
+    return [name for name, pattern, _ in FOCUS_RULES if pattern.search(text or "")]
+
+
+def focus_hint(text):
+    hints = [hint for name, pattern, hint in FOCUS_RULES if pattern.search(text or "")]
+    return ("FOCUS: answer from " + "; ".join(hints)) if hints else None
 
 
 def _num(value):
@@ -209,6 +246,18 @@ class SimpleController:
                               if loadout.get("available") else "n/a: " + str(loadout.get("reason"))[:60])
             if loadout.get("available"):
                 out["gun_rounds"] = loadout.get("gun_rounds")
+        cp = pic.get("cockpit")
+        if isinstance(cp, dict):
+            if not cp.get("available"):
+                out["cockpit"] = "n/a"
+            else:
+                rwr = cp.get("rwr") or {}
+                out["cockpit"] = {"fresh": cp.get("fresh"), "age_s": cp.get("age_s"), "rwr": rwr.get("count"),
+                                  "rwr_highest": rwr.get("highest"), "gear": (cp.get("config") or {}).get("gear"),
+                                  "fuel_lb": (cp.get("fuel") or {}).get("total_lb"),
+                                  "lock": (cp.get("locked_target") or {}).get("type")}
+        if pic.get("rwr_alert_to_announce"):
+            out["rwr_alert"] = pic["rwr_alert_to_announce"]
         if isinstance(own, dict) and own.get("fuel_fraction") is not None:
             out["fuel"] = own["fuel_fraction"]
         if isinstance(hostile, list) and hostile and isinstance(hostile[0], dict) and "clock" in hostile[0]:
@@ -270,6 +319,7 @@ class SimpleController:
         start = time.monotonic()
         pic, error = self._picture_with_retry()
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
+        rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
         self._log(request, "tool", tool="picture", args={}, outcome="error" if error else "ok",
                   result={"summary": self.picture_summary(pic),
                           "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""},
@@ -280,9 +330,13 @@ class SimpleController:
             messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
         messages.append({"role": "system", "content": "PICTURE " + json.dumps(
             pic, ensure_ascii=True, default=str, separators=(",", ":"))})
+        hint = focus_hint(text)
+        if hint:
+            messages.append({"role": "system", "content": hint})
         messages.append({"role": "user", "content": text})
-        if splash_keys and self.eye is not None and hasattr(self.eye, "mark_announced"):
-            self.eye.mark_announced(splash_keys)
+        announced = (splash_keys or []) + (rwr_keys or [])
+        if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
+            self.eye.mark_announced(announced)
         t_llm = time.monotonic()
         answer = None
         for attempt in (1, 2):

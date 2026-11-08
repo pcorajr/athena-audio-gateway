@@ -17,6 +17,8 @@ import sys
 import threading
 import time
 
+from .cockpit import CockpitListener, CockpitState
+
 PLAYER = "Prometheus,Player,Client"
 M_TO_FT = 3.28084
 MS_TO_KT = 1.943844
@@ -362,6 +364,8 @@ class Eye:
         self.events_total = 0
         self.resubscribes = Counter()
         self.last_resubscribe = None
+        # Round 3: cockpit feed (AthenaExport.lua -> UDP 7778): flight data, payload, RWR, locked target.
+        self.cockpit = CockpitState(clock=clock)
 
     # -- lifecycle
     def reset(self, reason):
@@ -441,14 +445,25 @@ class Eye:
             self.on_gone(msg["gone"].get("id", 0))
 
     def _own_locked(self):
-        """The pilot's unit: player name in the allowed list, else the ONLY player unit (single player)."""
+        """The pilot's unit: the unit named in the cockpit feed, else player name in the allowed list, else
+        the ONLY player unit (single player), else a pseudo unit built from the cockpit feed (gRPC down)."""
         players = []
+        cockpit = getattr(self, "cockpit", None)
+        cp_unit = None
+        if cockpit is not None and cockpit.latest is not None and cockpit.fresh():
+            cp_unit = cockpit.latest.get("unit") or None
+        if cp_unit:
+            for u in self.units.values():
+                if u.get("name") == cp_unit and u.get("lat") is not None:
+                    return u
         for u in self.units.values():
             if _is_pilot(u.get("player"), self.player):
                 return u
             if u.get("player"):
                 players.append(u)
-        return players[0] if len(players) == 1 else None
+        if len(players) == 1:
+            return players[0]
+        return cockpit.ownship() if cockpit is not None else None
 
     def ownship(self):
         with self.lock:
@@ -610,7 +625,11 @@ class Eye:
         return s
 
     def _guess_target(self, shooter, kind):
-        """DCS-gRPC shot events carry no target; guess the enemy nearest the nose at launch."""
+        """DCS-gRPC shot events carry no target: use the cockpit's locked target (radar/TGP lock from the
+        Export feed) when there is one, else guess the enemy nearest the nose at launch."""
+        lock = self._cockpit_lock_target()
+        if lock is not None:
+            return lock
         if not shooter or shooter.get("lat") is None:
             return None
         best = None
@@ -637,6 +656,23 @@ class Eye:
                 "category": u["category"], "coalition": u["coalition"], "player": u.get("player"),
                 "range_nm_at_launch": round(rng, 1), "off_nose_deg": round(off),
                 "method": "guess: enemy nearest the nose at launch"}
+
+    def _cockpit_lock_target(self):
+        locks = self.cockpit.locked_targets()
+        if not locks:
+            return None
+        t = locks[0]
+        own = self._own_locked()
+        u = self._match_unit(t.get("lat"), t.get("lon"), exclude=own["id"] if own else None)
+        dist = t.get("dist")
+        rng = round(dist / NM, 1) if isinstance(dist, (int, float)) else None
+        if u is None:
+            return {"id": None, "type": t.get("type") or "unknown", "name": None, "group": None, "category": None,
+                    "coalition": None, "player": None, "range_nm_at_launch": rng,
+                    "method": "locked target in the cockpit (not matched to a DCS unit)"}
+        return {"id": u["id"], "type": u["type"], "name": u["name"], "group": u["group"],
+                "category": u["category"], "coalition": u["coalition"], "player": u.get("player"),
+                "range_nm_at_launch": rng, "method": "locked target in the cockpit"}
 
     def _match_shot(self, ev):
         wid, wname = ev.get("weapon_id"), _norm_weapon_name(ev.get("weapon"))
@@ -736,7 +772,39 @@ class Eye:
         with self.lock:
             self.stores_status = status
 
-    def on_stores(self, unit, snapshot):
+    def on_cockpit_packet(self, pkt, src=None):
+        """One AthenaExport packet (cockpit.CockpitListener). Payload -> the same stores diff as the Eval loadout
+        (source "cockpit"); new RWR locks/launches -> durable log + rwr_alert_to_announce."""
+        res = self.cockpit.ingest(pkt, src)
+        with self.lock:
+            for a in res["alerts"]:
+                self._log_store({"kind": "rwr_alert", "signal": a["signal"], "emitter": a["type"],
+                                 "clock": a["clock"], "call": a["call"]})
+            if res["event"] in ("start", "stop"):
+                self._log_store({"kind": "cockpit_" + res["event"], "aircraft": pkt.get("ac"), "source": src})
+            if res["payload"] is not None:
+                own = self._own_locked()
+                if own is not None:
+                    self.on_stores(own, res["payload"], source="cockpit")
+        return res
+
+    def cockpit_payload_fresh(self):
+        return self.cockpit.payload_fresh()
+
+    def _match_unit(self, lat, lon, max_nm=1.0, exclude=None):
+        """Nearest live unit to a position (cockpit locked target -> DCS unit)."""
+        if lat is None or lon is None:
+            return None
+        best = None
+        for u in self.units.values():
+            if u.get("lat") is None or (exclude is not None and u["id"] == exclude):
+                continue
+            _, rng = bearing_range(lat, lon, u["lat"], u["lon"])
+            if rng <= max_nm and (best is None or rng < best[0]):
+                best = (rng, u)
+        return best[1] if best else None
+
+    def on_stores(self, unit, snapshot, source="eval"):
         """One loadout poll for a unit. snapshot = {"fuel": 0.53, "ammo": [{"type", "name", "count", "category"}]}.
         Diffs against the previous poll: a count drop = weapon used (attributed to my shot, or creates one when
         the shot event is missing); a count rise = rearmed."""
@@ -761,14 +829,21 @@ class Eye:
             self.stores_status = "ok"
             uid = unit["id"]
             prev = self.stores.get(uid)
-            self.stores[uid] = {"t": now, "unit_type": unit.get("type"), "player": unit.get("player"),
-                                "items": items, "fuel": fuel}
             own = self._own_locked()
             mine = own is not None and own["id"] == uid
+            if source == "eval" and mine and self.cockpit.payload_fresh():
+                return []  # the cockpit payload (1 Hz) is the ownship stores source while it is fresh
+            self.stores[uid] = {"t": now, "unit_type": unit.get("type"), "player": unit.get("player"),
+                                "items": items, "fuel": fuel, "source": source}
             if mine and fuel is not None:
                 self.fuel, self.fuel_at = fuel, now
             base = {"unit": unit.get("type"), "player": unit.get("player"), "unit_name": unit.get("name"),
-                    "mine": mine}
+                    "mine": mine, "source": source}
+            if prev is not None and prev.get("source", "eval") != source:
+                # Eval and cockpit name weapons differently: a source switch is a new baseline, not a diff.
+                self._log_store(dict(base, kind="stores_source_switch", items=items, fuel=fuel,
+                                     previous_source=prev.get("source", "eval")))
+                return []
             if prev is None:
                 self._log_store(dict(base, kind="stores_snapshot", items=items, fuel=fuel))
                 return []
@@ -801,6 +876,18 @@ class Eye:
     def _attribute_use(self, own, use):
         """Name the weapon of my recent shot from the stores drop; if no shot event exists, create the shot."""
         now = use["t"]
+        if use["kind"] == "gun":
+            # The 1 Hz cockpit payload sees one burst as several drops: add them to the burst still running.
+            for s in reversed(self.shots):
+                if now - s["t"] > 60:
+                    break
+                if s["kind"] == "gun" and s.get("stores_weapon") and now - s.get("stores_last_t", s["t"]) <= 4:
+                    s["stores_count"] = (s.get("stores_count") or 0) + use["count"]
+                    s["stores_last_t"] = now
+                    s["weapon"] = "gun, %s rounds" % s["stores_count"]
+                    if s["burst_end"] is not None:
+                        s["burst_end"] = max(s["burst_end"], now)
+                    return s
         for s in reversed(self.shots):
             if now - s["t"] > 20:
                 break
@@ -816,6 +903,7 @@ class Eye:
                 continue
             s["stores_weapon"] = use["weapon"]
             s["stores_count"] = use["count"]
+            s["stores_last_t"] = now
             if not s["weapon"] or s["kind"] == "gun":
                 s["weapon"] = use["weapon"] if use["kind"] != "gun" else "gun, %s rounds" % use["count"]
                 s["weapon_source"] = "stores_diff"
@@ -831,7 +919,8 @@ class Eye:
         s["kind"] = use["kind"] if use["kind"] in ("gun", "rocket", "bomb") else weapon_kind(use["type"])
         s["burst_end"] = now
         s.update(source="stores_diff", event_seen=False, weapon_source="stores_diff", stores_weapon=use["weapon"],
-                 stores_count=use["count"], intended_target=self._guess_target(dict(own, kind="unit"), s["kind"]))
+                 stores_count=use["count"], stores_last_t=now,
+                 intended_target=self._guess_target(dict(own, kind="unit"), s["kind"]))
         self._log_store({"kind": "shot", "weapon": name, "weapon_kind": s["kind"], "count": use["count"],
                          "source": "stores_diff (no shot event)", "intended_target": s["intended_target"]})
         return s
@@ -988,9 +1077,54 @@ class Eye:
                 continue
             weapons.append({"weapon": it["name"], "type": t, "kind": it["kind"], "count": it["count"]})
         out = {"available": True, "age_s": round(now - snap["t"], 1), "weapons": weapons, "gun_rounds": gun}
+        out["source"] = {"cockpit": "cockpit (Export.lua payload)", "eval": "DCS-gRPC Eval getAmmo"}.get(
+            snap.get("source", "eval"), snap.get("source"))
         if not weapons:
             out["note"] = "no bombs, missiles or rockets left" if gun else "no stores reported (winchester)"
         return out
+
+    def _cockpit_json(self, own, now):
+        """The cockpit section: Export feed state + the locked target placed on the picture (BRAA, clock, unit)."""
+        cp = self.cockpit.to_picture(now)
+        if not cp.get("available") or not cp.get("fresh"):
+            return cp
+        locks = self.cockpit.locked_targets()
+        if not locks:
+            cp["locked_target"] = None
+            cp["locked_note"] = "nothing locked"
+            return cp
+        t = locks[0]
+        row = {"type": t.get("type") or "unknown"}
+        if isinstance(t.get("dist"), (int, float)):
+            row["range_nm"] = round(t["dist"] / NM, 1)
+        if isinstance(t.get("cv"), (int, float)):
+            row["closure_kt"] = int(round(t["cv"] * MS_TO_KT))
+        if isinstance(t.get("mach"), (int, float)):
+            row["mach"] = t["mach"]
+        u = self._match_unit(t.get("lat"), t.get("lon"), exclude=own["id"] if own else None)
+        if u is not None:
+            row["unit"] = _brief(u)
+            row["side"] = ("friendly" if own and u["coalition"] == own["coalition"] else
+                           "neutral" if u["coalition"] in ("neutral", "unknown") else "hostile")
+        res = self._where(own, t.get("lat"), t.get("lon"), t.get("alt"))
+        if res is not None:
+            where, brg, rng = res
+            rng = row.get("range_nm", rng)  # the radar's own range wins over the geometric one
+            row.update({k: v for k, v in where.items() if k != "range_nm" or "range_nm" not in row})
+            dom = domain(u["category"]) if u is not None else (
+                "air" if (t.get("mach") or 0) > 0.15 else "ground")
+            alt_ft = where.get("alt_ft")
+            vertical = None
+            if dom == "air" and alt_ft is not None:
+                own_ft = (own.get("alt_m") or 0) * M_TO_FT
+                vertical = "high" if alt_ft - own_ft > 1000 else "low" if own_ft - alt_ft > 1000 else "level"
+            label = "locked " + spoken_type(u["type"] if u is not None else row["type"])
+            row["call"] = call_line(label, where.get("bearing_mag") or where.get("bearing_true"), rng,
+                                    clock_of(brg - (own.get("heading") or 0.0)), dom, alt_ft, vertical)
+        cp["locked_target"] = row
+        if len(locks) > 1:
+            cp["locked_count"] = len(locks)
+        return cp
 
     def picture(self):
         with self.lock:
@@ -1014,6 +1148,8 @@ class Eye:
                     "entries flagged inferred mean the unit stopped showing without a death report (likely destroyed).",
                     "clock is relative to Prometheus' nose (12 = ahead).",
                     "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
+                    "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): "
+                    "config, flight, fuel (pounds), payload, rwr threats, locked_target, warning_lights.",
                 ],
             }
             if self.last_error and not self.connected:
@@ -1035,6 +1171,8 @@ class Eye:
                 }
                 if self.declination is not None:
                     pic["ownship"]["heading_mag"] = _three((own["heading"] or 0) - self.declination)
+                if own.get("source") == "cockpit":
+                    pic["ownship"]["source"] = "cockpit feed only (DCS-gRPC has no unit for Prometheus)"
                 others = [u for u in self.units.values() if u["id"] != own["id"] and u.get("lat") is not None]
                 groups = [self._group_json(own, dom, members) for dom, members in self._cluster(own, others)]
                 hostile = [g for g in groups if g["side"] == "hostile"]
@@ -1044,6 +1182,11 @@ class Eye:
                 pic["friendly_groups"] = friendly[:12]
                 pic["hostile_air_groups"] = sum(1 for g in hostile if g["domain"] == "air")
             pic["airbases"] = self._airbases_json(own)
+            pic["cockpit"] = self._cockpit_json(own, now)
+            alerts = self.cockpit.pending_alerts(self.announced, now)
+            if alerts:
+                pic["rwr_alert_to_announce"] = [a["call"] for a in alerts]
+                pic["_rwr_keys"] = [a["key"] for a in alerts]
             pic["my_shots_last_15_min"] = self._shots_json(own, now)
             pic["my_kills_this_mission"] = [
                 {"target": spoken_type(k["type"]), "category": k["category"], "weapon": k["weapon"],
@@ -1217,6 +1360,13 @@ class Eye:
         own = pic.get("ownship") or {}
         es = pic.get("event_stream") or {}
         loadout = own.get("loadout") or {}
+        cp = pic.get("cockpit") or {}
+        rwr = cp.get("rwr") or {}
+        cockpit = ({"fresh": cp.get("fresh"), "age_s": cp.get("age_s"), "rwr": rwr.get("count"),
+                    "rwr_highest": rwr.get("highest"), "gear": (cp.get("config") or {}).get("gear"),
+                    "fuel_lb": (cp.get("fuel") or {}).get("total_lb"),
+                    "lock": (cp.get("locked_target") or {}).get("type")}
+                   if cp.get("available") else "n/a")
         return {"connected": pic["connected"], "ownship": own.get("type"),
                 "hostile_groups": len(pic.get("hostile_groups", [])),
                 "friendly_groups": len(pic.get("friendly_groups", [])),
@@ -1227,6 +1377,7 @@ class Eye:
                 "last_event_age_s": es.get("last_event_age_s"),
                 "loadout": ({w["weapon"]: w["count"] for w in loadout.get("weapons", [])}
                             if loadout.get("available") else loadout.get("reason")),
+                "cockpit": cockpit,
                 "units_age_s": pic["data_age_s"]["units"]}
 
     def whisper_vocabulary(self, max_airbases=8):
@@ -1249,7 +1400,8 @@ class Eye:
         if fields:
             parts.append("Airfields: %s." % ", ".join(fields))
         parts.append("Picture, bogey dope, BRAA, splash, weapons hot, rifle, pickle, winchester, bingo, RTB, "
-                     "tally, visual, cleared hot, what do I have left.")
+                     "tally, visual, cleared hot, what do I have left, RWR, spike, what's painting me, "
+                     "fuel state, gear down.")
         return " ".join(parts)
 
 
@@ -1488,9 +1640,13 @@ class GrpcFeeder:
             from dcs.custom.v0 import custom_pb2_grpc
             custom = custom_pb2_grpc.CustomServiceStub(self._chan())
         from dcs.custom.v0 import custom_pb2
+        own = self.eye.ownship()
+        skip_own = own is not None and self.eye.cockpit_payload_fresh()
         for unit in self.eye.player_units():
             if not unit.get("name"):
                 continue
+            if skip_own and unit["id"] == own["id"]:
+                continue  # the cockpit payload (Export.lua) is fresher; don't diff two sources
             try:
                 raw = custom.Eval(custom_pb2.EvalRequest(lua=self.STORES_LUA % json.dumps(unit["name"])),
                                   timeout=5).json
@@ -1601,15 +1757,21 @@ def main(argv=None):
     parser.add_argument("--host", default="10.90.10.113")
     parser.add_argument("--port", type=int, default=50051)
     parser.add_argument("--seconds", type=float, default=15.0)
+    parser.add_argument("--cockpit-port", type=int, default=0,
+                        help="also listen for the AthenaExport.lua cockpit feed on this UDP port (0 = off; the "
+                             "radio adapter normally owns 7778)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
     eye, feeder = build(args.host, args.port)
     feeder.start()
+    listener = CockpitListener(eye, port=args.cockpit_port).start() if args.cockpit_port else None
     time.sleep(args.seconds)
     pic = eye.picture()
     print(json.dumps(pic, indent=1, default=str))
     print("SUMMARY", json.dumps(eye.summary(pic)))
     feeder.close()
+    if listener is not None:
+        listener.close()
     ok = pic.get("ownship") and (pic.get("hostile_groups") or pic.get("friendly_groups")) and pic["airbases"]["count"]
     return 0 if ok else 2
 

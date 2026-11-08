@@ -186,6 +186,136 @@ class MissionTallyTests(unittest.TestCase):
         self.assertEqual(eye.picture()["kill_tallies"]["me"]["total"], 2)
 
 
+class KillOwnershipTests(unittest.TestCase):
+    def attack(self):
+        eye, clock = scenario()
+        unit = fx.unit(22, "Armor", "T-55", "red", "Armor", "GROUND", 42.09, 43.77, 680)
+        eye.on_unit(unit)
+        eye.on_event(fx.shot(PILOT, 900, "AGM_65D"))
+        clock.t += 1
+        eye.on_event(fx.hit(PILOT, 900, "AGM_65D", unit))
+        return eye, clock, unit
+
+    def disappear(self, eye, unit, kind):
+        if kind == "gone":
+            eye.on_gone(unit["id"])
+        else:
+            eye.on_event(fx.dead(unit))
+
+    def assert_wingman_only(self, eye, seq):
+        pic = eye.picture()
+        self.assertEqual(pic["my_kills_this_mission"], [])
+        self.assertEqual(pic["my_kills_recent"], [])
+        self.assertEqual(pic["kill_tallies"]["me"]["total"], 0)
+        self.assertEqual(pic["kill_tallies"]["all_friendly"]["total"], 1)
+        self.assertEqual(pic["kill_tallies"]["by_shooter"]["2"]["total"], 1)
+        self.assertEqual(pic["kill_tallies"]["by_shooter"]["2"]["by_category"]["armor"], 1)
+        self.assertNotIn("splash_to_announce", pic)
+        self.assertNotIn("_splash_keys", pic)
+        rows = pic["friendly_kills_this_mission"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["seq"], rows[0]["shooter_id"]), (seq, "2"))
+        self.assertEqual((rows[0]["how"], rows[0]["confidence"], rows[0]["inferred"]),
+                         ("kill event", "confirmed", False))
+        self.assertEqual(eye.kills_since(0), [])
+        self.assertEqual(eye.kills_since(0, "2"), rows)
+        self.assertEqual(eye.kills_since(seq, "all_friendly"), [])
+        self.assertEqual(pic["kill_seq"], seq)
+
+    def ownership_order(self, kind, explicit_first=False):
+        eye, clock, unit = self.attack()
+        msg = event({"unit": unit}, WINGMAN)
+        if explicit_first:
+            eye.on_event(msg)
+            first = deepcopy(eye.other_kills[0])
+            # A delayed unit snapshot makes gone exercise attribution rather than a missing-unit no-op.
+            eye.on_unit(unit)
+            self.disappear(eye, unit, kind)
+        else:
+            self.disappear(eye, unit, kind)
+            first = deepcopy(eye.my_kills[0])
+            self.assertIn("splash_to_announce", eye.picture())
+            clock.t += 1
+            eye.on_event(msg)
+            self.assertEqual(eye.other_kills[0]["attribution_history"], [first])
+        seq = first["seq"]
+        self.assert_wingman_only(eye, seq)
+        self.assertEqual(eye.other_kills[0]["t"], first["t"])
+        history = deepcopy(eye.other_kills[0].get("attribution_history", []))
+        eye.on_event(msg)  # replay and subsequent deaths must not restore pilot ownership
+        eye.on_event(fx.dead(unit))
+        eye.on_event({"unit_lost": {"initiator": {"unit": unit}}})
+        self.assert_wingman_only(eye, seq)
+        self.assertEqual(eye.other_kills[0].get("attribution_history", []), history)
+        clock.t += 3601
+        eye.picture()  # expire event evidence, but retain authoritative mission ownership/history
+        eye.on_event(fx.shot(PILOT, 901, "AGM_65D"))
+        eye.on_event(fx.hit(PILOT, 901, "AGM_65D", unit))
+        eye.on_unit(unit)
+        self.disappear(eye, unit, kind)
+        self.assert_wingman_only(eye, seq)
+        self.assertEqual(eye.other_kills[0].get("attribution_history", []), history)
+        eye.on_event({"mission_start": {}})
+        self.assertEqual(eye.other_kills, [])
+
+    def test_hit_gone_then_wingman_kill(self):
+        self.ownership_order("gone")
+
+    def test_hit_dead_then_wingman_kill(self):
+        self.ownership_order("dead")
+
+    def test_hit_wingman_kill_then_gone(self):
+        self.ownership_order("gone", explicit_first=True)
+
+    def test_hit_wingman_kill_then_dead(self):
+        self.ownership_order("dead", explicit_first=True)
+
+    def test_ownership_reconciliation_is_scoped_by_kind_and_id(self):
+        eye, clock, unit = self.attack()
+        eye.on_event(event(target(22, "MOST(ROAD)BIG-CRUSH", "scenery")))
+        scenery_seq = eye.my_kills[0]["seq"]
+        eye.on_gone(22)
+        unit_seq = eye.my_kills[1]["seq"]
+        eye.on_event(event({"unit": unit}, WINGMAN))
+        pic = eye.picture()
+        self.assertEqual(pic["kill_tallies"]["me"]["total"], 1)
+        self.assertEqual(pic["kill_tallies"]["all_friendly"]["total"], 2)
+        self.assertEqual([(k["target_kind"], k["seq"]) for k in pic["my_kills_this_mission"]],
+                         [("scenery", scenery_seq)])
+        self.assertEqual(eye.other_kills[0]["seq"], unit_seq)
+        self.assertEqual(pic["splash_to_announce"], ["Splash one bridge"])
+
+    def test_enemy_credit_removes_inferred_friendly_credit(self):
+        eye, _, unit = self.attack()
+        eye.on_gone(22)
+        seq = eye.my_kills[0]["seq"]
+        enemy = dict(deepcopy(WINGMAN), id=99, coalition="COALITION_RED")
+        eye.on_event(event({"unit": unit}, enemy))
+        pic = eye.picture()
+        self.assertEqual(pic["kill_tallies"]["me"]["total"], 0)
+        self.assertEqual(pic["kill_tallies"]["all_friendly"]["total"], 0)
+        self.assertNotIn("splash_to_announce", pic)
+        self.assertEqual(eye.other_kills[0]["seq"], seq)
+        self.assertEqual(eye.other_kills[0]["shooter_id"], "99")
+
+    def test_explicit_owner_correction_moves_one_row_with_stable_seq(self):
+        eye, _, unit = self.attack()
+        eye.on_event(event({"unit": unit}, WINGMAN))
+        seq = eye.other_kills[0]["seq"]
+        other = dict(deepcopy(WINGMAN), id=30, name="Other Flight", group={"name": "Other"})
+        eye.on_event(event({"unit": unit}, other))
+        self.assertEqual(len(eye.other_kills), 1)
+        self.assertEqual(eye.other_kills[0]["shooter_id"], "30")
+        eye.on_event(event({"unit": unit}, PILOT))
+        eye.on_event(event({"unit": unit}, PILOT))
+        pic = eye.picture()
+        self.assertEqual(eye.other_kills, [])
+        self.assertEqual(pic["kill_tallies"]["me"]["total"], 1)
+        self.assertEqual(pic["kill_tallies"]["all_friendly"]["total"], 1)
+        self.assertEqual(eye.my_kills[0]["seq"], seq)
+        self.assertEqual([k["shooter_id"] for k in eye.my_kills[0]["attribution_history"]], ["2", "30"])
+
+
 class ReadableFactsTests(unittest.TestCase):
     def test_real_numeric_weapon_types_prefer_valid_name(self):
         eye, _ = scenario()

@@ -14,9 +14,16 @@ returns new kills without a time window (also accepts "all_friendly" or a shoote
 Consumers retain their own confirmation cursor; merely reading the picture never acknowledges kills.
 friendly_kills_this_mission / friendly_kills_recent include me and other friendly shooters.
 kill_tallies contains me, all_friendly and by_shooter (stable shooter-id keys, shooter descriptor,
-flight_member, total, confirmed, likely, by_category and by_type). Categories include armor, AAA,
-SAM, infantry, vehicles and scenery; other categories are retained. Tallies include likely kills,
-explicitly counted separately. Mission start/reset clears all tallies; sequence numbers never rewind.
+flight_member, total, confirmed, likely, by_category and by_type). Published category spellings are
+armor, AAA, SAM, infantry, vehicles, scenery, artillery, fighter, attack, bomber, AWACS, tanker,
+transport, helicopter, attack helo, carrier, ship, train, weapon, cargo, airbase and unknown
+(ground vehicle becomes vehicles; static objects use scenery).
+Tallies include likely kills, explicitly counted separately. Explicit kill events supersede inferred
+ownership by (target_kind, target_id): one active target, original seq/t, no superseded pilot splash.
+Superseded rows remain in the internal ledger row's attribution_history, not active counts. A later
+explicit shooter correction also replaces the owner; inference cannot override explicit ownership.
+Cursor queries report new targets, not ownership changes; reread mission tallies for corrections.
+Mission start/reset clears all tallies/history; sequence numbers never rewind.
 """
 from collections import Counter, OrderedDict, deque
 import argparse
@@ -1012,8 +1019,32 @@ class Eye:
         tid = target.get("id")
         target_kind = target.get("kind", "unit")
         splash = "Splash one %s" % spoken_type(object_type(target))
-        for old in rows:
+        own = self._own_locked() or {}
+        shooter = shooter or own
+        attribution = {
+            "shooter_id": str(shooter.get("id") or shooter.get("name") or "me"), "shooter": dict(shooter),
+            "friendly": rows is self.my_kills or (own.get("coalition") in ("blue", "red") and
+                                                   shooter.get("coalition") == own["coalition"]),
+            "flight_member": bool(own.get("group") and shooter.get("group") == own["group"]),
+        }
+        # Ownership belongs to the target, not to a particular shooter's list. Death and pilot-report
+        # credit can have inferred=False too; only a kill event explicitly identifies the shooter.
+        for old in self.my_kills + self.other_kills:
             if tid and old["target_id"] == tid and old["target_kind"] == target_kind:
+                if how != "kill event" and old["how"] == "kill event":
+                    return old  # authoritative mission fact survives pruning of the original event
+                if how == "kill event":
+                    if old["shooter_id"] != attribution["shooter_id"]:
+                        previous = {k: v for k, v in old.items() if k != "attribution_history"}
+                        old.setdefault("attribution_history", []).append(previous)
+                    source = self.my_kills if old in self.my_kills else self.other_kills
+                    if source is not rows:
+                        source.remove(old)
+                        rows.append(old)
+                        rows.sort(key=lambda k: k["seq"])
+                    old.update(attribution)
+                    old.update(inferred=False, likely=False, confidence="confirmed", how=how,
+                               splash_call=splash)
                 if _known_type(target.get("type")):
                     old.update(type=object_type(target), category=target.get("category"))
                 if old["mission_time"] is None and mission_time is not None:
@@ -1026,14 +1057,9 @@ class Eye:
                 if old["inferred"] and not inferred:  # confirmed later by a real event
                     old.update(inferred=False, how=how, weapon=weapon or old["weapon"], splash_call=splash)
                 return old
-        own = self._own_locked() or {}
-        shooter = shooter or own
         k = {"key": "%s-%s-%s" % (target_kind, tid, round(t, 1)), "target_id": tid, "target_kind": target_kind,
              "seq": next(self._seq), "t": t, "mission_time": mission_time, "type": object_type(target),
-             "shooter_id": str(shooter.get("id") or shooter.get("name") or "me"), "shooter": dict(shooter),
-             "friendly": rows is self.my_kills or (own.get("coalition") in ("blue", "red") and
-                                                    shooter.get("coalition") == own["coalition"]),
-             "flight_member": bool(own.get("group") and shooter.get("group") == own["group"]),
+             **attribution,
              "category": target.get("category"), "group": target.get("group"), "weapon": weapon, "how": how,
              "inferred": inferred, "likely": likely, "confidence": "likely" if likely else "confirmed",
              "splash_call": splash + (", likely" if likely else "")}
@@ -1057,9 +1083,12 @@ class Eye:
         its group with an area weapon): CONFIRMED kill when it vanished within VANISH_CONFIRM_S of the attack or
         after my hit on it (flagged inferred in the log); otherwise a likely kill."""
         uid = unit["id"]
-        if any(ev["kind"] in DEATH_KINDS and ((ev["target"] or {}).get("id") == uid if ev["kind"] == "kill"
-                                               else (ev["initiator"] or {}).get("id") == uid) for ev in self.events):
-            return
+        if any(k["target_id"] == uid and k["target_kind"] == "unit" for k in self.other_kills):
+            return  # keep explicit other-shooter ownership even after the event window expires
+        for ev in self.events:
+            victim = (ev["target"] if ev["kind"] == "kill" else ev["initiator"]) or {}
+            if ev["kind"] in DEATH_KINDS and victim.get("id") == uid and victim.get("kind", "unit") == "unit":
+                return
         if unit.get("player"):
             return
         s, hit = self._attack_on(unit, now)

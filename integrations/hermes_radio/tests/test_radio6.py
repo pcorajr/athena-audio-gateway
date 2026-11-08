@@ -245,5 +245,68 @@ class ReviewFixTests(unittest.TestCase):
         self.assertNotEqual(call_class("Athena, what's my time to impact?"), "intent")
 
 
+class ReviewFix2Tests(unittest.TestCase):
+    """RV-1 radio6b: filtered remembering, likely->confirmed upgrade, eye6 category spelling."""
+
+    def controller(self, eye):
+        return SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                                llm=lambda messages: "LLM ANSWER")
+
+    @staticmethod
+    def seqkill(seq, target, age, category, confidence="confirmed"):
+        row = kill(target, age, category, confidence=confidence)
+        row["seq"] = seq
+        return row
+
+    def test_category_total_does_not_consume_other_categories(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = [self.seqkill(1, "T-55", 40, "armor"),
+                                            self.seqkill(2, "Strela-1 9P31", 30, "SAM")]
+        c = self.controller(eye)
+        total = say(c, "confirm air defense kills, mission total")
+        self.assertIn("Strela", total)
+        self.assertNotIn("T-55", total)
+        self.assertIn("splash one T-55", say(c, "confirm armor kill"))
+
+    def test_empty_category_total_consumes_nothing(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = [self.seqkill(1, "T-55", 40, "armor")]
+        c = self.controller(eye)
+        self.assertIn("No kills yet", say(c, "confirm infantry kills, mission total"))
+        self.assertIn("splash one T-55", say(c, "confirm kill"))
+
+    def test_likely_then_confirmed_is_reported_once_as_upgrade(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = [self.seqkill(7, "T-55", 20, "armor", "likely")]
+        c = self.controller(eye)
+        self.assertIn("Likely: one T-55", say(c, "confirm kill"))
+        eye.pic["my_kills_this_mission"] = [self.seqkill(7, "T-55", 25, "armor", "confirmed")]
+        upgrade = say(c, "confirm kill")
+        self.assertIn("Now confirmed, earlier likely: one T-55", upgrade)
+        self.assertNotIn("splash one", upgrade)
+        self.assertIn("No new kills", say(c, "confirm kill"))
+
+    def test_eye6_vehicles_category_matches_truck_requests(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = [self.seqkill(3, "Ural-375", 50, "vehicles")]
+        c = self.controller(eye)
+        self.assertIn("splash one Ural-375", say(c, "confirm truck kill"))
+        self.assertIn("Mission total: one Ural-375", say(c, "confirm vehicle kills, mission total"))
+        old = FakeEye()
+        old.pic["my_kills_this_mission"] = [kill("Ural-375", 50, "ground vehicle")]
+        self.assertIn("Ural-375", say(self.controller(old), "confirm truck kill"))
+
+    def test_wingman_uses_cumulative_eye6_friendly_rows(self):
+        eye = FakeEye()
+        mine = self.seqkill(1, "T-55", 900, "armor")
+        wing = dict(self.seqkill(2, "ZSU-23-4 Shilka", 1500, "AAA"), shooter="Wingman 1-2")
+        eye.pic["my_kills_this_mission"] = [mine]
+        eye.pic["friendly_kills_this_mission"] = [mine, wing]
+        eye.pic["recent_kills_and_losses_last_10_min"] = []
+        total = say(self.controller(eye), "confirm wingman kills, mission total")
+        self.assertIn("Shilka", total)
+        self.assertNotIn("T-55", total)
+
+
 if __name__ == "__main__":
     unittest.main()

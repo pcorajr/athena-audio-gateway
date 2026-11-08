@@ -146,6 +146,8 @@ CATEGORY_ASK = (
     (re.compile(r"\b(trucks?|vehicles?|transports?)\b", re.I), ("ground vehicle",)),
     (re.compile(r"\b(bridges?|buildings?|structures?)\b", re.I), ("scenery", "static")),
 )
+CATEGORY_ALIASES = {"vehicles": "ground vehicle", "vehicle": "ground vehicle", "air defense": "SAM",
+                    "aaa": "AAA", "sam": "SAM", "tank": "armor", "armour": "armor"}
 CATEGORY_WORDS = {"armor": "enemy armor", "AAA": "triple A", "SAM": "SAM", "infantry": "enemy infantry",
                   "ground vehicle": "enemy vehicles", "scenery": "structures", "static": "structures"}
 NON_WEAPON = re.compile(r"(ALQ|LITENING|AAQ|\bpod\b|TGP|fuel tank|\btank\b|smoke)", re.I)
@@ -530,51 +532,73 @@ class SimpleController:
     def _kill_rows(self, pic, wingman, pic_time):
         """Kill rows (key, target, category, weapon, confidence, abs_time) for the pilot or the friendly flight.
 
-        key is the Eye's stable per-kill id/seq when published, else None (matched by owner, target, weapon
+        key is the Eye's stable per-kill seq when published, else None (matched by owner, target, weapon
         and picture-time reconstructed event time). pic_time is taken right after the picture, never after
-        the LLM call, so model latency cannot shift identities.
+        the LLM call, so model latency cannot shift identities. Categories are normalised (eye6 publishes
+        "vehicles", older pictures "ground vehicle").
         """
         owner = "wingman" if wingman else "me"
-        rows = []
+
+        def row(k, target, category, weapon, confidence, age):
+            key = k.get("seq", k.get("kill_id", k.get("id")))
+            category = CATEGORY_ALIASES.get(category, category)
+            return ((owner, "id", key) if key is not None else None, spoken_target(target, category), category,
+                    weapon, confidence or "confirmed", pic_time - (age or 0))
+
+        mine = pic.get("my_kills_this_mission") or []
         if not wingman:
-            for k in pic.get("my_kills_this_mission") or []:
-                key = k.get("seq", k.get("kill_id", k.get("id")))
-                rows.append(((owner, "id", key) if key is not None else None,
-                             spoken_target(k.get("target"), k.get("category")), k.get("category"), k.get("weapon"),
-                             k.get("confidence") or "confirmed", pic_time - (k.get("age_s") or 0)))
-            return rows
-        mine = ((pic.get("ownship") or {}).get("coalition"))
+            return [row(k, k.get("target"), k.get("category"), k.get("weapon"), k.get("confidence"), k.get("age_s"))
+                    for k in mine]
+        if "friendly_kills_this_mission" in pic:  # eye6 cumulative contract: all friendly rows incl. mine
+            my_seqs = {k.get("seq") for k in mine if k.get("seq") is not None}
+            return [row(k, k.get("target"), k.get("category"), k.get("weapon"), k.get("confidence"), k.get("age_s"))
+                    for k in pic.get("friendly_kills_this_mission") or []
+                    if k.get("seq") not in my_seqs and k.get("shooter") != "me"]
+        coalition = ((pic.get("ownship") or {}).get("coalition"))
+        rows = []
         for r in pic.get("recent_kills_and_losses_last_10_min") or []:
             killer, victim = r.get("killer") or {}, r.get("victim") or {}
-            if r.get("by_me") or r.get("friendly_loss") or not killer or (mine and killer.get("coalition") != mine):
+            if r.get("by_me") or r.get("friendly_loss") or not killer or (
+                    coalition and killer.get("coalition") != coalition):
                 continue
-            key = r.get("seq", r.get("kill_id"))
-            rows.append(((owner, "id", key) if key is not None else None,
-                         spoken_target(victim.get("type"), victim.get("category")), victim.get("category"),
-                         r.get("weapon"), "likely" if r.get("inferred") else "confirmed",
-                         pic_time - (r.get("age_s") or 0)))
+            rows.append(row(r, victim.get("type"), victim.get("category"), r.get("weapon"),
+                            "likely" if r.get("inferred") else "confirmed", r.get("age_s")))
         return rows
 
+    def _match(self, row, unused):
+        for c in unused:
+            if row[0] is not None or c["key"] is not None:
+                if row[0] is not None and c["key"] == row[0]:
+                    return c
+                continue
+            if c["target"] == row[1] and c["weapon"] == row[3] and abs(c["t"] - row[5]) <= 2.0:
+                return c
+        return None
+
     def _split_new(self, rows, owner):
-        """(new, all) with one-to-one matching against kills already read back for this owner."""
-        unused = [c for c in self._confirmed_kills if c[0] == owner]
-        new = []
+        """(new, upgraded): one-to-one matching against kills already read back for this owner.
+
+        upgraded = rows read back earlier as likely that are now confirmed (same identity, reported once,
+        never counted as a second kill)."""
+        unused = [c for c in self._confirmed_kills if c["owner"] == owner]
+        new, upgraded = [], []
         for row in rows:
-            match = None
-            for c in unused:
-                if row[0] is not None or c[1] is not None:
-                    if row[0] is not None and c[1] == row[0]:
-                        match = c
-                        break
-                    continue
-                if c[2] == row[1] and c[3] == row[3] and abs(c[4] - row[5]) <= 2.0:
-                    match = c
-                    break
-            if match is None:
+            c = self._match(row, unused)
+            if c is None:
                 new.append(row)
-            else:
-                unused.remove(match)
-        return new
+                continue
+            unused.remove(c)
+            if c["confidence"] != "confirmed" and row[4] == "confirmed":
+                upgraded.append((row, c))
+        return new, upgraded
+
+    def _remember(self, owner, rows, upgraded):
+        for row in rows:
+            self._confirmed_kills.append({"owner": owner, "key": row[0], "target": row[1], "weapon": row[3],
+                                          "t": row[5], "confidence": row[4]})
+        for row, c in upgraded:
+            c["confidence"] = row[4]
+        del self._confirmed_kills[:-1000]
 
     @staticmethod
     def _count_line(rows, label):
@@ -584,12 +608,12 @@ class SimpleController:
     def kill_confirm_calls(self, text, pic, pic_time=None):
         wingman = bool(WINGMAN_ASK.search(text))
         owner = "wingman" if wingman else "me"
+        prefix = "wingman " if wingman else ""
         cats = next((c for pattern, c in CATEGORY_ASK if pattern.search(text)), None)
-        all_rows = self._kill_rows(pic, wingman, time.time() if pic_time is None else pic_time)
-        fresh = self._split_new(all_rows, owner)
-        rows = all_rows
+        rows = self._kill_rows(pic, wingman, time.time() if pic_time is None else pic_time)
         if cats:
             rows = [r for r in rows if r[2] in cats]
+        new, upgraded = self._split_new(rows, owner)
         lines = []
         if TOTAL_ASK.search(text):
             for confidence, label in (("confirmed", "Mission total:"), ("likely", "Likely:")):
@@ -597,26 +621,26 @@ class SimpleController:
                 if sel:
                     lines.append(self._count_line(sel, label))
             if not lines:
-                lines.append("No %skills yet." % ("wingman " if wingman else ""))
+                lines.append("No %skills yet." % prefix)
         else:
-            new = [r for r in fresh if not cats or r[2] in cats]
             confirmed = [r for r in new if r[4] == "confirmed"]
             likely = [r for r in new if r[4] != "confirmed"]
             if len(confirmed) == 1 and not likely:
-                lines.append(("Confirmed, wingman splash one %s." if wingman else "Confirmed, splash one %s.") % confirmed[0][1])
+                lines.append(("Confirmed, wingman splash one %s." if wingman else "Confirmed, splash one %s.")
+                             % confirmed[0][1])
             else:
                 if confirmed:
-                    lines.append(self._count_line(confirmed, "Confirmed:" if not wingman else "Wingman confirmed:"))
+                    lines.append(self._count_line(confirmed, "Wingman confirmed:" if wingman else "Confirmed:"))
                 if likely:
                     lines.append(self._count_line(likely, "Likely:"))
-            if not new:
-                lines.append("No new %skills since your last check." % ("wingman " if wingman else "")
-                             if rows else "No %skills showing." % ("wingman " if wingman else ""))
+            if upgraded:
+                lines.append(self._count_line([r for r, _ in upgraded], "Now confirmed, earlier likely:"))
+            if not new and not upgraded:
+                lines.append("No new %skills since your last check." % prefix if rows
+                             else "No %skills showing." % prefix)
         lines = [" ".join(line.split()) for line in lines]
-        # remember only the kills not already remembered (no duplicate cache entries)
-        remembered = fresh if TOTAL_ASK.search(text) else [r for r in fresh if not cats or r[2] in cats]
-        self._confirmed_kills.extend((owner, r[0], r[1], r[3], r[5]) for r in remembered)
-        del self._confirmed_kills[:-1000]
+        # remember only what this answer actually reported (category-filtered rows), upgrades in place
+        self._remember(owner, new, upgraded)
         if REMAIN_ASK.search(text):
             lines.append(self.remaining_line(pic, cats))
         return lines

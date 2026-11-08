@@ -42,7 +42,7 @@ Facts that matter:
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
 - Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
-- An air picture or bogey dope is the three closest hostile air groups WITHIN FIFTY nautical miles only: read picture_top3 verbatim, both sentences of EVERY call. If empty say "no bandits within fifty miles". Never append extra-group counts. Ground pictures use the nearest requested ground groups instead.
+- Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (picture_top3 verbatim, both sentences of every call); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts.
 - Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
 - Never say "overhead" unless that contact has overhead_allowed true (within three nautical miles). Nineteen miles is NOT overhead.
 - A bearing or position request for a kind of target ("bearing to enemy armor", "where is the SAM") = the NEAREST matching group only, unless the pilot says "all" or "every".
@@ -113,6 +113,7 @@ REQUEST = re.compile(r"(\?|\b(picture|bogey dope|bearing|vector|where|what|which
                      r"declare|request|fuel|left|range|braa|bra|check|are there|is there|tell me|need)\b)", re.I)
 PICTURE_ASK = re.compile(r"\b(picture|bogey dope|what do you see|what's out there|whats out there|threats? around)\b", re.I)
 GROUND_ASK = re.compile(r"\b(ground|vehicles?|armor|infantry|trucks?|tanks?|sams?|triple a)\b", re.I)
+LONG_ASK = re.compile(r"\b(long[- ]range|far|extended|one hundred fifty|150)\b", re.I)
 TRAFFIC_ASK = re.compile(r"\b(traffic|blue only|only blue)\b", re.I)
 ATC_ASK = re.compile(r"\b(take ?off|landing|land|approach|taxi\w*|runway)\b", re.I)
 DAMAGE_ASK = re.compile(r"\b(i('?m| am| got| was| have been) hit|hit me|taking hits|damage report|my damage|"
@@ -168,6 +169,7 @@ CLASS_HINTS = {
                    "splash_to_announce is present say it, else \"copy, splash\" with the target type if known.",
     "ack": "ACK OR INTENT CALL: one short sentence. Acknowledge; add at most working_target.call when it helps. "
            "No picture, no other groups.",
+    "long_picture": "LONG RANGE PICTURE: picture_long_range_top3 verbatim (bandits within 150 miles).",
     "picture": "AIR PICTURE: picture_top3 verbatim, the three nearest hostile air groups within fifty miles. "
                "Every bearing, range, angels, clock and high/low/level must survive. No extra-group counts.",
     "ground_picture": "GROUND PICTURE: nearest requested ground groups, at most three, call lines verbatim.",
@@ -216,6 +218,8 @@ def call_class(text, pic=None):
     explicit = target_damage or focus_of(t) or BEARING_ASK.search(t) or PICTURE_ASK.search(t) or GROUND_ASK.search(t)
     if CONFIRM_ASK.search(t) and not explicit and age is not None and 0 <= age < 300:
         return "kill_confirm"
+    if PICTURE_ASK.search(t) and LONG_ASK.search(t):
+        return "long_picture"
     if PICTURE_ASK.search(t):
         return "ground_picture" if GROUND_ASK.search(t) else "picture"
     if BEARING_ASK.search(t) and not ALL_ASK.search(t):
@@ -287,10 +291,37 @@ def impact_calls(pic):
     return ["Copy, no result yet."]
 
 
+def debrief_summary(pic):
+    """Short spoken mission summary from the Eye picture: kills by type and weapon, weapons fired."""
+    kills = [k for k in (pic.get("my_kills_this_mission") or []) if k.get("confidence", "confirmed") == "confirmed"]
+    parts = []
+    if kills:
+        by_target = Counter(k.get("target") or "target" for k in kills)
+        weapons = Counter(k.get("weapon") for k in kills if k.get("weapon"))
+        what = ", ".join("%s %s" % (words(n), t) for t, n in by_target.most_common())
+        how = (" with " + ", ".join(w for w, _ in weapons.most_common(3))) if weapons else ""
+        parts.append("%s kill%s: %s%s." % (words(len(kills)).capitalize(), "" if len(kills) == 1 else "s", what, how))
+    else:
+        parts.append("No confirmed kills.")
+    used = ((pic.get("my_weapons_used_this_mission") or {}).get("by_weapon")) or {}
+    if used:
+        killed = Counter(k.get("weapon") for k in kills)
+        shots = ["%s %s fired, %s" % (w, words(n), ("%s kill%s" % (words(killed[w]), "" if killed[w] == 1 else "s"))
+                                      if killed.get(w) else "no kills")
+                 for w, n in sorted(used.items(), key=lambda kv: -kv[1])[:4]]
+        parts.append("; ".join(shots) + ".")
+    text = " ".join(parts)
+    return cap_speech(text, 300)
+
+
 def requested_calls(klass, text, pic):
     """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
     if not pic.get("ownship"):
         return None
+    if klass == "long_picture" and "picture_long_range_top3" in pic:
+        return pic["picture_long_range_top3"] or ["No bandits within one hundred fifty miles."]
+    if klass == "ground_picture" and "ground_targets_within_20nm" in pic:
+        return pic["ground_targets_within_20nm"] or [pic["ground_empty_call"]]
     if klass == "picture" and "picture_top3" in pic:
         return pic["picture_top3"] or [pic["air_picture_empty_call"]]
     if klass == "traffic" and "air_traffic" in pic:
@@ -741,7 +772,12 @@ class SimpleController:
         if DEBRIEF_ASK.search(text) and not re.search(r"\bstatus\b", text, re.I):
             generation = memory.generation if memory is not None else None
             queued = memory.schedule_debrief() if memory is not None else False
-            answer = "debrief written" if queued else "Debrief unavailable."
+            try:
+                summary = debrief_summary(self.picture())
+            except Exception:  # noqa: BLE001 - the report is the deliverable; the spoken part is best effort
+                summary = ""
+            answer = ("Prometheus, Athena, debrief written. " + summary).strip() if queued else (
+                ("Prometheus, Athena, debrief unavailable. " + summary).strip())
             self._log(request, "reply_generated", text=answer, outcome="intended", part=1)
             if memory is not None:
                 memory.publish("radio_call", {"request": text, "reply": answer, "report_status": "queued" if queued else "unavailable"},
@@ -828,7 +864,11 @@ class SimpleController:
                         alert = alert.strip()
                         if alert and alert[-1] not in ".!?":
                             alert += "."
-                        if alert in alerts or len(alert) + 1 > remaining:
+                        if alert in alerts or alert in " ".join(calls):
+                            if keys and i < len(keys):
+                                announced.append(keys[i])  # already said in this reply
+                            continue
+                        if len(alert) + 1 > remaining:
                             continue  # duplicate, or keep this alert pending for a later transmission
                         remaining -= len(alert) + 1
                         alerts.append(alert)

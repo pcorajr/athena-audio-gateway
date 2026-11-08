@@ -164,7 +164,7 @@ class MemoryLinkTests(unittest.TestCase):
         with patch("integrations.hermes_radio.memory_link.request", side_effect=slow):
             try:
                 started = time.monotonic()
-                self.assertEqual(controller.exchange(req("Athena, debrief"))["speech"], "debrief written")
+                self.assertIn("debrief written", controller.exchange(req("Athena, debrief"))["speech"])
                 self.assertTrue(entered.wait(1))
                 self.assertLess(time.monotonic() - started, .5)
                 self.assertEqual(memory.debrief_status["state"], "queued")
@@ -176,11 +176,11 @@ class MemoryLinkTests(unittest.TestCase):
                 memory.debrief_thread.join(1)
         self.assertEqual(memory.debrief_status["state"], "written")
         with patch("integrations.hermes_radio.memory_link.request", side_effect=OSError):
-            self.assertEqual(controller.exchange(req("debrief"))["speech"], "debrief written")
+            self.assertIn("debrief written", controller.exchange(req("debrief"))["speech"])
             memory.debrief_thread.join(1)
         self.assertEqual(memory.debrief_status["state"], "failed")
         memory.invalidate()
-        self.assertEqual(controller.exchange(req("debrief"))["speech"], "Debrief unavailable.")
+        self.assertIn("debrief unavailable", controller.exchange(req("debrief"))["speech"].lower())
 
     def test_slow_metadata_does_not_serialize_concurrent_subscriptions_or_reset(self):
         from types import SimpleNamespace

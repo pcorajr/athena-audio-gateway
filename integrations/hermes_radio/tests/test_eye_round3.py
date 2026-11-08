@@ -368,9 +368,9 @@ class EyeCockpitMergeTests(unittest.TestCase):
             eye, _ = scenario(clock, stores_dir=tmp)
             eye.on_cockpit_packet(packet(rwr={"e": [emitter(7, "SA-11 Buk SR 9S18M1", "lock", 90)]}))
             pic = eye.picture()
-            self.assertEqual(pic["rwr_alert_to_announce"], ["Spike, SA-11 Buk SR 9S18M1 at your three o'clock."])
+            self.assertEqual([a for a in pic["rwr_alert_to_announce"] if not a.startswith("Bandit")], ["Spike, SA-11 Buk SR 9S18M1 at your three o'clock."])
             eye.mark_announced(pic["_rwr_keys"])
-            self.assertNotIn("rwr_alert_to_announce", eye.picture())
+            self.assertFalse([a for a in eye.picture().get("rwr_alert_to_announce", []) if not a.startswith("Bandit")])
             with open(os.path.join(tmp, os.listdir(tmp)[0]), encoding="utf-8") as fh:
                 rows = [json.loads(line) for line in fh]
             alert = [r for r in rows if r["kind"] == "rwr_alert"][0]
@@ -442,10 +442,10 @@ class PromptRoutingTests(unittest.TestCase):
         list(c.stream(req("Athena, fuel state", tid="t2")))
         pic1 = json.loads([m for m in seen[0] if m["content"].startswith("PICTURE ")][0]["content"][8:])
         pic2 = json.loads([m for m in seen[1] if m["content"].startswith("PICTURE ")][0]["content"][8:])
-        self.assertEqual(pic1["rwr_alert_to_announce"],
+        self.assertEqual([a for a in pic1["rwr_alert_to_announce"] if not a.startswith("Bandit")],
                          ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock."])
         self.assertNotIn("_rwr_keys", pic1)
-        self.assertNotIn("rwr_alert_to_announce", pic2)  # announced once
+        self.assertFalse([a for a in pic2.get("rwr_alert_to_announce", []) if not a.startswith("Bandit")])  # announced once
         self.assertEqual(pic1["cockpit"]["rwr"]["threats"][0]["signal"], "launch")
         focus = [m["content"] for m in seen[0] if m["content"].startswith("FOCUS:")]
         self.assertEqual(len(focus), 1)
@@ -455,7 +455,7 @@ class PromptRoutingTests(unittest.TestCase):
         tool = [r for r in c.transcript.records if r["kind"] == "tool"][0]
         summary = tool["result"]["summary"]
         self.assertEqual(summary["cockpit"]["rwr_highest"], "launch")
-        self.assertEqual(summary["rwr_alert"], ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock."])
+        self.assertEqual([a for a in summary["rwr_alert"] if not a.startswith("Bandit")], ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock."])
 
 
 # ----------------------------------------------------------------------------- UDP listener

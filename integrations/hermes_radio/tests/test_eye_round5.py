@@ -96,7 +96,7 @@ class TrafficTests(unittest.TestCase):
     def test_no_blue_aircraft_does_not_substitute_tanks(self):
         eye, _ = make_eye(contact(1, "T-55", "blue", "GROUND", distance=1))
         speech, _, _ = exchange(eye, "any blue traffic near me")
-        self.assertIn("No blue aircraft showing within eighty miles", speech)
+        self.assertIn("No blue aircraft showing within one hundred fifty miles", speech)
         self.assertNotIn("armor", speech)
 
 
@@ -186,8 +186,8 @@ class AirPictureTests(unittest.TestCase):
     def test_empty_radius_does_not_fall_back_to_ground_or_distant_air(self):
         eye, _ = make_eye(contact(1, distance=51), contact(2, "T-55", "red", "GROUND", distance=1))
         speech, _, _ = exchange(eye, "bogey dope")
-        self.assertIn("No bandits within fifty miles", speech)
-        self.assertNotIn("bearing", speech)
+        self.assertIn("Nothing inside fifty miles", speech)  # 150 nm tier gives the 51 nm bandit
+        self.assertNotIn("T-55", speech)  # never falls back to ground
 
     def test_overhead_flag_exact_boundary(self):
         eye, _ = make_eye(contact(1))

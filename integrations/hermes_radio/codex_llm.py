@@ -98,6 +98,42 @@ def to_responses(messages):
     return "\n\n".join(instructions), items
 
 
+def _completed_text(response):
+    out = []
+    for item in (response or {}).get("output") or []:
+        for part in item.get("content") or []:
+            if part.get("type") in ("output_text", "text") and part.get("text"):
+                out.append(part["text"])
+    return "".join(out)
+
+
+def parse_sse(lines):
+    """Server-sent events -> (status, text). Deltas first; else output_text.done; else the completed response."""
+    deltas, done, completed, failed = [], None, "", None
+    for line in lines:
+        line = line.strip()
+        if not line.startswith("data: "):
+            continue
+        try:
+            event = json.loads(line[6:])
+        except ValueError:
+            continue
+        kind = event.get("type")
+        if kind == "response.output_text.delta":
+            deltas.append(event.get("delta", ""))
+        elif kind == "response.output_text.done" and event.get("text"):
+            done = event["text"] if done is None else done + event["text"]
+        elif kind in ("response.failed", "error"):
+            failed = json.dumps(event)[:300]
+        elif kind == "response.completed":
+            completed = _completed_text(event.get("response"))
+            break
+    text = "".join(deltas) or done or completed
+    if failed and not text:
+        return 502, failed
+    return 200, text
+
+
 def _http_post(url, headers, body, timeout):
     """POST and read a server-sent-event stream; returns (status, text_or_error)."""
     parts = urlsplit(url)
@@ -107,25 +143,7 @@ def _http_post(url, headers, body, timeout):
         reply = conn.getresponse()
         if reply.status != 200:
             return reply.status, reply.read()[:300].decode("utf-8", "replace")
-        text, failed = [], None
-        for raw in reply:
-            line = raw.decode("utf-8", "replace").strip()
-            if not line.startswith("data: "):
-                continue
-            try:
-                event = json.loads(line[6:])
-            except ValueError:
-                continue
-            kind = event.get("type")
-            if kind == "response.output_text.delta":
-                text.append(event.get("delta", ""))
-            elif kind in ("response.failed", "error"):
-                failed = json.dumps(event)[:300]
-            elif kind == "response.completed":
-                break
-        if failed and not text:
-            return 502, failed
-        return 200, "".join(text)
+        return parse_sse(raw.decode("utf-8", "replace") for raw in reply)
     finally:
         conn.close()
 

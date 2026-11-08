@@ -47,7 +47,7 @@ MS_TO_KT = 1.943844
 NM = 1852.0
 EVENT_KEEP_S = 30 * 60
 SHOT_KEEP_S = 30 * 60
-CONTACT_RADIUS_NM = 80.0
+CONTACT_RADIUS_NM = 150.0  # = LONG_RANGE_NM tier (pilot decision 2026-11-08)
 # Event-stream liveness (round 2): DCS-gRPC's StreamEvents went silent after a DCS client reboot while
 # the unit streams recovered. Units fresh but no event message for this long -> force a resubscribe.
 EVENTS_STALE_S = 120.0
@@ -69,6 +69,10 @@ HOSTILE_GROUPS_MAX = 15
 FRIENDLY_GROUPS_MAX = 8
 PICTURE_TOP = 3
 AIR_PICTURE_RADIUS_NM = 50.0
+# Range tiers (pilot decision 2026-11-08): 20 nm = ground targets AND bandits (a bandit entering 20 nm is called
+# once, unprompted, on the next transmission); 50 nm = tactical bandit picture; 150 nm = long-range bandits.
+CLOSE_TIER_NM = 20.0
+LONG_RANGE_NM = 150.0
 SOFT_VANISH_CONFIRM_S = 45.0
 RAW_SAMPLE_CHARS = 6000
 # Pilot kill reports ("splash", "target destroyed", "armor dead") confirm the most recent pending kill.
@@ -1906,10 +1910,30 @@ class Eye:
             pic["more_hostile_groups_not_listed"] = dict(more)
         if len(friendly_raw) > len(friendly):
             pic["more_friendly_groups_not_listed"] = len(friendly_raw) - len(friendly)
-        nearby_air = [i for i in air if hostile_raw[i][1][0][0] <= AIR_PICTURE_RADIUS_NM]
+        dist = lambda i: hostile_raw[i][1][0][0]  # noqa: E731 - nearest member of group i, nm
+        nearby_air = [i for i in air if dist(i) <= AIR_PICTURE_RADIUS_NM]
         pic["picture_top3"] = [self._group_json(own, *hostile_raw[i])["call"] for i in nearby_air[:PICTURE_TOP]]
         pic["air_picture_radius_nm"] = AIR_PICTURE_RADIUS_NM
-        pic["air_picture_empty_call"] = "No bandits within fifty miles."
+        long_air = [i for i in air if dist(i) <= LONG_RANGE_NM]
+        pic["picture_long_range_top3"] = [self._group_json(own, *hostile_raw[i])["call"]
+                                          for i in long_air[:PICTURE_TOP]]
+        pic["long_range_radius_nm"] = LONG_RANGE_NM
+        far = [i for i in long_air if dist(i) > AIR_PICTURE_RADIUS_NM]
+        pic["air_picture_empty_call"] = (
+            "Nothing inside fifty miles. " + self._group_json(own, *hostile_raw[far[0]])["call"] if far
+            else "No bandits within one hundred fifty miles.")
+        ground = [i for i, (dom, _) in enumerate(hostile_raw) if dom == "ground" and dist(i) <= CLOSE_TIER_NM]
+        pic["ground_targets_within_20nm"] = [self._group_json(own, *hostile_raw[i])["call"]
+                                             for i in ground[:PICTURE_TOP]]
+        pic["ground_empty_call"] = "No ground targets within twenty miles."
+        now = self.clock()
+        for i in air:
+            if dist(i) > CLOSE_TIER_NM:
+                continue
+            lead = hostile_raw[i][1][0][2]
+            g = self._group_json(own, *hostile_raw[i])
+            self._threat_alert("close-bandit-%s" % lead.get("id"), g["call"], "close bandit", now,
+                               source="20 nm tier", range_nm=g.get("range_nm"))
 
     @staticmethod
     def _kill_row(k, now):

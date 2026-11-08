@@ -112,5 +112,23 @@ class ControllerIntegrationTests(unittest.TestCase):
         self.assertIn("openai-codex", dumped)
 
 
+class SSEParseTests(unittest.TestCase):
+    def test_deltas_done_and_completed_fallbacks(self):
+        from integrations.hermes_radio.codex_llm import parse_sse
+
+        def ev(obj):
+            return "data: " + json.dumps(obj)
+        self.assertEqual(parse_sse([ev({"type": "response.output_text.delta", "delta": "a"}),
+                                    ev({"type": "response.output_text.delta", "delta": "b"})]), (200, "ab"))
+        self.assertEqual(parse_sse([ev({"type": "response.output_text.done", "text": "done text"})]),
+                         (200, "done text"))
+        completed = {"type": "response.completed", "response": {"output": [
+            {"type": "reasoning", "content": []},
+            {"type": "message", "content": [{"type": "output_text", "text": "final text"}]}]}}
+        self.assertEqual(parse_sse([ev(completed)]), (200, "final text"))
+        self.assertEqual(parse_sse([ev({"type": "response.failed", "response": {}})])[0], 502)
+        self.assertEqual(parse_sse(["event: ping", "data: not json"]), (200, ""))
+
+
 if __name__ == "__main__":
     unittest.main()

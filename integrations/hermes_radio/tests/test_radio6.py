@@ -159,7 +159,7 @@ class RoutingTests(unittest.TestCase):
             eye.memory = Memory()
             c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
                                  llm=lambda messages: "LLM ANSWER")
-            self.assertEqual(say(c, text), "debrief written", text)
+            self.assertIn("debrief written", say(c, text), text)
             self.assertEqual(eye.memory.scheduled, 1)
         eye = FakeEye()
         eye.memory = Memory()

@@ -131,9 +131,9 @@ class AirPictureTests(unittest.TestCase):
                 splash_count = sum(1 for i in range(count) if "Splash one T-55, target number %d." % i in speech)
                 expected = rwr_keys[:rwr_count] + splash_keys[:splash_count]
                 if expected:
-                    mark.assert_called_once_with(expected)
+                    self.assertEqual([[k for k in c.args[0] if not str(k).startswith('close-bandit')] for c in mark.call_args_list], [expected])  # 20 nm close-bandit keys tested in test_final_tiers
                 else:
-                    mark.assert_not_called()
+                    self.assertFalse([k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')])
                 if count == 4:
                     self.assertEqual(rwr_count + splash_count, count * 2)
                     self.assertEqual(len(frames), 2)  # everything fits; second frame carries the rest
@@ -156,7 +156,7 @@ class AirPictureTests(unittest.TestCase):
         self.assertLessEqual(len(frames), 2)
         self.assertLessEqual(len(speech), MAX_SPEECH_CHARS)
         self.assertTrue(any(r.get("outcome") == "fixed_response_overflow" for r in log.records))
-        mark.assert_not_called()
+        self.assertFalse([k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')])
 
     def test_three_closest_with_full_format_and_no_character_truncation(self):
         eye, _ = make_eye(*(contact(i, distance=d) for i, d in enumerate((19, 29, 39, 45, 51), 1)))

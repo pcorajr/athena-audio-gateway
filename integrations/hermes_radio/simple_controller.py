@@ -305,7 +305,15 @@ def debrief_summary(pic):
         parts.append("No confirmed kills.")
     used = ((pic.get("my_weapons_used_this_mission") or {}).get("by_weapon")) or {}
     if used:
+        from .eye import weapon_kind
+
+        def is_gun(name):
+            return bool(name) and (str(name).lower().startswith("gun") or weapon_kind(name) == "gun")
         killed = Counter(k.get("weapon") for k in kills)
+        gun_kills = sum(n for w, n in killed.items() if is_gun(w))
+        for w in used:
+            if is_gun(w):
+                killed[w] = gun_kills  # 'gun rounds' / 'gun burst' usage vs GAU-8 / M61 kill names
         shots = ["%s %s fired, %s" % (w, words(n), ("%s kill%s" % (words(killed[w]), "" if killed[w] == 1 else "s"))
                                       if killed.get(w) else "no kills")
                  for w, n in sorted(used.items(), key=lambda kv: -kv[1])[:4]]
@@ -321,7 +329,15 @@ def requested_calls(klass, text, pic):
     if klass == "long_picture" and "picture_long_range_top3" in pic:
         return pic["picture_long_range_top3"] or ["No bandits within one hundred fifty miles."]
     if klass == "ground_picture" and "ground_targets_within_20nm" in pic:
-        return pic["ground_targets_within_20nm"] or [pic["ground_empty_call"]]
+        rows = pic["ground_targets_within_20nm"]
+        cats = next((c for pattern, c in CATEGORY_ASK if pattern.search(text)), None)
+        if cats:
+            rows = [r for r in rows if CATEGORY_ALIASES.get(r.get("category"), r.get("category")) in cats]
+        calls = [r["call"] if isinstance(r, dict) else r for r in rows[:3]]
+        if calls:
+            return calls
+        return ["No %s within twenty miles." % CATEGORY_WORDS.get(cats[0], "enemy " + str(cats[0]))] if cats else [
+            pic["ground_empty_call"]]
     if klass == "picture" and "picture_top3" in pic:
         return pic["picture_top3"] or [pic["air_picture_empty_call"]]
     if klass == "traffic" and "air_traffic" in pic:
@@ -573,6 +589,25 @@ class SimpleController:
             out["reason"] = pic["reason"]
         return out
 
+    @staticmethod
+    def _with_close_bandits(answer, close_bandits, announced):
+        """Prepend each not-yet-called bandit inside 20 nm (current geometry) after the callsign prefix; only
+        calls actually present in the final text are acknowledged, the rest stay pending."""
+        prefix = "Prometheus, Athena, "
+        for row in close_bandits or []:
+            call = row["call"]
+            if call in answer:
+                announced.append(row["key"])
+                continue
+            if len(answer) + len(call) + 1 > MAX_SPEECH_CHARS:
+                continue
+            if answer.startswith(prefix):
+                answer = prefix + call + " " + answer[len(prefix):]
+            else:
+                answer = call + " " + answer
+            announced.append(row["key"])
+        return answer
+
     # ---------------------------------------------------------------- kill confirmation (round 6)
     def _kill_rows(self, pic, wingman, pic_time):
         """Kill rows (key, target, category, weapon, confidence, abs_time) for the pilot or the friendly flight.
@@ -796,6 +831,7 @@ class SimpleController:
         klass = call_class(text, pic)
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
+        close_bandits = pic.pop("_close_bandits", None) if isinstance(pic, dict) else None
         result = {"summary": self.picture_summary(pic), "picture": pic,
                   "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""}
         if klass:
@@ -877,6 +913,7 @@ class SimpleController:
                 answer = prefix + " ".join(stale + alerts + calls)
         else:
             answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
+        answer = self._with_close_bandits(answer, close_bandits, announced)
         if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
             flat = []
             for key in announced:

@@ -1923,17 +1923,18 @@ class Eye:
             "Nothing inside fifty miles. " + self._group_json(own, *hostile_raw[far[0]])["call"] if far
             else "No bandits within one hundred fifty miles.")
         ground = [i for i, (dom, _) in enumerate(hostile_raw) if dom == "ground" and dist(i) <= CLOSE_TIER_NM]
-        pic["ground_targets_within_20nm"] = [self._group_json(own, *hostile_raw[i])["call"]
-                                             for i in ground[:PICTURE_TOP]]
+        pic["ground_targets_within_20nm"] = [
+            {"call": self._group_json(own, *hostile_raw[i])["call"], "category": hostile_raw[i][1][0][2]["category"],
+             "type": hostile_raw[i][1][0][2].get("type")} for i in ground[:12]]  # nearest first; filtered by request
         pic["ground_empty_call"] = "No ground targets within twenty miles."
-        now = self.clock()
+        close = []
         for i in air:
             if dist(i) > CLOSE_TIER_NM:
                 continue
-            lead = hostile_raw[i][1][0][2]
-            g = self._group_json(own, *hostile_raw[i])
-            self._threat_alert("close-bandit-%s" % lead.get("id"), g["call"], "close bandit", now,
-                               source="20 nm tier", range_nm=g.get("range_nm"))
+            key = "close-bandit-%s" % hostile_raw[i][1][0][2].get("id")
+            if key not in self.announced:  # once per group lead; geometry is current on every picture
+                close.append({"key": key, "call": self._group_json(own, *hostile_raw[i])["call"]})
+        pic["_close_bandits"] = close
 
     @staticmethod
     def _kill_row(k, now):

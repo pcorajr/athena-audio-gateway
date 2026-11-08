@@ -39,7 +39,7 @@ class TierTests(unittest.TestCase):
         eye, _ = make_eye(contact(1, "T-55", "red", "GROUND", distance=12), contact(2, "BMP-1", "red", "GROUND", distance=35))
         pic = eye.picture()
         self.assertEqual(len(pic["ground_targets_within_20nm"]), 1)
-        self.assertIn("twelve miles", pic["ground_targets_within_20nm"][0])
+        self.assertIn("twelve miles", pic["ground_targets_within_20nm"][0]["call"])
         far, _ = make_eye(contact(2, "BMP-1", "red", "GROUND", distance=35))
         self.assertIn("No ground targets within twenty miles", speech(far, "Athena, ground picture"))
 
@@ -60,6 +60,61 @@ class DebriefSummaryTests(unittest.TestCase):
         self.assertIn("AIM-9 four fired, three kills", text)
         self.assertIn("AIM-54C-Mk47 two fired, no kills", text)
         self.assertEqual(debrief_summary({}), "No confirmed kills.")
+
+
+class Final8ReviewTests(unittest.TestCase):
+    def controller(self, eye, llm=None):
+        return SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                                llm=llm or (lambda messages: "Prometheus, Athena, loud and clear."))
+
+    def test_close_bandit_survives_background_pictures_and_uses_current_geometry(self):
+        eye, clock = make_eye(contact(1, "MiG-29S", distance=19))
+        for _ in range(5):
+            eye.picture()  # memory loop polls the picture every second before the pilot speaks
+        for name in ("advance", "tick", "step"):
+            if hasattr(clock, name):
+                getattr(clock, name)(120)
+                break
+        else:
+            clock.t = getattr(clock, "t", 0) + 120
+        eye.on_unit(contact(1, "MiG-29S", distance=5))
+        said = self.controller(eye).exchange(req("Athena, radio check"))["speech"]
+        self.assertIn("MiG-29S", said)
+        self.assertIn("five miles", said)
+        self.assertNotIn("MiG-29S", self.controller(eye).exchange(req("Athena, radio check"))["speech"])
+
+    def test_close_bandit_on_model_reply_and_on_model_failure(self):
+        eye, _ = make_eye(contact(1, "MiG-29S", distance=10))
+
+        def broken(messages):
+            raise TimeoutError("model down")
+        said = self.controller(eye, broken).exchange(req("Athena, radio check"))["speech"]
+        self.assertIn("MiG-29S", said)
+
+    def test_ground_picture_filters_category_before_cap(self):
+        units = [contact(1, "Ural-375", "red", "GROUND", distance=5), contact(2, "T-55", "red", "GROUND", distance=7),
+                 contact(3, "ZSU-23-4 Shilka", "red", "GROUND", distance=9),
+                 contact(4, "Infantry AK", "red", "GROUND", distance=15)]
+        eye, _ = make_eye(*units)
+        said = speech(eye, "Athena, infantry picture")
+        self.assertIn("fifteen miles", said)
+        self.assertNotIn("five miles", said)
+        none, _ = make_eye(contact(1, "Ural-375", "red", "GROUND", distance=5))
+        self.assertIn("No enemy infantry within twenty miles", speech(none, "Athena, infantry picture"))
+
+    def test_gun_kills_match_gun_usage(self):
+        pic = {"my_kills_this_mission": [{"target": "T-72B", "weapon": "GAU-8", "confidence": "confirmed"}],
+               "my_weapons_used_this_mission": {"by_weapon": {"gun rounds": 150}}}
+        text = debrief_summary(pic)
+        self.assertIn("gun rounds one hundred fifty fired, one kill", text)
+        self.assertNotIn("no kills", text)
+
+    def test_failed_stream_falls_back_even_with_done_text(self):
+        import json
+        from integrations.hermes_radio.codex_llm import parse_sse
+        lines = ["data: " + json.dumps({"type": "response.output_text.done", "text": "partial"}),
+                 "data: " + json.dumps({"type": "response.failed", "response": {}})]
+        self.assertEqual(parse_sse(lines)[0], 502)
 
 
 if __name__ == "__main__":

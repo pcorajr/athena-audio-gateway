@@ -377,12 +377,15 @@ class ControllerTests(unittest.TestCase):
                 raise RuntimeError("boom")
             return "Prometheus, Athena, copy."
         c = self.controller(flaky)
-        self.assertEqual(c.exchange(req("radio check"))["speech"], "Prometheus, Athena, copy.")
+        said = c.exchange(req("radio check"))["speech"]
+        self.assertTrue(said.endswith("copy."), said)
 
         def dead(messages):
             raise RuntimeError("down")
         c = self.controller(dead)
-        self.assertEqual(c.exchange(req("radio check"))["speech"], FALLBACK)
+        said = c.exchange(req("radio check"))["speech"]
+        # the fallback still carries a not-yet-called bandit inside 20 nm (fixture has one at 1 nm)
+        self.assertTrue(said.endswith(FALLBACK.split("Athena, ", 1)[-1]), said)
 
     def test_picture_retried_once(self):
         eye, _ = loaded()
@@ -428,8 +431,8 @@ class ControllerTests(unittest.TestCase):
         release.set()
         a.join(3)
         b.join(3)
-        self.assertEqual(results["first"]["speech"], "Prometheus, Athena, answer to first.")
-        self.assertEqual(results["second"]["speech"], "Prometheus, Athena, answer to second.")
+        self.assertTrue(results["first"]["speech"].endswith("answer to first."), results["first"]["speech"])
+        self.assertTrue(results["second"]["speech"].endswith("answer to second."), results["second"]["speech"])
         self.assertEqual([o for o in order if o[0] == "start"], [("start", "first"), ("start", "second")])
         self.assertTrue(any(r.get("outcome") == "queued_behind_previous" for r in c.transcript.records))
 

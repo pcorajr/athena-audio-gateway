@@ -128,10 +128,9 @@ def parse_sse(lines):
         elif kind == "response.completed":
             completed = _completed_text(event.get("response"))
             break
-    text = "".join(deltas) or done or completed
-    if failed and not text:
-        return 502, failed
-    return 200, text
+    if failed:
+        return 502, failed  # a failed response is never a usable answer, even with partial text
+    return 200, "".join(deltas) or done or completed
 
 
 def _http_post(url, headers, body, timeout):

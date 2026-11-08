@@ -14,7 +14,7 @@ import time
 import unicodedata
 
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
-from .eye import KILL_REPORT, _QUESTION, words
+from .eye import KILL_REPORT, _QUESTION, domain, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
 
@@ -23,6 +23,8 @@ Every turn you get a live PICTURE (JSON) from the Athena Eye tracking system. It
 Facts that matter:
 - Optional memory is mission history, not a replacement for the live Eye: takeoff airfield, weapons used, observed kill/loss timeline and labelled disagreements. Never turn an unclear audit verdict into a confirmed fact.
 - Every unit listed in contacts and totals is ALIVE. Something is dead or killed ONLY if it appears in recent_kills_and_losses, my_kills_this_mission or a shot result says kill. In my_kills_this_mission, confidence confirmed = a kill: say it plainly ("splash one T-55"), never "likely", even when inferred is true. Only confidence likely, or a recent_kills_and_losses row "no longer showing, likely destroyed", is "likely destroyed".
+- Mission kill totals come from my_kills_this_mission (cumulative for the whole mission, every row is one kill) or the memory section; recent_* lists are short windows, never totals.
+- Names: say "bridge" for MOST/BRIDGE scenery codes, never read internal codes or numeric weapon ids aloud.
 - my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
 - ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words.
 - ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
@@ -116,7 +118,45 @@ DAMAGE_ASK = re.compile(r"\b(i('?m| am| got| was| have been) hit|hit me|taking h
                         r"i (took|have|sustained) damage|i('?m| am) damaged|am i damaged|"
                         r"damage to (me|my (aircraft|jet|plane|ownship)))\b", re.I)
 CONFIRM_ASK = re.compile(r"\bconfirm\b", re.I)
-KILL_ASK = re.compile(r"\b(kills?|killed|splash|destroyed)\b", re.I)
+KILL_ASK = re.compile(r"\b(kills?|killed|splash|destroyed|taken out|dead|eliminated|neutrali[sz]ed)\b", re.I)
+# Round 6 (radio talk): deterministic acknowledgements for attack-flow intent calls.
+INTENT_ACKS = (
+    (re.compile(r"\b(time to impact|seconds? (to|till|until|til) impact|impact in)\b", re.I), "copy."),
+    (re.compile(r"\babort\w*\b", re.I), "copy, abort."),
+    (re.compile(r"\bweapons? (hot|free)\b", re.I), "copy, weapons hot."),
+    (re.compile(r"\bweapons? (cold|safe)\b", re.I), "copy, weapons cold."),
+    (re.compile(r"\b(running in|run in|in hot|rolling in|commencing (the |my )?(attack|run))\b", re.I), "copy, running in."),
+    (re.compile(r"\b(pickle\w*|bombs? away|rifle|fox (one|two|three)|magnum|missiles? away|weapons? away|"
+                r"rockets? away)\b", re.I), "copy, weapon away."),
+    (re.compile(r"\b(off target|coming off)\b", re.I), "copy, off target."),
+)
+CONFIRM_TAG = re.compile(r"[,.]?\s*\bconfirm\b[.?!]*\s*$", re.I)
+GENUINE_QUESTION = re.compile(r"\b(what|how|when|where|which|who|did|does|is|are|any)\b", re.I)
+IMPACT_ASK = re.compile(r"\b(bomb impact|weapon impact|impact|did (it|that) hit|any hits?)\b", re.I)
+DEBRIEF_ASK = re.compile(r"\b(debrief\w*|mission (end(ed|ing)?|complete|over|summary|report|briefing)|"
+                         r"end(ing)? (of )?(the |this |my )?mission|provide (a |the |me a )?(brief|briefing|summary)|"
+                         r"(give|send) me (a |the )?(brief|briefing|summary|debrief))\b", re.I)
+TOTAL_ASK = re.compile(r"\b(total|tally|so far|all (my |the )?kills|this mission|overall|how many kills)\b", re.I)
+REMAIN_ASK = re.compile(r"\b(remain\w*|left|still (alive|there|up)|what('?s| is) left)\b", re.I)
+WINGMAN_ASK = re.compile(r"\b(wing ?m[ae]n|wingie|dash two|number two|my two|friendl\w*)\b", re.I)
+CATEGORY_ASK = (
+    (re.compile(r"\b(air ?defen[cs]es?|sams?|triple a|aaa|flak|shilka|strela|manpads?)\b", re.I), ("AAA", "SAM")),
+    (re.compile(r"\b(armou?r|tanks?)\b", re.I), ("armor",)),
+    (re.compile(r"\b(artillery|arty|mlrs|howitzers?)\b", re.I), ("artillery",)),
+    (re.compile(r"\b(infantry|troops?|soldiers?)\b", re.I), ("infantry",)),
+    (re.compile(r"\b(trucks?|vehicles?|transports?)\b", re.I), ("ground vehicle",)),
+    (re.compile(r"\b(bridges?|buildings?|structures?)\b", re.I), ("scenery", "static")),
+)
+CATEGORY_ALIASES = {"vehicles": "ground vehicle", "vehicle": "ground vehicle", "air defense": "SAM",
+                    "aaa": "AAA", "sam": "SAM", "tank": "armor", "armour": "armor"}
+CATEGORY_WORDS = {"armor": "enemy armor", "AAA": "triple A", "SAM": "SAM", "infantry": "enemy infantry",
+                  "ground vehicle": "enemy vehicles", "scenery": "structures", "static": "structures",
+                  "artillery": "enemy artillery", "train": "trains", "ship": "ships"}
+# Map objects are never "ground units" for a generic "what remains"; air/sea comes from eye.domain().
+NOT_GROUND = {"scenery", "static", "unknown"}
+NON_WEAPON = re.compile(r"(ALQ|LITENING|AAQ|\bpod\b|TGP|fuel tank|\btank\b|smoke)", re.I)
+SCENERY_NAMES = ((re.compile(r"\bMOST\b|BRIDGE", re.I), "bridge"), (re.compile(r"HANGAR", re.I), "hangar"),
+                 (re.compile(r"BUNKER", re.I), "bunker"), (re.compile(r"TOWER", re.I), "tower"))
 BEARING_ASK = re.compile(r"\b(bearing|vector|heading to|where('s| is| are)?|braa|bra|steer)\b", re.I)
 ALL_ASK = re.compile(r"\b(all|every|each|everything|list)\b", re.I)
 CLASS_HINTS = {
@@ -137,6 +177,9 @@ CLASS_HINTS = {
               "cockpit warnings/RPM/fuel-loss trends second. No warnings is not evidence of no damage.",
     "kill_confirm": "KILL CONFIRMATION REQUEST, not a pilot kill report: answer from my_kills_this_mission "
                     "and my_shots_last_15_min. No air picture. Do not upgrade likely kills merely on a question.",
+    "intent": "INTENT CALL: short acknowledgement only.",
+    "impact": "IMPACT / RESULT CHECK: report the latest weapon's result only.",
+    "loadout": "LOADOUT: remaining weapons and gun rounds only.",
     "bearing_one": "BEARING REQUEST: give ONLY the nearest matching group's call line (hostile_groups are nearest "
                    "first), not every group.",
 }
@@ -155,8 +198,14 @@ def call_class(text, pic=None):
         re.search(r"\b(targets?|enemy|hostiles?|bandits?)\b", t, re.I) or GROUND_ASK.search(t))
     if DAMAGE_ASK.search(t) and not target_damage:
         return "damage"
+    if intent_ack(t) and (not _QUESTION.search(t) or (CONFIRM_TAG.search(t) and not GENUINE_QUESTION.search(t))):
+        return "intent"  # round 6: "running in ..., confirm" is an acknowledgement, not a kill check
+    if IMPACT_ASK.search(t):
+        return "impact"
     if CONFIRM_ASK.search(t) and KILL_ASK.search(t):
         return "kill_confirm"
+    if "loadout" in focus_of(t) and not KILL_ASK.search(t):
+        return "loadout"
     if ATC_ASK.search(t):
         return "atc"
     if TRAFFIC_ASK.search(t) and not GROUND_ASK.search(t):
@@ -174,6 +223,61 @@ def call_class(text, pic=None):
     return None
 
 
+def spoken_target(name, category=None):
+    """Radio-safe target name: scenery codes become words, unknowns become 'target'."""
+    name = (name or "").strip().lstrip("- ").strip()
+    for pattern, word in SCENERY_NAMES:
+        if pattern.search(name):
+            return word
+    if not name or name.lower() == "unknown" or (category == "scenery" and re.search(r"[()_]", name)):
+        return "structure" if category in ("scenery", "static") else "target"
+    return name
+
+
+def loadout_calls(own):
+    """Compact remaining-stores call that fits one transmission (pods and tanks are not weapons)."""
+    lo = (own or {}).get("loadout") or {}
+    if not lo.get("available"):
+        return None
+    items = ["%s %s" % (w.get("weapon"), words(w["count"])) for w in lo.get("weapons", [])
+             if w.get("count") and w.get("weapon") and not NON_WEAPON.search(w["weapon"])]
+    rounds = lo.get("gun_rounds")
+    if rounds:
+        items.append("gun %s rounds" % words(rounds))
+    return ["You have " + ", ".join(items) + "."] if items else ["Winchester, no weapons left."]
+
+
+def intent_ack(text):
+    for pattern, ack in INTENT_ACKS:
+        if pattern.search(text or ""):
+            return ack
+    return None
+
+
+def impact_calls(pic):
+    shots = ((pic.get("my_shots_last_15_min") or {}).get("shots")) or []
+    recent = [s for s in shots if s.get("age_s") is not None and s["age_s"] <= 120]
+    if not recent:
+        return ["Copy, no recent weapon release showing."]
+    shot = min(recent, key=lambda s: s["age_s"])
+    hit = shot.get("hit") or {}
+    gone = shot.get("no_longer_showing") or []
+    target = spoken_target(gone[0] if gone else hit.get("type") or (shot.get("intended_target") or {}).get("type"),
+                           hit.get("category"))
+    result = shot.get("result") or "pending"
+    if result == "kill":
+        return ["Good hit, splash one %s." % target]
+    if result == "hit":
+        return ["Hit observed on %s, no kill yet." % target]
+    if result == "miss":
+        return ["No hit observed."]
+    if result.startswith("likely"):
+        return ["Likely kill on %s, target no longer showing." % target]
+    if shot.get("in_flight") or shot.get("weapon_in_flight"):
+        return ["Copy, weapon still in flight, no result yet."]
+    return ["Copy, no result yet."]
+
+
 def requested_calls(klass, text, pic):
     """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
     if not pic.get("ownship"):
@@ -189,6 +293,12 @@ def requested_calls(klass, text, pic):
         groups = sorted(groups, key=lambda g: g["range_nm"])
         return [g["call"] for g in groups[:3]] or ["No %saircraft showing within %s miles." % (
             (coal + " ") if coal else "", words(pic.get("contacts_within_nm", 80)))]
+    if klass == "intent":
+        return [intent_ack(text) or "copy."]
+    if klass == "impact":
+        return impact_calls(pic)
+    if klass == "loadout":
+        return loadout_calls(pic["ownship"])
     if klass == "damage":
         damage = pic["ownship"].get("damage") or {}
         recent = [r for r in damage.get("events", []) if r["age_s"] < 300]
@@ -277,6 +387,8 @@ class SimpleController:
         self._waiting = 0
         self._waiting_lock = threading.Lock()
         self.empty_transcripts = 0  # whisper returned nothing usable (suppressed, counted)
+        self._confirmed_kills = []
+        self._pending_ack = None  # round 6: (abs_time, target) already read back to the pilot
         self.transmissions = 0
         # Duck-typed for server code that may consult a provider attribute.
         self.provider = self
@@ -421,6 +533,144 @@ class SimpleController:
             out["reason"] = pic["reason"]
         return out
 
+    # ---------------------------------------------------------------- kill confirmation (round 6)
+    def _kill_rows(self, pic, wingman, pic_time):
+        """Kill rows (key, target, category, weapon, confidence, abs_time) for the pilot or the friendly flight.
+
+        key is the Eye's stable per-kill seq when published, else None (matched by owner, target, weapon
+        and picture-time reconstructed event time). pic_time is taken right after the picture, never after
+        the LLM call, so model latency cannot shift identities. Categories are normalised (eye6 publishes
+        "vehicles", older pictures "ground vehicle").
+        """
+        owner = "wingman" if wingman else "me"
+
+        def row(k, target, category, weapon, confidence, age):
+            key = k.get("seq", k.get("kill_id", k.get("id")))
+            category = CATEGORY_ALIASES.get(category, category)
+            return ((owner, "id", key) if key is not None else None, spoken_target(target, category), category,
+                    weapon, confidence or "confirmed", pic_time - (age or 0))
+
+        mine = pic.get("my_kills_this_mission") or []
+        if not wingman:
+            return [row(k, k.get("target"), k.get("category"), k.get("weapon"), k.get("confidence"), k.get("age_s"))
+                    for k in mine]
+        if "friendly_kills_this_mission" in pic:  # eye6 cumulative contract: all friendly rows incl. mine
+            my_seqs = {k.get("seq") for k in mine if k.get("seq") is not None}
+            return [row(k, k.get("target"), k.get("category"), k.get("weapon"), k.get("confidence"), k.get("age_s"))
+                    for k in pic.get("friendly_kills_this_mission") or []
+                    if k.get("seq") not in my_seqs and k.get("shooter") != "me"]
+        coalition = ((pic.get("ownship") or {}).get("coalition"))
+        rows = []
+        for r in pic.get("recent_kills_and_losses_last_10_min") or []:
+            killer, victim = r.get("killer") or {}, r.get("victim") or {}
+            if r.get("by_me") or r.get("friendly_loss") or not killer or (
+                    coalition and killer.get("coalition") != coalition):
+                continue
+            rows.append(row(r, victim.get("type"), victim.get("category"), r.get("weapon"),
+                            "likely" if r.get("inferred") else "confirmed", r.get("age_s")))
+        return rows
+
+    def _match(self, row, unused):
+        for c in unused:
+            if row[0] is not None or c["key"] is not None:
+                if row[0] is not None and c["key"] == row[0]:
+                    return c
+                continue
+            if c["target"] == row[1] and c["weapon"] == row[3] and abs(c["t"] - row[5]) <= 2.0:
+                return c
+        return None
+
+    def _split_new(self, rows, owner):
+        """(new, upgraded): one-to-one matching against kills already read back for this owner.
+
+        upgraded = rows read back earlier as likely that are now confirmed (same identity, reported once,
+        never counted as a second kill)."""
+        unused = [c for c in self._confirmed_kills if c["owner"] == owner]
+        new, upgraded = [], []
+        for row in rows:
+            c = self._match(row, unused)
+            if c is None:
+                new.append(row)
+                continue
+            unused.remove(c)
+            if c["confidence"] != "confirmed" and row[4] == "confirmed":
+                upgraded.append((row, c))
+        return new, upgraded
+
+    def _remember(self, owner, rows, upgraded):
+        for row in rows:
+            self._confirmed_kills.append({"owner": owner, "key": row[0], "target": row[1], "weapon": row[3],
+                                          "t": row[5], "confidence": row[4]})
+        for row, c in upgraded:
+            c["confidence"] = row[4]
+        del self._confirmed_kills[:-1000]
+
+    @staticmethod
+    def _count_line(rows, label):
+        counts = Counter(r[1] for r in rows)
+        return "%s %s." % (label, ", ".join("%s %s" % (words(n), t) for t, n in counts.items()))
+
+    def kill_confirm_calls(self, text, pic, pic_time=None, commit=True):
+        """commit=False leaves the acknowledgement in self._pending_ack; the caller commits it only once the
+        answer is actually transmitted (an overflowed answer must not mark kills as read back)."""
+        wingman = bool(WINGMAN_ASK.search(text))
+        owner = "wingman" if wingman else "me"
+        prefix = "wingman " if wingman else ""
+        cats = next((c for pattern, c in CATEGORY_ASK if pattern.search(text)), None)
+        rows = self._kill_rows(pic, wingman, time.time() if pic_time is None else pic_time)
+        if cats:
+            rows = [r for r in rows if r[2] in cats]
+        new, upgraded = self._split_new(rows, owner)
+        lines = []
+        if TOTAL_ASK.search(text):
+            for confidence, label in (("confirmed", "Mission total:"), ("likely", "Likely:")):
+                sel = [r for r in rows if r[4] == confidence]
+                if sel:
+                    lines.append(self._count_line(sel, label))
+            if not lines:
+                lines.append("No %skills yet." % prefix)
+        else:
+            confirmed = [r for r in new if r[4] == "confirmed"]
+            likely = [r for r in new if r[4] != "confirmed"]
+            if len(confirmed) == 1 and not likely:
+                lines.append(("Confirmed, wingman splash one %s." if wingman else "Confirmed, splash one %s.")
+                             % confirmed[0][1])
+            else:
+                if confirmed:
+                    lines.append(self._count_line(confirmed, "Wingman confirmed:" if wingman else "Confirmed:"))
+                if likely:
+                    lines.append(self._count_line(likely, "Likely:"))
+            if upgraded:
+                lines.append(self._count_line([r for r, _ in upgraded], "Now confirmed, earlier likely:"))
+            if not new and not upgraded:
+                lines.append("No new %skills since your last check." % prefix if rows
+                             else "No %skills showing." % prefix)
+        lines = [" ".join(line.split()) for line in lines]
+        # remember only what this answer actually reported (category-filtered rows), upgrades in place
+        if commit:
+            self._remember(owner, new, upgraded)
+        else:
+            self._pending_ack = (owner, new, upgraded)
+        if REMAIN_ASK.search(text):
+            lines.append(self.remaining_line(pic, cats))
+        return lines
+
+    @staticmethod
+    def remaining_line(pic, cats):
+        own = (pic.get("ownship") or {}).get("coalition")
+        totals = pic.get("alive_totals_by_coalition") or {}
+        enemy = totals.get("red" if own == "blue" else "blue" if own == "red" else "red") or {}
+        if cats:
+            n = sum(enemy.get(c, 0) for c in cats)
+            label = CATEGORY_WORDS.get(cats[0], "enemy " + str(cats[0]))
+            return ("%s %s remain." % (words(n).capitalize(), label)) if n else "No %s remaining." % label
+        ground = [(k, v) for k, v in enemy.items() if v and k not in NOT_GROUND and domain(k) == "ground"]
+        if not ground:
+            return "No enemy ground units remaining."
+        parts = ["%s %s" % (words(v), CATEGORY_WORDS.get(k, "enemy " + str(k)))
+                 for k, v in sorted(ground, key=lambda kv: -kv[1])]
+        return "Remaining: %s." % ", ".join(parts)
+
     # ---------------------------------------------------------------- llm
     def ask(self, messages):
         body = json.dumps({"model": self.model, "messages": messages, "max_completion_tokens": 400,
@@ -472,7 +722,7 @@ class SimpleController:
         start = time.monotonic()
         # memory6: owner's immediate acknowledgement; report I/O runs off-turn.
         memory = getattr(self.eye, "memory", None)
-        if re.fullmatch(r"\s*(?:athena[, ]+)?debrief[.!?]?\s*", text, re.I):
+        if DEBRIEF_ASK.search(text) and not re.search(r"\bstatus\b", text, re.I):
             generation = memory.generation if memory is not None else None
             queued = memory.schedule_debrief() if memory is not None else False
             answer = "debrief written" if queued else "Debrief unavailable."
@@ -490,6 +740,7 @@ class SimpleController:
             except Exception:  # noqa: BLE001 - never block the answer on bookkeeping
                 report = None
         pic, error = self._picture_with_retry()
+        pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
         klass = call_class(text, pic)
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
@@ -524,7 +775,9 @@ class SimpleController:
             except Exception as failure:  # noqa: BLE001 - one retry, then a spoken fallback
                 self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
                           attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
-        calls = requested_calls(klass, text, pic)
+        self._pending_ack = None
+        calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
+                 and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
         if calls is not None:
             age = (pic.get("data_age_s") or {}).get("units")
             stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
@@ -538,7 +791,11 @@ class SimpleController:
                 self._log(request, "controller_error", outcome="fixed_response_overflow",
                           counts={"speech_chars": len(answer)})
                 answer = prefix + "requested calls are too long for one transmission. Ask for one group at a time."
+                self._pending_ack = None  # nothing was read back: keep the previous acknowledgement state
             else:
+                if self._pending_ack:
+                    self._remember(*self._pending_ack)
+                    self._pending_ack = None
                 remaining = MAX_SPEECH_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                     for i, alert in enumerate(pic.get(field) or []):

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, encode_response
 from integrations.hermes_radio.eye import Eye, GrpcFeeder, RAW_SAMPLE_CHARS, norm_unit
 from integrations.hermes_radio.simple_controller import CLASS_HINTS, PROMPT, SimpleController, call_class
 from integrations.hermes_radio.tests import eye_fixture as fx
@@ -100,6 +101,63 @@ class TrafficTests(unittest.TestCase):
 
 
 class AirPictureTests(unittest.TestCase):
+    def test_stream_preserves_three_mixed_groups_and_budgets_pending_alerts(self):
+        units = [contact(i * 2 + j, type_name, distance=19 + i * 10 + j * 0.1)
+                 for i in range(3) for j, type_name in enumerate(("Su-27", "MiG-29S"), 1)]
+        eye, _ = make_eye(*units)
+        base = eye.picture()
+        self.assertEqual(len(base["picture_top3"]), 3)
+        for count in (0, 4, 30):
+            with self.subTest(alerts=count):
+                pic = deepcopy(base)
+                pic["rwr_alert_to_announce"] = ["Spike, SA-11 at your three o'clock."] * count
+                pic["_rwr_keys"] = ["rwr-%d" % i for i in range(count)]
+                pic["splash_to_announce"] = ["Splash one T-55."] * count
+                pic["_splash_keys"] = ["splash-%d" % i for i in range(count)]
+                rwr_keys, splash_keys = pic["_rwr_keys"], pic["_splash_keys"]
+                controller = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused",
+                                              eye=eye, llm=lambda _: "Three bandits overhead.")
+                with patch.object(eye, "picture", return_value=pic), patch.object(eye, "mark_announced") as mark:
+                    frames = list(controller.stream(req("air picture")))
+                self.assertLessEqual(len(frames), 2)
+                self.assertLessEqual(sum(len(f["speech"]) for f in frames), MAX_SPEECH_CHARS)
+                for frame in frames:
+                    encode_response(frame)
+                speech = " ".join(f["speech"] for f in frames)
+                self.assertLessEqual(len(speech), MAX_SPEECH_CHARS)
+                for call in base["picture_top3"]:
+                    self.assertIn(call, speech)
+                rwr_count = speech.count("Spike, SA-11 at your three o'clock.")
+                splash_count = speech.count("Splash one T-55.")
+                expected = rwr_keys[:rwr_count] + splash_keys[:splash_count]
+                if expected:
+                    mark.assert_called_once_with(expected)
+                else:
+                    mark.assert_not_called()
+                if count == 4:
+                    self.assertEqual(rwr_count + splash_count, count * 2)
+                    self.assertGreater(len(frames[1]["speech"]), 420)
+                if count == 30:
+                    self.assertLess(rwr_count + splash_count, count * 2)
+
+    def test_oversize_requested_calls_are_reported_not_silently_truncated(self):
+        eye, _ = make_eye(contact(1))
+        pic = eye.picture()
+        pic["picture_top3"] = ["Bandit " + "long type " * 100 + ". At your twelve o'clock, high."]
+        pic["rwr_alert_to_announce"] = ["Spike, SA-11."]
+        pic["_rwr_keys"] = ["pending-spike"]
+        log = FakeTranscript()
+        controller = SimpleController(None, log, model="fixture", api_key="unused", eye=eye,
+                                      llm=lambda _: "Three bandits overhead.")
+        with patch.object(eye, "picture", return_value=pic), patch.object(eye, "mark_announced") as mark:
+            frames = list(controller.stream(req("air picture")))
+        speech = " ".join(f["speech"] for f in frames)
+        self.assertIn("requested calls are too long", speech)
+        self.assertLessEqual(len(frames), 2)
+        self.assertLessEqual(len(speech), MAX_SPEECH_CHARS)
+        self.assertTrue(any(r.get("outcome") == "fixed_response_overflow" for r in log.records))
+        mark.assert_not_called()
+
     def test_three_closest_with_full_format_and_no_character_truncation(self):
         eye, _ = make_eye(*(contact(i, distance=d) for i, d in enumerate((19, 29, 39, 45, 51), 1)))
         pic = eye.picture()
@@ -159,6 +217,34 @@ class AirPictureTests(unittest.TestCase):
 
 
 class DamageTests(unittest.TestCase):
+    def test_target_damage_question_keeps_model_answer_despite_ownship_damage(self):
+        enemy = contact(1, "T-55", "red", "GROUND", distance=1)
+        eye, _ = make_eye(enemy)
+        eye.on_life(eye.ownship(), {"life": 100, "life0": 100})
+        eye.on_life(eye.ownship(), {"life": 70, "life0": 100})
+        eye.on_event(fx.shot(A10, 0, "GAU_8"))
+        eye.on_event(fx.hit(A10, 1, "GAU_8", enemy))
+        answer = "Prometheus, Athena, hit on the T-55, no confirmed kill."
+        for text in ("What damage did I do to the enemy tank?", "Confirm damage to the target",
+                     "Enemy damage report", "Damage report on my target"):
+            with self.subTest(text=text):
+                self.assertIsNone(call_class(text, eye.picture()))
+                speech, messages, _ = exchange(eye, text, answer)
+                self.assertEqual(speech, answer)
+                self.assertNotIn(CLASS_HINTS["damage"], [m["content"] for m in messages])
+                self.assertNotIn("life down", speech)
+
+    def test_ownship_damage_intents_keep_primary_evidence(self):
+        eye, _ = make_eye()
+        eye.on_life(eye.ownship(), {"life": 100, "life0": 100})
+        eye.on_life(eye.ownship(), {"life": 70, "life0": 100})
+        for text in ("I'm hit", "I got hit", "taking hits", "damage report", "my damage",
+                     "I took damage", "damage to my aircraft", "am I damaged?"):
+            with self.subTest(text=text):
+                self.assertEqual(call_class(text), "damage")
+                speech, _, _ = exchange(eye, text, "No damage showing.")
+                self.assertIn("You took damage, life down to seventy percent", speech)
+
     def test_weapon_initiator_hit_logged_without_cockpit_warnings(self):
         with tempfile.TemporaryDirectory() as tmp:
             eye, _ = make_eye(stores_dir=tmp)

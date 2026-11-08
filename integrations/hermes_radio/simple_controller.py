@@ -13,7 +13,7 @@ import threading
 import time
 import unicodedata
 
-from .contract import response, speaker_matches
+from .contract import MAX_SPEECH_CHARS, response, speaker_matches
 from .eye import KILL_REPORT, _QUESTION, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
@@ -111,7 +111,9 @@ PICTURE_ASK = re.compile(r"\b(picture|bogey dope|what do you see|what's out ther
 GROUND_ASK = re.compile(r"\b(ground|vehicles?|armor|infantry|trucks?|tanks?|sams?|triple a)\b", re.I)
 TRAFFIC_ASK = re.compile(r"\b(traffic|blue only|only blue)\b", re.I)
 ATC_ASK = re.compile(r"\b(take ?off|landing|land|approach|taxi\w*|runway)\b", re.I)
-DAMAGE_ASK = re.compile(r"\b(i('?m| am| got| was| have been) hit|damage|hit me|taking hits)\b", re.I)
+DAMAGE_ASK = re.compile(r"\b(i('?m| am| got| was| have been) hit|hit me|taking hits|damage report|my damage|"
+                        r"i (took|have|sustained) damage|i('?m| am) damaged|am i damaged|"
+                        r"damage to (me|my (aircraft|jet|plane|ownship)))\b", re.I)
 CONFIRM_ASK = re.compile(r"\bconfirm\b", re.I)
 KILL_ASK = re.compile(r"\b(kills?|killed|splash|destroyed)\b", re.I)
 BEARING_ASK = re.compile(r"\b(bearing|vector|heading to|where('s| is| are)?|braa|bra|steer)\b", re.I)
@@ -148,7 +150,9 @@ def call_class(text, pic=None):
         return "dev_note"
     if KILL_REPORT.search(t) and not _QUESTION.search(t):
         return "kill_report"
-    if DAMAGE_ASK.search(t):
+    target_damage = re.search(r"\bdamag\w*\b", t, re.I) and (
+        re.search(r"\b(targets?|enemy|hostiles?|bandits?)\b", t, re.I) or GROUND_ASK.search(t))
+    if DAMAGE_ASK.search(t) and not target_damage:
         return "damage"
     if CONFIRM_ASK.search(t) and KILL_ASK.search(t):
         return "kill_confirm"
@@ -157,7 +161,7 @@ def call_class(text, pic=None):
     if TRAFFIC_ASK.search(t) and not GROUND_ASK.search(t):
         return "traffic"
     age = (pic or {}).get("last_attack_age_s")
-    explicit = focus_of(t) or BEARING_ASK.search(t) or PICTURE_ASK.search(t) or GROUND_ASK.search(t)
+    explicit = target_damage or focus_of(t) or BEARING_ASK.search(t) or PICTURE_ASK.search(t) or GROUND_ASK.search(t)
     if CONFIRM_ASK.search(t) and not explicit and age is not None and 0 <= age < 300:
         return "kill_confirm"
     if PICTURE_ASK.search(t):
@@ -491,8 +495,6 @@ class SimpleController:
             messages.append({"role": "system", "content": CLASS_HINTS[klass]})
         messages.append({"role": "user", "content": text})
         announced = (splash_keys or []) + (rwr_keys or [])
-        if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
-            self.eye.mark_announced(announced)
         t_llm = time.monotonic()
         answer = None
         for attempt in (1, 2):
@@ -504,17 +506,39 @@ class SimpleController:
                           attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
         calls = requested_calls(klass, text, pic)
         if calls is not None:
-            alerts = (pic.get("rwr_alert_to_announce") or []) + (pic.get("splash_to_announce") or [])
             age = (pic.get("data_age_s") or {}).get("units")
             stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
             if age is not None and age > 60:
                 stale.append("Contact data is %s seconds old." % words(age))
-            answer = "Prometheus, Athena, " + " ".join(stale + alerts + calls)
+            prefix = "Prometheus, Athena, "
+            answer = prefix + " ".join(stale + calls)
+            alerts, announced = [], []
+            if len(answer) > MAX_SPEECH_CHARS:
+                # Never clip a requested call into a misleading partial group report.
+                self._log(request, "controller_error", outcome="fixed_response_overflow",
+                          counts={"speech_chars": len(answer)})
+                answer = prefix + "requested calls are too long for one transmission. Ask for one group at a time."
+            else:
+                remaining = MAX_SPEECH_CHARS - len(answer)
+                for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
+                    for i, alert in enumerate(pic.get(field) or []):
+                        if len(alert) + 1 > remaining:
+                            continue  # keep this alert pending for a later transmission
+                        remaining -= len(alert) + 1
+                        alerts.append(alert)
+                        if keys and i < len(keys):
+                            announced.append(keys[i])
+                answer = prefix + " ".join(stale + alerts + calls)
         else:
             answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
+        if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
+            self.eye.mark_announced(announced)
         llm_ms = round((time.monotonic() - t_llm) * 1000)
         self.history.append((text, answer))
-        for index, part in enumerate(split_parts(answer), 1):
+        # Fixed replies are budgeted above: first sentence, then all remaining calls
+        # in the second frame. The gateway allows two frames, not 420-char chunks.
+        parts = split_parts(answer, MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
+        for index, part in enumerate(parts, 1):
             self._log(request, "reply_generated", text=part, outcome="intended", part=index,
                       timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
             yield response(request, speech=part, state="ok")

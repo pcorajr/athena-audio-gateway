@@ -32,6 +32,27 @@ class MemoryLinkTests(unittest.TestCase):
         self.assertFalse(link.publish("shot", {}))
         self.assertEqual(link.dropped, 1)
 
+    def test_lost_identity_does_not_relabel_new_claims(self):
+        link = self.link()
+        link.publish("old_fact", {})
+        link.set_identity(None, None, None)
+        self.assertFalse(link.publish("new_unknown_mission", {}))
+        self.assertEqual(link.queue[0][0], (1, "fixture.miz", "fixture:1"))
+        self.assertIsNone(link.mission_key)
+
+    def test_unavailable_filename_hook_does_not_break_eye_session_check(self):
+        from types import SimpleNamespace
+        from integrations.hermes_radio.eye import GrpcFeeder
+        eye = Eye()
+        eye.memory = self.link()
+        feeder = GrpcFeeder(eye, "fixture.invalid")
+        stub = SimpleNamespace(GetSessionId=lambda *args, **kwargs: SimpleNamespace(session_id=2))
+        with patch.object(feeder, "_chan", return_value=None), patch(
+                "dcs.hook.v0.hook_pb2_grpc.HookServiceStub", side_effect=OSError):
+            feeder._check_session(stub)
+        self.assertEqual(eye.session_id, 2)
+        self.assertIsNone(eye.memory.identity)
+
     def test_down_keeps_bounded_queue(self):
         link = self.link(2)
         for n in range(6):

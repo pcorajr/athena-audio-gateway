@@ -78,7 +78,7 @@ class MemoryLink:
             self.thread.start()
 
     def set_identity(self, session_id, filename, source):
-        identity = (int(session_id), str(filename), str(source))
+        identity = None if session_id is None else (int(session_id), str(filename), str(source))
         with self.lock:
             if self.identity != identity:
                 self._last.clear()

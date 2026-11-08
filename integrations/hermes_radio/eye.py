@@ -2050,9 +2050,12 @@ class GrpcFeeder:
         with self._session_lock:
             if self.eye.memory is not None:  # memory6: bind claims to memory's canonical mission key
                 from dcs.hook.v0 import hook_pb2, hook_pb2_grpc
-                filename = hook_pb2_grpc.HookServiceStub(self._chan()).GetMissionFilename(
-                    hook_pb2.GetMissionFilenameRequest(), timeout=2).name
-                self.eye.memory.set_identity(sid, filename, "%s:%d" % (self.host, self.port))
+                try:
+                    filename = hook_pb2_grpc.HookServiceStub(self._chan()).GetMissionFilename(
+                        hook_pb2.GetMissionFilenameRequest(), timeout=2).name
+                    self.eye.memory.set_identity(sid, filename, "%s:%d" % (self.host, self.port))
+                except Exception:  # memory identity enrichment must not stop Eye streams
+                    self.eye.memory.set_identity(None, None, None)
             old, self.eye.session_id = self.eye.session_id, sid
             if old is not None and sid != old:
                 LOG.info("eye: new DCS session (mission change); resetting picture")
@@ -2304,7 +2307,7 @@ class GrpcFeeder:
 def build(host, port, player=PLAYER, *, stores_dir=None, prompt_path=None):
     # memory6: one source setting for both independent readers.
     import os
-    if "ATHENA_DCS_SOURCE" in os.environ:
+    if "ATHENA_DCS_SOURCE" in os.environ or os.environ.get("ATHENA_MEMORY_ENABLED") == "1":
         from metis.state_service.memory_source import resolve_source
         source = resolve_source()
         host, port = source.host, source.port

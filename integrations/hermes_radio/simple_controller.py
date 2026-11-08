@@ -594,7 +594,7 @@ class SimpleController:
         return out
 
     @staticmethod
-    def _with_close_bandits(answer, close_bandits, announced):
+    def _with_close_bandits(answer, close_bandits, announced, part_limit=PART_CHARS):
         """Prepend each not-yet-called bandit inside 20 nm (current geometry) after the callsign prefix; only
         calls actually present in the final text are acknowledged, the rest stay pending."""
         prefix = "Prometheus, Athena, "
@@ -606,13 +606,15 @@ class SimpleController:
                 continue
             # one new call per reply, and the whole reply must fit the first-sentence + one-part transport budget
             # (two frames); anything not added stays pending for the next reply
-            if added or len(answer) + len(call) + 1 > PART_CHARS:
+            if added:
+                continue
+            candidate = (prefix + call + " " + answer[len(prefix):]) if answer.startswith(prefix) else (
+                call + " " + answer)
+            # the same framing the reply is sent with: at most two frames and the whole-answer cap
+            if len(candidate) > MAX_SPEECH_CHARS or len(split_parts(candidate, part_limit)) > 2:
                 continue
             added += 1
-            if answer.startswith(prefix):
-                answer = prefix + call + " " + answer[len(prefix):]
-            else:
-                answer = call + " " + answer
+            answer = candidate
             announced.append(row["key"])
         return answer
 
@@ -926,7 +928,8 @@ class SimpleController:
                 answer = prefix + " ".join(stale + alerts + calls)
         else:
             answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
-        answer = self._with_close_bandits(answer, close_bandits, announced)
+        answer = self._with_close_bandits(answer, close_bandits, announced,
+                                          MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
         if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
             flat = []
             for key in announced:

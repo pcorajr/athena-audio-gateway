@@ -166,5 +166,19 @@ class Final8bReviewTests(unittest.TestCase):
         self.assertEqual(parse_sse(lines)[0], 502)
 
 
+class Final8cReviewTests(unittest.TestCase):
+    def test_close_bandit_rides_a_long_ground_reply_when_two_frames_fit(self):
+        units = [contact(i, "Ural-375", "red", "GROUND", distance=3 + i * 2, bearing=i * 40) for i in range(1, 4)]
+        units.append(contact(9, "MiG-29S", distance=5, bearing=300))
+        eye, _ = make_eye(*units)
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda m: "Prometheus, Athena, LLM.")
+        frames = list(c.stream(req("Athena, ground picture")))
+        said = " ".join(f["speech"] for f in frames)
+        self.assertLessEqual(len(frames), 2)
+        self.assertIn("MiG-29S", said)
+        self.assertIn("ground target", said)
+
+
 if __name__ == "__main__":
     unittest.main()

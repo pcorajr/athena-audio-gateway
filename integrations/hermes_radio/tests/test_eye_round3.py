@@ -344,7 +344,8 @@ class EyeCockpitMergeTests(unittest.TestCase):
         self.assertEqual(shots[0]["weapon"], "gun, 190 rounds")
         self.assertEqual(shots[0]["count"], 190)
 
-    def test_feeder_skips_ownship_eval_while_cockpit_fresh(self):
+    def test_feeder_polls_only_fuel_for_ownship_while_cockpit_fresh(self):
+        """Round 4: the cockpit payload stays the stores source, but ownship fuel still comes from getFuel()."""
         eye, _ = scenario()
         eye.on_cockpit_packet(packet())
         calls = []
@@ -355,7 +356,11 @@ class EyeCockpitMergeTests(unittest.TestCase):
                 return type("R", (), {"json": json.dumps({"fuel": 0.5, "ammo": []})})()
         f = GrpcFeeder(eye, "127.0.0.1", 1)
         self.assertTrue(f.poll_stores(Stub()))
-        self.assertFalse(any('"Prometheus-1"' in c for c in calls))
+        own_calls = [c for c in calls if '"Prometheus-1"' in c]
+        self.assertEqual(len(own_calls), 1)
+        self.assertNotIn("getAmmo", own_calls[0])
+        self.assertIn("getFuel", own_calls[0])
+        self.assertEqual(eye.fuel, 0.5)
 
     def test_rwr_alert_announced_once_and_logged(self):
         clock = Clock()
@@ -446,7 +451,7 @@ class PromptRoutingTests(unittest.TestCase):
         self.assertEqual(len(focus), 1)
         self.assertIn("cockpit.rwr", focus[0])
         self.assertEqual(seen[0][-1], {"role": "user", "content": "Athena, what's painting me?"})
-        self.assertIn("cockpit.fuel", [m["content"] for m in seen[1] if m["content"].startswith("FOCUS:")][0])
+        self.assertIn("ownship.fuel", [m["content"] for m in seen[1] if m["content"].startswith("FOCUS:")][0])
         tool = [r for r in c.transcript.records if r["kind"] == "tool"][0]
         summary = tool["result"]["summary"]
         self.assertEqual(summary["cockpit"]["rwr_highest"], "launch")

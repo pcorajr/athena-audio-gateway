@@ -2,7 +2,7 @@
 -- Stubs the DCS Export API and LuaSocket, loads the script twice (idempotence), drives the
 -- Export callbacks and prints every UDP packet as one line: "PKT <json>". Also prints chain
 -- markers so the test can check that the previous Export callbacks still run.
--- usage: lua5.1 athena_export_harness.lua <path to AthenaExport.lua> [nil-mode]
+-- usage: lua5.1 athena_export_harness.lua <path to AthenaExport.lua> [nil|fraction]
 local path, mode = arg[1], arg[2]
 
 local clock = 1000.0
@@ -78,6 +78,13 @@ else
     -- MP server with exports disabled / aircraft without data: everything nil, some functions error.
     function LoGetSelfData() return nil end
     function LoGetTWSInfo() error("not available") end
+end
+if mode == "fraction" then
+    -- A-10C / F-4E style (round 4): fuel as a 0..1 fraction of capacity, no RWR export (F-4E).
+    local self_data = LoGetSelfData
+    function LoGetSelfData() local d = self_data(); d.Name = "A-10C_2"; return d end
+    function LoGetEngineInfo() return { fuel_internal = 0.3969, fuel_external = 0 } end
+    function LoGetTWSInfo() return nil end
 end
 
 dofile(path)

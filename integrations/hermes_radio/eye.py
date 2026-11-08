@@ -17,7 +17,7 @@ import sys
 import threading
 import time
 
-from .cockpit import CockpitListener, CockpitState
+from .cockpit import CockpitListener, CockpitState, fuel_lb_from_fraction
 
 PLAYER = "Prometheus,Player,Client"
 M_TO_FT = 3.28084
@@ -35,6 +35,29 @@ STORES_POLL_S = 3.0
 AMMO_KIND = {0: "gun", 1: "missile", 2: "rocket", 3: "bomb", 4: "torpedo"}
 DEATH_KINDS = ("kill", "dead", "unit_lost", "crash", "pilot_dead")
 LOG = logging.getLogger("athena.eye")
+# Round 4 kill confirmation: a target that stops showing within this many seconds of my last attack on it
+# (gun/rocket: last rounds; bomb/missile: release, covers the time of flight) is a CONFIRMED kill
+# (still flagged inferred in the log). Later than that (up to 5 min) it is only "likely".
+VANISH_CONFIRM_S = {"gun": 20.0, "rocket": 20.0, "bomb": 60.0, "missile": 60.0, "air-to-air missile": 60.0}
+CREDIT_WINDOW_S = 300.0
+RAW_SAMPLE_S = 60.0  # raw event debug log: one sample per kind per minute + per-minute kind counts
+COMBAT_KINDS = ("shot", "hit", "kill", "dead", "unit_lost", "crash", "pilot_dead", "shooting_start", "ejection")
+# Picture size on busy maps (round 4): full JSON only for the nearest groups; the rest are counted.
+HOSTILE_GROUPS_MAX = 15
+FRIENDLY_GROUPS_MAX = 8
+PICTURE_TOP = 3
+# Pilot kill reports ("splash", "target destroyed", "armor dead") confirm the most recent pending kill.
+KILL_REPORT = re.compile(
+    r"\b(splash(ed)?|good kills?|kill confirmed|target (is )?(destroyed|dead|down)|"
+    r"(armor|tank|vehicle|truck|target|sam|site|bandit|bogey|convoy|t-?\d+)s? (is |are |was |were )?"
+    r"(dead|down|destroyed|burning)|destroyed (the |that )?(target|armor|tank|vehicle|truck|sam|bandit))\b", re.I)
+_QUESTION = re.compile(r"(\?\s*$|^\W*(athena\W+)?(is|are|was|were|did|do|does|has|have|what|which|where|how|"
+                       r"can|could|say|confirm)\b)", re.I)
+# Dynamic whisper prompt brevity words (round 4 STT: "eyes on target" was heard as "I, son target").
+BREVITY_PROMPT = ("Eyes on target, eyes on, splash, winchester, bingo, egress, egressing, ingress, RTB, magnum, "
+                  "rifle, fox two, fox three, tally, no joy, BRAA, picture, bogey dope, Maverick, APKWS, GBU, "
+                  "weapons hot, cleared hot, pickle, visual, RWR, spike, what's painting me, what do I have left, "
+                  "fuel state, wheels up, gear down.")
 
 # ----------------------------------------------------------------------------- classification
 AWACS = {"E-3A", "E-2C", "A-50", "KJ-2000", "E-2D"}
@@ -137,6 +160,44 @@ def weapon_kind(name, burst=False):
 
 def _resolve_window(kind):
     return {"gun": 12.0, "rocket": 30.0, "bomb": 120.0}.get(kind, 120.0)
+
+
+# ----------------------------------------------------------------------------- threats without a cockpit RWR
+# Nominal engagement ranges (nm) of radar SAM/AAA/EWR types, first match wins. Used when the module exports no
+# RWR (F-4E: LoGetTWSInfo returns nothing): a hostile emitter with Prometheus inside its range "could be tracking".
+SAM_RANGES = (
+    (re.compile(r"s-?300|s_300|5p85|40b6|64h6|54k6|ps 5p|sa-10|sa-20", re.I), 40.0, "SA-10"),
+    (re.compile(r"s-?200|s_200|5n62|sa-5", re.I), 80.0, "SA-5"),
+    (re.compile(r"patriot", re.I), 50.0, "Patriot"),
+    (re.compile(r"hawk", re.I), 24.0, "Hawk"),
+    (re.compile(r"s_75|s-75|snr_75|snr 75|volhov|sa-2\b", re.I), 23.0, "SA-2"),
+    (re.compile(r"buk|9a310|9s18|sa-11|sa-17", re.I), 19.0, "SA-11"),
+    (re.compile(r"s-125|s_125|5p73|snr s-125|p-19|sa-3\b", re.I), 13.0, "SA-3"),
+    (re.compile(r"kub|1s91|2p25|sa-6", re.I), 13.0, "SA-6"),
+    (re.compile(r"nasams", re.I), 13.0, "NASAMS"),
+    (re.compile(r"tor|9a331|sa-15", re.I), 6.5, "SA-15"),
+    (re.compile(r"hq-7|hq7", re.I), 6.5, "HQ-7"),
+    (re.compile(r"osa|9a33|sa-8", re.I), 5.5, "SA-8"),
+    (re.compile(r"roland", re.I), 4.3, "Roland"),
+    (re.compile(r"tunguska|2s6|sa-19", re.I), 4.3, "SA-19"),
+    (re.compile(r"pantsir|sa-22", re.I), 10.0, "SA-22"),
+    (re.compile(r"rapier", re.I), 3.7, "Rapier"),
+    (re.compile(r"strela-10|9a35|sa-13", re.I), 2.7, "SA-13"),
+    (re.compile(r"strela-1|9p31|sa-9", re.I), 2.3, "SA-9"),
+    (re.compile(r"gepard|shilka|zsu-23-4|zsu_23_4|vulcan|m163", re.I), 1.5, "radar triple A"),
+    (re.compile(r"1l13|55g6|ewr|fps-117|dog ear|9s80|rls_19j6|st-68", re.I), 80.0, "EWR"),
+)
+SAM_DEFAULT_NM = 2.5  # unknown SAM-category unit (MANPADS, IR SAM): close range only
+MISSILE_ALERT_NM = 25.0  # a hostile missile shot (event) within this range of Prometheus and closing -> launch alert
+THREAT_ANNOUNCE_S = 90.0
+
+
+def sam_profile(type_name):
+    """(nominal range nm, NATO-ish label, is_ewr) for a hostile SAM/AAA/EWR type name."""
+    for pattern, rng, label in SAM_RANGES:
+        if pattern.search(type_name or ""):
+            return rng, label, label == "EWR"
+    return SAM_DEFAULT_NM, None, False
 
 
 # ----------------------------------------------------------------------------- geometry
@@ -364,6 +425,11 @@ class Eye:
         self.events_total = 0
         self.resubscribes = Counter()
         self.last_resubscribe = None
+        # Round 4: raw event debug (kind counts since start, per-minute counts, one sample per kind per minute).
+        self.raw_kinds = Counter()
+        self._raw_minute = Counter()
+        self._raw_minute_at = None
+        self._raw_sample_at = {}
         # Round 3: cockpit feed (AthenaExport.lua -> UDP 7778): flight data, payload, RWR, locked target.
         self.cockpit = CockpitState(clock=clock)
 
@@ -381,6 +447,11 @@ class Eye:
             self.fired_events = Counter()  # my shot events this mission (fallback when stores are unavailable)
             self.my_kills = []  # confirmed/inferred kills by the pilot this mission
             self.announced = set()
+            # Round 4: threats from DCS-gRPC when the cockpit has no RWR (missiles in flight via Eval, shot events).
+            self.weapons_in_flight = {}  # weapon id -> row (Eval world.searchObjects around ownship)
+            self.weapons_at = None
+            self.threat_alerts = deque(maxlen=50)
+            self._sam_alerted = {}  # SAM group -> t first called in range
             self.units_at = None
             self.events_at = None
             self.reset_reason, self.reset_at = reason, self.clock()
@@ -447,6 +518,9 @@ class Eye:
     def _own_locked(self):
         """The pilot's unit: the unit named in the cockpit feed, else player name in the allowed list, else
         the ONLY player unit (single player), else a pseudo unit built from the cockpit feed (gRPC down)."""
+        cached = getattr(self, "_own_cache", None)
+        if cached is not None:
+            return cached[0]  # picture() resolves ownship once per build (busy maps: thousands of _is_me calls)
         players = []
         cockpit = getattr(self, "cockpit", None)
         cp_unit = None
@@ -508,6 +582,7 @@ class Eye:
             self.event_rx.append(now)
             while self.event_rx and now - self.event_rx[0] > 300:
                 self.event_rx.popleft()
+            self._raw_debug(kind, msg, now)
         if kind is None:
             return None
         body = msg.get(kind) or {}
@@ -518,6 +593,12 @@ class Eye:
         if isinstance(weapon, dict):
             ev["weapon"] = weapon.get("type") or None
             ev["weapon_id"] = int(weapon.get("id", 0) or 0) or None
+            wlat, wlon, walt = _pos(weapon)
+            if wlat is not None:
+                vel = weapon.get("velocity") or {}
+                ev["weapon_pos"] = {"lat": wlat, "lon": wlon, "alt_m": walt,
+                                    "heading": vel.get("heading", (weapon.get("orientation") or {}).get("heading")),
+                                    "speed_ms": vel.get("speed")}
         if body.get("weapon_name"):
             ev["weapon"] = ev["weapon"] or body["weapon_name"]
         place = body.get("place")
@@ -543,6 +624,9 @@ class Eye:
                 self.fired_events.clear()
                 self.my_kills = []
                 self.announced = set()
+                self.weapons_in_flight = {}
+                self.threat_alerts.clear()
+                self._sam_alerted = {}
                 if self.on_mission_start is not None:
                     self.on_mission_start()
             self.events.append(ev)
@@ -554,6 +638,35 @@ class Eye:
             except Exception:  # noqa: BLE001 - a hook must never break the event stream
                 pass
         return ev
+
+    def _raw_debug(self, kind, msg, now):
+        """Raw event debug log (round 4, why do hit/kill events not show?): counts per kind since start, one
+        LOG line per minute with the last minute's kind counts, one sample per kind per minute (combat kinds
+        also go to the durable stores log)."""
+        k = kind or "(empty)"
+        if self._raw_minute_at is None:
+            self._raw_minute_at = now
+        elif now - self._raw_minute_at >= RAW_SAMPLE_S:
+            LOG.info("eye raw events last %ds: %s", int(now - self._raw_minute_at),
+                     json.dumps(dict(self._raw_minute.most_common()), separators=(",", ":")))
+            self._raw_minute.clear()
+            self._raw_minute_at = now
+        self.raw_kinds[k] += 1
+        self._raw_minute[k] += 1
+        last = self._raw_sample_at.get(k)
+        if last is None or now - last >= RAW_SAMPLE_S:
+            self._raw_sample_at[k] = now
+            try:
+                sample = json.dumps(msg, default=str, separators=(",", ":"))[:700]
+            except (TypeError, ValueError):
+                sample = repr(msg)[:700]
+            LOG.info("eye raw event sample %s: %s", k, sample)
+            if k in COMBAT_KINDS:
+                self._log_store({"kind": "raw_event_sample", "event": k, "sample": sample})
+
+    def raw_event_counts(self):
+        with self.lock:
+            return dict(self.raw_kinds.most_common())
 
     def _is_me(self, obj):
         """Pilot match by allowed-name list, or by the current ownship unit id (single player: 'player')."""
@@ -575,11 +688,13 @@ class Eye:
             self.last_known[u["id"]] = u
             self.stores.pop(u["id"], None)  # fresh airframe: next stores poll is a new baseline
         if kind in ("dead", "unit_lost", "crash") and ini and ini.get("kind") == "unit":
-            self.units.pop(ini["id"], None)
-            self._credit_death(ini["id"], ev)
+            gone = self.units.pop(ini["id"], None)
+            self._credit_death(dict(gone or {}, **{k: v for k, v in ini.items() if v not in (None, "")}), ev)
         if kind == "kill" and tgt and tgt.get("kind") == "unit":
             self.units.pop(tgt["id"], None)
         me = self._is_me(ini)
+        if kind == "shot" and not me and ini:
+            self._hostile_shot(ev)
         if kind == "shot" and me:
             self._shot_event(ev, burst=False)
         elif kind == "shooting_start" and me:
@@ -716,56 +831,317 @@ class Eye:
                          "target": s["hit_target"], "source": "%s event" % outcome})
         return s
 
-    def _credit_death(self, unit_id, ev):
-        for s in self.shots:
-            if s["result"] == "hit" and s["hit_target"] and s["hit_target"].get("id") == unit_id \
-                    and ev["t"] - (s["resolved_t"] or s["t"]) < 300:
-                s["result"] = "kill"
-                s["resolved_t"] = ev["t"]
-                self._record_my_kill(s["hit_target"], s["weapon"], "hit then dead event", ev["t"])
+    @staticmethod
+    def _last_activity(s, now):
+        """When my attack last touched the target: last rounds of a gun burst/rocket ripple, else release."""
+        if s["kind"] == "gun" and s.get("burst_end") is None and s.get("source") != "stores_diff":
+            return now  # burst still running
+        return max(s["t"], s.get("burst_end") or 0.0, s.get("stores_last_t") or 0.0)
 
-    def _record_my_kill(self, target, weapon, how, t, inferred=False):
-        if not target:
+    def _attack_on(self, unit, now):
+        """My most recent shot (within 5 min) aimed at or hitting this unit; area weapons (gun, rockets,
+        bombs) also count for the other units of the target's group."""
+        uid = unit.get("id")
+        group = unit.get("group")
+        for s in reversed(self.shots):
+            if now - s["t"] > CREDIT_WINDOW_S:
+                break
+            hit = bool(uid) and (s["hit_target"] or {}).get("id") == uid
+            aimed = bool(uid) and (s["intended_target"] or {}).get("id") == uid
+            area = s["kind"] in ("bomb", "rocket", "gun")
+            same_group = bool(group) and area and group in ((s["intended_target"] or {}).get("group"),
+                                                            (s["hit_target"] or {}).get("group"))
+            if s["result"] == "kill" and not area and not (hit or aimed):
+                continue
+            if hit or aimed or same_group:
+                return s, hit
+        return None, False
+
+    def _my_hit_on(self, uid, now):
+        return any(ev["kind"] == "hit" and now - ev["t"] <= CREDIT_WINDOW_S and
+                   (ev["target"] or {}).get("id") == uid and self._is_me(ev["initiator"]) for ev in self.events)
+
+    def _credit_death(self, unit, ev):
+        """dead / unit_lost / crash for a unit: credit a CONFIRMED kill to my recent attack on it (or its group)."""
+        uid = unit.get("id")
+        if not uid or unit.get("player"):
             return
+        s, hit = self._attack_on(unit, ev["t"])
+        if s is None:
+            return
+        s["result"] = "kill"
+        s["resolved_t"] = ev["t"]
+        target = s["hit_target"] if hit else unit
+        how = ("hit then %s event" if hit else "%s event after my attack on it") % ev["kind"]
+        self._record_my_kill(target, s["weapon"], how, ev["t"])
+
+    def _record_my_kill(self, target, weapon, how, t, inferred=False, likely=False):
+        if not target:
+            return None
         tid = target.get("id")
+        splash = "Splash one %s" % spoken_type(target.get("type"))
         for old in self.my_kills:
             if tid and old["target_id"] == tid:
+                if old.get("likely") and not likely:  # stronger evidence later: no more "likely"
+                    old.update(likely=False, confidence="confirmed", how=how, weapon=weapon or old["weapon"],
+                               splash_call=splash)
                 if old["inferred"] and not inferred:  # confirmed later by a real event
-                    old.update(inferred=False, how=how, weapon=weapon or old["weapon"],
-                               splash_call="Splash one %s" % spoken_type(target.get("type")))
-                return
+                    old.update(inferred=False, how=how, weapon=weapon or old["weapon"], splash_call=splash)
+                return old
         k = {"key": "%s-%s" % (tid, round(t, 1)), "target_id": tid, "t": t, "type": target.get("type"),
              "category": target.get("category"), "group": target.get("group"), "weapon": weapon, "how": how,
-             "inferred": inferred,
-             "splash_call": "Splash one %s" % spoken_type(target.get("type")) + (", likely" if inferred else "")}
+             "inferred": inferred, "likely": likely, "confidence": "likely" if likely else "confirmed",
+             "splash_call": splash + (", likely" if likely else "")}
         self.my_kills.append(k)
         self._log_store({"kind": "kill_by_me", "target": _brief(target), "weapon": weapon, "how": how,
-                         "inferred": inferred})
+                         "inferred": inferred, "confidence": k["confidence"]})
+        return k
 
     def _credit_vanish(self, unit, now):
-        """A unit disappeared from the unit stream. If no death event is known and one of my recent shots
-        was aimed at it (or hit it), credit a likely kill (inferred)."""
+        """A unit disappeared from the unit stream without a death event. If my recent attack was on it (or on
+        its group with an area weapon): CONFIRMED kill when it vanished within VANISH_CONFIRM_S of the attack or
+        after my hit on it (flagged inferred in the log); otherwise a likely kill."""
         uid = unit["id"]
         if any(ev["kind"] in DEATH_KINDS and ((ev["target"] or {}).get("id") == uid if ev["kind"] == "kill"
                                                else (ev["initiator"] or {}).get("id") == uid) for ev in self.events):
             return
         if unit.get("player"):
             return
-        for s in reversed(self.shots):
-            if now - s["t"] > 300:
-                break
-            if s["result"] == "kill":
+        s, hit = self._attack_on(unit, now)
+        if s is None:
+            self._log_store({"kind": "unit_vanished", "unit": _brief(unit), "note": "no death event; likely destroyed"})
+            return
+        dt = max(0.0, now - self._last_activity(s, now))
+        hit = hit or self._my_hit_on(uid, now)
+        confirmed = hit or dt <= VANISH_CONFIRM_S.get(s["kind"], 20.0)
+        if confirmed:
+            s["result"] = "kill"
+            s["kill_evidence"] = "target stopped showing %d s after my attack%s" % (dt, " (hit seen)" if hit else "")
+            how = "target stopped showing %d s after my attack (no death event)" % dt
+        else:
+            if s["result"] != "kill":
+                s["result"] = "likely kill (inferred: target no longer showing)"
+            how = "target vanished %d s after my shot (weak evidence)" % dt
+        s["resolved_t"] = now
+        s.setdefault("vanished_targets", []).append(spoken_type(unit.get("type")))
+        self._record_my_kill(unit, s["weapon"], how, now, inferred=True, likely=not confirmed)
+
+    def pilot_report(self, text):
+        """The pilot says "splash" / "target destroyed" / "armor dead": confirm the most recent pending kill.
+        Returns what happened (for the tool log) or None when the text is not a kill report."""
+        text = (text or "").strip()
+        if not KILL_REPORT.search(text) or _QUESTION.search(text):
+            return None
+        with self.lock:
+            now = self.clock()
+            for k in reversed(self.my_kills):
+                if now - k["t"] > 600:
+                    break
+                if k.get("likely"):
+                    k.update(likely=False, confidence="confirmed", how=k["how"] + "; confirmed by pilot report",
+                             splash_call="Splash one %s" % spoken_type(k["type"]))
+                    self._log_store({"kind": "kill_confirmed_by_pilot", "target_type": k["type"], "text": text[:120]})
+                    return {"confirmed": spoken_type(k["type"]), "how": "pilot report upgraded a likely kill"}
+                if now - k["t"] <= 120:
+                    return {"confirmed": spoken_type(k["type"]), "how": "already confirmed"}
+            for s in reversed(self.shots):
+                if now - s["t"] > CREDIT_WINDOW_S:
+                    break
+                target = s["hit_target"] or s["intended_target"]
+                if s["result"] == "kill" or not target or not target.get("type"):
+                    continue
+                s["result"] = "kill"
+                s["resolved_t"] = now
+                s["kill_evidence"] = "pilot report"
+                self._record_my_kill(dict(target, id=target.get("id") or "pilot-%d" % int(now)), s["weapon"],
+                                     "pilot report", now)
+                self._log_store({"kind": "kill_confirmed_by_pilot", "target_type": target.get("type"),
+                                 "text": text[:120]})
+                return {"confirmed": spoken_type(target.get("type")), "how": "pilot report on my last attack"}
+            return {"confirmed": None, "how": "pilot report, no recent attack known"}
+
+    # -- threats without a cockpit RWR (DCS-gRPC sensor fallback)
+    def _hostile_to(self, coalition, own):
+        return own is not None and coalition not in (own.get("coalition"), "neutral", "unknown", None)
+
+    def _threat_alert(self, key, call, kind, now, **extra):
+        if any(a["key"] == key for a in self.threat_alerts):
+            return None
+        a = dict({"key": key, "t": now, "call": call, "kind": kind}, **extra)
+        self.threat_alerts.append(a)
+        self._log_store({"kind": "threat_alert", "alert": kind, "call": call, "source": extra.get("source")})
+        return a
+
+    def _hostile_shot(self, ev):
+        """A hostile missile shot (DCS-gRPC shot event) closing on Prometheus -> missile launch alert."""
+        ini = ev["initiator"]
+        own = self._own_locked()
+        if own is None or own.get("lat") is None or not self._hostile_to(ini.get("coalition"), own):
+            return None
+        kind = weapon_kind(ev["weapon"])
+        if kind in ("gun", "bomb", "rocket"):
+            return None
+        src = ev.get("weapon_pos") or ini
+        if src.get("lat") is None:
+            return None
+        res = self._where(own, src["lat"], src["lon"])
+        if res is None:
+            return None
+        _, brg, rng = res
+        if rng > MISSILE_ALERT_NM:
+            return None
+        hdg = (ev.get("weapon_pos") or {}).get("heading")
+        if hdg is not None and abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) > 45.0:
+            return None  # flying away from Prometheus
+        hour = clock_of(brg - (own.get("heading") or 0.0))
+        wtype = spoken_type(ev["weapon"] or "missile")
+        call = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
+        return self._threat_alert("launch-%s" % (ev["weapon_id"] or ev["seq"]), call, "missile launch", ev["t"],
+                                  source="shot event", type=wtype, launcher=spoken_type(ini.get("type")),
+                                  range_nm=round(rng, 1), clock=hour)
+
+    def on_weapons(self, rows):
+        """Missiles in flight near Prometheus (Eval world.searchObjects): rows {id, type, lat, lon, alt, vn, ve,
+        target, launcher, launcher_type, coal}. Hostile ones aimed at Prometheus or closing -> alert + picture."""
+        now = self.clock()
+        with self.lock:
+            own = self._own_locked()
+            current = {}
+            if own is None or own.get("lat") is None:
+                self.weapons_in_flight, self.weapons_at = {}, now
+                return []
+            new = []
+            for r in rows or []:
+                if not isinstance(r, dict) or r.get("lat") is None or r.get("lon") is None:
+                    continue
+                raw_coal = r.get("coal")
+                coal = ({1: "red", 2: "blue", 0: "neutral"}.get(raw_coal, "unknown") if isinstance(raw_coal, int)
+                        else _coal(str(raw_coal or "")))
+                if r.get("launcher") and r.get("launcher") == own.get("name"):
+                    continue
+                if not self._hostile_to(coal, own):
+                    continue
+                res = self._where(own, r["lat"], r["lon"], r.get("alt"))
+                if res is None:
+                    continue
+                _, brg, rng = res
+                vn, ve = r.get("vn") or 0.0, r.get("ve") or 0.0
+                speed = math.hypot(vn, ve)
+                hdg = (math.degrees(math.atan2(ve, vn)) + 360.0) % 360.0
+                closing = speed > 50 and abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) <= 30.0
+                at_me = bool(r.get("target")) and r.get("target") == own.get("name")
+                if not (at_me or (closing and rng <= MISSILE_ALERT_NM)):
+                    continue
+                hour = clock_of(brg - (own.get("heading") or 0.0))
+                wid = str(r.get("id") or "%s-%s" % (r.get("type"), r.get("launcher")))
+                wtype = spoken_type(r.get("type") or "missile")
+                row = {"type": wtype, "range_nm": round(rng, 1), "clock": hour, "targeting_me": at_me,
+                       "closing": closing, "launcher": spoken_type(r.get("launcher_type")) if r.get("launcher_type")
+                       else None, "speed_kt": int(round(speed * MS_TO_KT))}
+                row["call"] = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
+                current[wid] = row
+                if wid not in self.weapons_in_flight:
+                    a = self._threat_alert("missile-%s" % wid, row["call"], "missile launch", now,
+                                           source="DCS-gRPC weapon in flight", type=wtype, range_nm=row["range_nm"],
+                                           clock=hour)
+                    if a:
+                        new.append(a)
+            self.weapons_in_flight, self.weapons_at = current, now
+            return new
+
+    def _sam_threats(self, own, now):
+        """Hostile SAM/AAA/EWR radars with Prometheus inside their nominal range, one row per group, nearest first."""
+        best = {}
+        own_alt = own.get("alt_m") or 0.0
+        for u in self.units.values():
+            if u["category"] not in ("SAM", "AAA") or u.get("lat") is None:
                 continue
-            aimed = (s["hit_target"] or {}).get("id") == uid or (s["intended_target"] or {}).get("id") == uid
-            same_group = unit.get("group") and (s["intended_target"] or {}).get("group") == unit.get("group")
-            if aimed or (same_group and s["kind"] in ("bomb", "rocket", "gun")):
-                if s["result"] != "kill":
-                    s["result"] = "likely kill (inferred: target no longer showing)"
-                    s["resolved_t"] = now
-                s.setdefault("vanished_targets", []).append(spoken_type(unit.get("type")))
-                self._record_my_kill(unit, s["weapon"], "target vanished after my shot", now, inferred=True)
-                return
-        self._log_store({"kind": "unit_vanished", "unit": _brief(unit), "note": "no death event; likely destroyed"})
+            if not self._hostile_to(u["coalition"], own):
+                continue
+            nominal, label, ewr = sam_profile(u["type"])
+            if u["category"] == "AAA" and label is None:
+                continue  # optical triple A: not a radar threat
+            _, rng = bearing_range(own["lat"], own["lon"], u["lat"], u["lon"])
+            if rng > nominal + 1:
+                continue
+            slant = math.hypot(rng, (own_alt - (u.get("alt_m") or 0.0)) / NM)
+            if slant > nominal:
+                continue
+            key = u.get("group") or str(u["id"])
+            prev = best.get(key)
+            if prev is None or (nominal, -slant) > (prev[0], -prev[1]):
+                best[key] = (nominal, slant, u, label, ewr)
+        rows = []
+        for key, (nominal, slant, u, label, ewr) in best.items():
+            res = self._where(own, u["lat"], u["lon"])
+            if res is None:
+                continue
+            _, brg, _ = res
+            hour = clock_of(brg - (own.get("heading") or 0.0))
+            name = label or spoken_type(u["type"])
+            if ewr:
+                call = "Early warning radar %s could be watching you, your %s o'clock, %s." % (
+                    spoken_type(u["type"]), words(hour), range_words(slant))
+            elif label == "radar triple A":
+                call = "Radar triple A %s could be tracking you, your %s o'clock, %s." % (
+                    spoken_type(u["type"]), words(hour), range_words(slant))
+            else:
+                call = "SAM %s could be tracking you, your %s o'clock, %s." % (name, words(hour), range_words(slant))
+            rows.append({"group": key, "type": u["type"], "sam": name, "ewr": ewr, "range_nm": round(slant, 1),
+                         "nominal_range_nm": nominal, "clock": hour, "call": call})
+        rows.sort(key=lambda r: (r["ewr"], r["range_nm"]))
+        return rows
+
+    def _rwr_source(self):
+        latest = self.cockpit.latest
+        if latest is not None and self.cockpit.fresh() and isinstance(latest.get("rwr"), dict):
+            return "cockpit"
+        if self.connected and self.units_at is not None:
+            return "grpc_inferred"
+        return "none"
+
+    def _threats_json(self, own, now):
+        source = self._rwr_source()
+        out = {"rwr_source": source, "rwr_export_by_module": self.cockpit.rwr_modules_json()}
+        if own is None or own.get("lat") is None:
+            out["sam_in_range"], out["missiles_inbound"] = [], []
+            return out
+        sams = self._sam_threats(own, now)
+        out["sam_in_range"] = sams[:PICTURE_TOP]
+        if len(sams) > PICTURE_TOP:
+            out["more_sam_groups_in_range"] = len(sams) - PICTURE_TOP
+        if source != "cockpit":
+            for r in sams:  # no RWR in this jet: call each SAM group once when Prometheus enters its range
+                if r["ewr"] or r["group"] in self._sam_alerted:
+                    continue
+                self._sam_alerted[r["group"]] = now
+                self._threat_alert("sam-%s-%d" % (r["group"], int(now)), r["call"], "SAM in range", now,
+                                   source="DCS-gRPC SAM range")
+        fresh_weapons = self.weapons_at is not None and now - self.weapons_at <= 10
+        missiles = list(self.weapons_in_flight.values()) if fresh_weapons else []
+        for a in self.threat_alerts:
+            if a["kind"] == "missile launch" and a.get("source") == "shot event" and now - a["t"] <= 60:
+                missiles.append({"type": a.get("type"), "range_nm": a.get("range_nm"), "clock": a.get("clock"),
+                                 "launcher": a.get("launcher"), "age_s": int(now - a["t"]), "call": a["call"],
+                                 "from": "shot event"})
+        missiles.sort(key=lambda m: m.get("range_nm") or 0)
+        out["missiles_inbound"] = missiles[:PICTURE_TOP]
+        if source != "cockpit":
+            out["note"] = ("no RWR feed from this aircraft: these are inferred from DCS-gRPC (SAM ranges, missiles in "
+                           "flight); say 'could be' for SAMs")
+        return out
+
+    def _pending_threat_alerts(self, now):
+        cockpit_launch = any(a["signal"] == "launch" and now - a["t"] <= 15 for a in self.cockpit.alerts)
+        out = []
+        for a in self.threat_alerts:
+            if a["key"] in self.announced or now - a["t"] > THREAT_ANNOUNCE_S:
+                continue
+            if a["kind"] == "missile launch" and cockpit_launch:
+                continue  # the cockpit RWR already called the launch
+            out.append(a)
+        out.sort(key=lambda a: a["kind"] != "missile launch")
+        return out
 
     # -- stores / loadout (Unit:getAmmo() via DCS-gRPC Eval)
     def set_stores_status(self, status):
@@ -831,6 +1207,8 @@ class Eye:
             prev = self.stores.get(uid)
             own = self._own_locked()
             mine = own is not None and own["id"] == uid
+            if source == "eval" and mine and fuel is not None and fuel > 0:
+                self.fuel, self.fuel_at = fuel, now  # Unit:getFuel(): the fuel fallback when the cockpit has none
             if source == "eval" and mine and self.cockpit.payload_fresh():
                 return []  # the cockpit payload (1 Hz) is the ownship stores source while it is fresh
             self.stores[uid] = {"t": now, "unit_type": unit.get("type"), "player": unit.get("player"),
@@ -958,34 +1336,55 @@ class Eye:
         return out, brg, rng
 
     def _cluster(self, own, units):
+        """Group contacts within CONTACT_RADIUS_NM, nearest first (same coalition + domain, 3 nm air / 1.5 nm
+        ground). Busy maps (round 4): flat-earth prefilter + a 3 nm spatial grid, so it is ~linear in units."""
         rows = []
+        lat0, lon0 = own["lat"], own["lon"]
+        coslat = math.cos(math.radians(lat0))
         for u in units:
-            res = self._where(own, u["lat"], u["lon"])
-            if res is None:
+            dy = (u["lat"] - lat0) * 60.0
+            dx = (u["lon"] - lon0) * 60.0 * coslat
+            if dx * dx + dy * dy > (CONTACT_RADIUS_NM + 5.0) ** 2:
                 continue
-            _, brg, rng = res
+            brg, rng = bearing_range(lat0, lon0, u["lat"], u["lon"])
             if rng <= CONTACT_RADIUS_NM:
-                rows.append((rng, brg, u))
+                rows.append((rng, brg, u, dx, dy))
         rows.sort(key=lambda r: r[0])
-        groups, used = [], set()
-        for i, (rng, brg, u) in enumerate(rows):
-            if u["id"] in used:
+        cell = 3.2  # >= the largest radius x 1.05 flat-earth margin: neighbours are always in the 3x3 block
+        grid = {}
+        doms = []
+        for i, (rng, brg, u, dx, dy) in enumerate(rows):
+            grid.setdefault((int(dx // cell), int(dy // cell)), []).append(i)
+            doms.append(domain(u["category"]))
+        used = [False] * len(rows)
+        groups = []
+        for i, (rng, brg, u, dx, dy) in enumerate(rows):
+            if used[i]:
                 continue
-            used.add(u["id"])
-            dom = domain(u["category"])
-            members = [(rng, brg, u)]
+            used[i] = True
+            dom = doms[i]
+            members = [i]
             radius = 3.0 if dom != "ground" else 1.5
-            for rng2, brg2, v in rows[i + 1:]:
-                if v["id"] in used or v["coalition"] != u["coalition"] or domain(v["category"]) != dom:
-                    continue
-                _, d = bearing_range(u["lat"], u["lon"], v["lat"], v["lon"])
-                if d > radius:
-                    continue
-                if dom == "air" and abs((v["alt_m"] or 0) - (u["alt_m"] or 0)) * M_TO_FT > 5000:
-                    continue
-                used.add(v["id"])
-                members.append((rng2, brg2, v))
-            groups.append((dom, members))
+            cx, cy = int(dx // cell), int(dy // cell)
+            for gx in (cx - 1, cx, cx + 1):
+                for gy in (cy - 1, cy, cy + 1):
+                    for j in grid.get((gx, gy), ()):
+                        if used[j] or doms[j] != dom:
+                            continue
+                        v = rows[j][2]
+                        if v["coalition"] != u["coalition"]:
+                            continue
+                        if (rows[j][3] - dx) ** 2 + (rows[j][4] - dy) ** 2 > (radius * 1.05) ** 2:
+                            continue
+                        _, d = bearing_range(u["lat"], u["lon"], v["lat"], v["lon"])
+                        if d > radius:
+                            continue
+                        if dom == "air" and abs((v["alt_m"] or 0) - (u["alt_m"] or 0)) * M_TO_FT > 5000:
+                            continue
+                        used[j] = True
+                        members.append(j)
+            members.sort()
+            groups.append((dom, [rows[k][:3] for k in members]))
         return groups
 
     def _group_json(self, own, dom, members):
@@ -1059,6 +1458,8 @@ class Eye:
                    else round(now - self.units_at, 1)}
             if self.resubscribes:
                 out["resubscribes"] = dict(self.resubscribes)
+            if self.raw_kinds:
+                out["kinds_total"] = dict(self.raw_kinds.most_common(12))
             return out
 
     def mark_announced(self, keys):
@@ -1128,84 +1529,168 @@ class Eye:
 
     def picture(self):
         with self.lock:
-            now = self.clock()
-            self._prune(now)
-            self._settle_shots(now)
+            self._own_cache = None
             own = self._own_locked()
-            age = lambda t: None if t is None else round(now - t, 1)  # noqa: E731
-            pic = {
-                "source": "Athena Eye (DCS-gRPC %s)" % self.source,
-                "connected": self.connected,
-                "data_age_s": {"units": age(self.units_at), "last_event": age(self.events_at),
-                               "airbases": age(self.airbases_at), "ownship": age(own["seen"]) if own else None},
-                "event_stream": self.stream_health(now),
-                "theatre": self.theatre,
-                "bearings": ("magnetic (declination %.1f deg from DCS)" % self.declination
-                             if self.declination is not None else "TRUE (magnetic declination unavailable)"),
-                "notes": [
-                    "Every unit listed in contacts/totals is ALIVE as of data_age_s.",
-                    "Kills, losses and deaths come ONLY from recent_kills_and_losses / my_shots / my_kills; "
-                    "entries flagged inferred mean the unit stopped showing without a death report (likely destroyed).",
-                    "clock is relative to Prometheus' nose (12 = ahead).",
-                    "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
-                    "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): "
-                    "config, flight, fuel (pounds), payload, rwr threats, locked_target, warning_lights.",
-                ],
-            }
-            if self.last_error and not self.connected:
-                pic["last_error"] = self.last_error
-            if own is None:
-                pic["ownship"] = None
-                pic["ownship_note"] = "Prometheus is not currently in an aircraft (no unit with player name %s)" % self.player
+            self._own_cache = (own,)
+            try:
+                return self._picture_locked(own)
+            finally:
+                self._own_cache = None
+
+    def _fuel_json(self, own, cp, now):
+        """One fuel answer: cockpit (kg or fraction x airframe max) > DCS-gRPC Unit:getFuel() x max > unknown."""
+        if cp.get("available") and cp.get("fresh") and isinstance(cp.get("fuel"), dict) \
+                and cp["fuel"].get("total_lb"):
+            return dict(cp["fuel"], source=cp["fuel"].get("source") or "cockpit (kg)")
+        if own is not None and self.fuel is not None and self.fuel > 0:
+            out = fuel_lb_from_fraction(self.fuel, own.get("type"))
+            if out is not None:
+                out["age_s"] = None if self.fuel_at is None else round(now - self.fuel_at, 1)
+                return out
+        return {"known": False, "note": "fuel unknown (no usable cockpit or DCS-gRPC fuel value): say fuel unknown"}
+
+    def _working_target(self, own, cp, now):
+        """The ONE target being worked: cockpit lock, else the target of my last attack (still alive)."""
+        lock = cp.get("locked_target") if isinstance(cp, dict) else None
+        if isinstance(lock, dict) and lock.get("call"):
+            return {"call": lock["call"], "type": lock.get("type"), "source": "cockpit lock"}
+        if own is None or own.get("lat") is None:
+            return None
+        for s in reversed(self.shots):
+            if now - s["t"] > CREDIT_WINDOW_S:
+                break
+            t = s["hit_target"] or s["intended_target"] or {}
+            u = self.units.get(t.get("id")) if t.get("id") else None
+            if u is None or u.get("lat") is None:
+                continue
+            res = self._where(own, u["lat"], u["lon"], u.get("alt_m"))
+            if res is None:
+                continue
+            where, brg, rng = res
+            dom = domain(u["category"])
+            vertical = None
+            if dom == "air":
+                diff = ((u.get("alt_m") or 0) - (own.get("alt_m") or 0)) * M_TO_FT
+                vertical = "high" if diff > 1000 else "low" if diff < -1000 else "level"
+            call = call_line(spoken_type(u["type"]), where.get("bearing_mag") or where.get("bearing_true"), rng,
+                             clock_of(brg - (own.get("heading") or 0.0)), dom, where.get("alt_ft"), vertical)
+            return {"call": call, "type": spoken_type(u["type"]), "source": "target of my last attack"}
+        return None
+
+    def _contacts(self, own, pic):
+        others = [u for u in self.units.values() if u["id"] != own["id"] and u.get("lat") is not None]
+        mine = own["coalition"]
+        hostile_raw, friendly_raw = [], []
+        for dom, members in self._cluster(own, others):
+            coal = members[0][2]["coalition"]
+            if coal == mine or coal in ("neutral", "unknown"):
+                friendly_raw.append((dom, members))
             else:
-                pic["ownship"] = {
-                    "type": own["type"], "coalition": own["coalition"], "group": own["group"],
-                    "player_name": own.get("player"),
-                    "alt_ft": int(round((own["alt_m"] or 0) * M_TO_FT)),
-                    "speed_kt": int(round((own["speed_ms"] or 0) * MS_TO_KT)),
-                    "heading_true": _three(own["heading"] or 0),
-                    "fuel_fraction": None if self.fuel is None else round(self.fuel, 2),
-                    "loadout": self._loadout_json(own, now),
-                    "lat": round(own["lat"], 4) if own["lat"] is not None else None,
-                    "lon": round(own["lon"], 4) if own["lon"] is not None else None,
-                }
-                if self.declination is not None:
-                    pic["ownship"]["heading_mag"] = _three((own["heading"] or 0) - self.declination)
-                if own.get("source") == "cockpit":
-                    pic["ownship"]["source"] = "cockpit feed only (DCS-gRPC has no unit for Prometheus)"
-                others = [u for u in self.units.values() if u["id"] != own["id"] and u.get("lat") is not None]
-                groups = [self._group_json(own, dom, members) for dom, members in self._cluster(own, others)]
-                hostile = [g for g in groups if g["side"] == "hostile"]
-                friendly = [g for g in groups if g["side"] != "hostile"]
-                pic["contacts_within_nm"] = CONTACT_RADIUS_NM
-                pic["hostile_groups"] = hostile[:25]
-                pic["friendly_groups"] = friendly[:12]
-                pic["hostile_air_groups"] = sum(1 for g in hostile if g["domain"] == "air")
-            pic["airbases"] = self._airbases_json(own)
-            pic["cockpit"] = self._cockpit_json(own, now)
-            alerts = self.cockpit.pending_alerts(self.announced, now)
-            if alerts:
-                pic["rwr_alert_to_announce"] = [a["call"] for a in alerts]
-                pic["_rwr_keys"] = [a["key"] for a in alerts]
-            pic["my_shots_last_15_min"] = self._shots_json(own, now)
-            pic["my_kills_this_mission"] = [
-                {"target": spoken_type(k["type"]), "category": k["category"], "weapon": k["weapon"],
-                 "age_s": int(now - k["t"]), "inferred": k["inferred"], "how": k["how"]} for k in self.my_kills[-15:]]
-            pending = [k for k in self.my_kills if k["key"] not in self.announced and now - k["t"] < 600]
-            if pending:
-                pic["splash_to_announce"] = [k["splash_call"] for k in pending]
-                pic["_splash_keys"] = [k["key"] for k in pending]
-            used = self.used_session if self.used_session else self.fired_events
-            pic["my_weapons_used_this_mission"] = {
-                "source": "stores (loadout diff)" if self.used_session else "shot events",
-                "by_weapon": dict(used)}
-            pic["recent_kills_and_losses_last_10_min"] = self._kills_json(own, now)
-            pic["recent_events_last_10_min"] = self._events_text(own, now)
-            totals = {}
-            for u in self.units.values():
-                totals.setdefault(u["coalition"], Counter())[u["category"]] += 1
-            pic["alive_totals_by_coalition"] = {k: dict(v) for k, v in sorted(totals.items())}
-            return pic
+                hostile_raw.append((dom, members))
+        # Full JSON only for the nearest groups, plus the nearest air and SAM groups wherever they are.
+        keep = set(range(min(HOSTILE_GROUPS_MAX, len(hostile_raw))))
+        air = [i for i, (dom, _) in enumerate(hostile_raw) if dom == "air"]
+        sam = [i for i, (_, m) in enumerate(hostile_raw) if m[0][2]["category"] in ("SAM", "AAA")]
+        keep.update(air[:PICTURE_TOP])
+        keep.update(sam[:PICTURE_TOP])
+        hostile = [self._group_json(own, *hostile_raw[i]) for i in sorted(keep)]
+        friendly = [self._group_json(own, dom, m) for dom, m in friendly_raw[:FRIENDLY_GROUPS_MAX]]
+        pic["contacts_within_nm"] = CONTACT_RADIUS_NM
+        pic["hostile_groups"] = hostile
+        pic["friendly_groups"] = friendly
+        pic["hostile_air_groups"] = len(air)
+        pic["hostile_groups_total"] = len(hostile_raw)
+        if len(hostile_raw) > len(hostile):
+            more = Counter()
+            for i, (dom, m) in enumerate(hostile_raw):
+                if i not in keep:
+                    more[m[0][2]["category"]] += 1
+            pic["more_hostile_groups_not_listed"] = dict(more)
+        if len(friendly_raw) > len(friendly):
+            pic["more_friendly_groups_not_listed"] = len(friendly_raw) - len(friendly)
+        prio = sorted(hostile, key=lambda g: (0 if g["domain"] == "air" else 1 if g["category"] in ("SAM", "AAA")
+                                              else 2, g["range_nm"]))
+        pic["picture_top3"] = [g["call"] for g in prio[:PICTURE_TOP]]
+        pic["picture_more_groups"] = max(0, len(hostile_raw) - len(pic["picture_top3"]))
+
+    def _picture_locked(self, own):
+        now = self.clock()
+        self._prune(now)
+        self._settle_shots(now)
+        age = lambda t: None if t is None else round(now - t, 1)  # noqa: E731
+        pic = {
+            "source": "Athena Eye (DCS-gRPC %s)" % self.source,
+            "connected": self.connected,
+            "data_age_s": {"units": age(self.units_at), "last_event": age(self.events_at),
+                           "airbases": age(self.airbases_at), "ownship": age(own["seen"]) if own else None},
+            "event_stream": self.stream_health(now),
+            "theatre": self.theatre,
+            "bearings": ("magnetic (declination %.1f deg from DCS)" % self.declination
+                         if self.declination is not None else "TRUE (magnetic declination unavailable)"),
+            "notes": [
+                "Every unit listed in contacts/totals is ALIVE as of data_age_s.",
+                "Kills, losses and deaths come ONLY from recent_kills_and_losses / my_shots / my_kills. A kill with "
+                "confidence confirmed is a kill (say splash, no 'likely'); only confidence likely is 'likely'.",
+                "clock is relative to Prometheus' nose (12 = ahead).",
+                "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
+                "picture_top3 = the ready calls for a picture (threats first); hostile_groups has more detail.",
+                "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): "
+                "config, flight, payload, rwr threats, locked_target, warning_lights. Fuel: ownship.fuel.",
+            ],
+        }
+        if self.last_error and not self.connected:
+            pic["last_error"] = self.last_error
+        cockpit = self._cockpit_json(own, now)
+        if own is None:
+            pic["ownship"] = None
+            pic["ownship_note"] = "Prometheus is not currently in an aircraft (no unit with player name %s)" % self.player
+        else:
+            pic["ownship"] = {
+                "type": own["type"], "coalition": own["coalition"], "group": own["group"],
+                "player_name": own.get("player"),
+                "alt_ft": int(round((own["alt_m"] or 0) * M_TO_FT)),
+                "speed_kt": int(round((own["speed_ms"] or 0) * MS_TO_KT)),
+                "heading_true": _three(own["heading"] or 0),
+                "fuel": self._fuel_json(own, cockpit, now),
+                "fuel_fraction": None if self.fuel is None else round(self.fuel, 2),
+                "loadout": self._loadout_json(own, now),
+                "lat": round(own["lat"], 4) if own["lat"] is not None else None,
+                "lon": round(own["lon"], 4) if own["lon"] is not None else None,
+            }
+            if self.declination is not None:
+                pic["ownship"]["heading_mag"] = _three((own["heading"] or 0) - self.declination)
+            if own.get("source") == "cockpit":
+                pic["ownship"]["source"] = "cockpit feed only (DCS-gRPC has no unit for Prometheus)"
+            if own.get("lat") is not None:
+                self._contacts(own, pic)
+            pic["working_target"] = self._working_target(own, cockpit, now)
+        pic["airbases"] = self._airbases_json(own)
+        pic["cockpit"] = cockpit
+        pic["threats"] = self._threats_json(own, now)
+        alerts = self.cockpit.pending_alerts(self.announced, now) + self._pending_threat_alerts(now)
+        if alerts:
+            pic["rwr_alert_to_announce"] = [a["call"] for a in alerts]
+            pic["_rwr_keys"] = [a["key"] for a in alerts]
+        pic["my_shots_last_15_min"] = self._shots_json(own, now)
+        pic["my_kills_this_mission"] = [
+            {"target": spoken_type(k["type"]), "category": k["category"], "weapon": k["weapon"],
+             "age_s": int(now - k["t"]), "confidence": k.get("confidence", "confirmed"), "inferred": k["inferred"],
+             "how": k["how"]} for k in self.my_kills[-15:]]
+        pending = [k for k in self.my_kills if k["key"] not in self.announced and now - k["t"] < 600]
+        if pending:
+            pic["splash_to_announce"] = [k["splash_call"] for k in pending]
+            pic["_splash_keys"] = [k["key"] for k in pending]
+        used = self.used_session if self.used_session else self.fired_events
+        pic["my_weapons_used_this_mission"] = {
+            "source": "stores (loadout diff)" if self.used_session else "shot events",
+            "by_weapon": dict(used)}
+        pic["recent_kills_and_losses_last_10_min"] = self._kills_json(own, now)
+        pic["recent_events_last_10_min"] = self._events_text(own, now)
+        totals = {}
+        for u in self.units.values():
+            totals.setdefault(u["coalition"], Counter())[u["category"]] += 1
+        pic["alive_totals_by_coalition"] = {k: dict(v) for k, v in sorted(totals.items())}
+        return pic
 
     def _airbases_json(self, own):
         rows = []
@@ -1306,6 +1791,9 @@ class Eye:
             mine = next((k for k in self.my_kills if k["target_id"] == u["id"]), None)
             if mine:
                 row["by_me"], row["weapon"] = True, mine["weapon"]
+                if mine.get("confidence", "confirmed") == "confirmed":
+                    row["event"] = "destroyed by me (stopped showing right after my attack; no death report)"
+                    row["confidence"] = "confirmed"
             if own is not None:
                 res = self._where(own, u.get("lat"), u.get("lon"))
                 if res:
@@ -1378,10 +1866,13 @@ class Eye:
                 "loadout": ({w["weapon"]: w["count"] for w in loadout.get("weapons", [])}
                             if loadout.get("available") else loadout.get("reason")),
                 "cockpit": cockpit,
+                "fuel_lb": (own.get("fuel") or {}).get("total_lb"),
+                "rwr_source": (pic.get("threats") or {}).get("rwr_source"),
                 "units_age_s": pic["data_age_s"]["units"]}
 
-    def whisper_vocabulary(self, max_airbases=8):
-        """Words whisper should expect right now: callsign, Athena, nearby airfields, brevity (round 2 STT fix)."""
+    def whisper_vocabulary(self, max_airbases=10):
+        """Words whisper should expect right now: callsign, Athena, nearby airfields, brevity (round 2 STT fix;
+        round 4: the brevity words that were misheard, e.g. "eyes on target" -> "I, son target")."""
         with self.lock:
             own = self._own_locked()
             names = [n.strip() for n in str(self.player).split(",")
@@ -1399,9 +1890,7 @@ class Eye:
         parts = ["%s, Athena." % (names[0] if names else "Prometheus")]
         if fields:
             parts.append("Airfields: %s." % ", ".join(fields))
-        parts.append("Picture, bogey dope, BRAA, splash, weapons hot, rifle, pickle, winchester, bingo, RTB, "
-                     "tally, visual, cleared hot, what do I have left, RWR, spike, what's painting me, "
-                     "fuel state, gear down.")
+        parts.append(BREVITY_PROMPT)
         return " ".join(parts)
 
 
@@ -1460,7 +1949,7 @@ class GrpcFeeder:
                 ("units-ground", lambda: self._units("units-ground", "GROUP_CATEGORY_GROUND", self.ground_poll, 30)),
                 ("units-ship", lambda: self._units("units-ship", "GROUP_CATEGORY_SHIP", self.ground_poll, 30)),
                 ("events", self._events), ("world", self._world), ("stores", self._stores_loop),
-                ("watchdog", self._watchdog)]
+                ("threats", self._threats_loop), ("watchdog", self._watchdog)]
         if self.prompt_path:
             jobs.append(("prompt", self._prompt_loop))
         for name, fn in jobs:
@@ -1483,7 +1972,7 @@ class GrpcFeeder:
                 fn()
             except Exception as error:  # noqa: BLE001 - reconnect forever, report reason
                 msg = "%s: %s %s" % (name, type(error).__name__, _code(error))
-                if name not in ("watchdog", "prompt", "stores"):
+                if name not in ("watchdog", "prompt", "stores", "threats"):
                     self.eye.set_connected(False, msg)
                 self._errored.add(name)
                 if failures % 60 == 0:  # first failure, then about every 10 minutes
@@ -1633,6 +2122,58 @@ class GrpcFeeder:
                   "return {fuel = u:getFuel(), ammo = ammo}")
     EVAL_OFF = ("unavailable: DCS-gRPC Eval is disabled on the DCS PC. Set evalEnabled = true in "
                 "Saved Games/DCS/Config/dcs-grpc.lua (infra/dcs-client kit) and restart the mission")
+    # Fuel only (round 4): the cockpit payload replaces getAmmo for ownship, but its fuel can be unusable.
+    FUEL_LUA = ("local u = Unit.getByName(%s) "
+                "if not u or not u:isExist() then return nil end "
+                "return {fuel = u:getFuel()}")
+    # Round 4 RWR fallback: missiles in flight within 60 km of ownship (target, launcher, position, velocity).
+    WEAPONS_LUA = ("local own = Unit.getByName(%s) "
+                   "if not own or not own:isExist() then return nil end "
+                   "local out = {} "
+                   "local vol = {id = world.VolumeType.SPHERE, params = {point = own:getPoint(), radius = 60000}} "
+                   "world.searchObjects(Object.Category.WEAPON, vol, function(w) "
+                   "pcall(function() "
+                   "local d = w:getDesc() or {} "
+                   "if d.category ~= Weapon.Category.MISSILE or #out >= 20 then return end "
+                   "local p = w:getPoint() local lat, lon, alt = coord.LOtoLL(p) "
+                   "local v = w:getVelocity() or {x = 0, y = 0, z = 0} "
+                   "local t = w:getTarget() local l = w:getLauncher() "
+                   "out[#out + 1] = {id = w.id_, type = w:getTypeName(), lat = lat, lon = lon, alt = alt, "
+                   "vn = v.x, ve = v.z, coal = w:getCoalition(), target = t and t.getName and t:getName() or nil, "
+                   "launcher = l and l.getName and l:getName() or nil, "
+                   "launcher_type = l and l.getTypeName and l:getTypeName() or nil} "
+                   "end) return true end) "
+                   "return {weapons = out}")
+    WEAPONS_POLL_S = 1.0
+
+    def poll_weapons(self, custom=None):
+        """One Eval of missiles in flight around ownship -> eye.on_weapons. Returns the new alerts."""
+        own = self.eye.ownship()
+        if own is None or not own.get("name") or own.get("source") == "cockpit":
+            return []
+        if custom is None:
+            from dcs.custom.v0 import custom_pb2_grpc
+            custom = custom_pb2_grpc.CustomServiceStub(self._chan())
+        from dcs.custom.v0 import custom_pb2
+        raw = custom.Eval(custom_pb2.EvalRequest(lua=self.WEAPONS_LUA % json.dumps(own["name"])), timeout=5).json
+        value = json.loads(raw) if raw else None
+        rows = value.get("weapons") if isinstance(value, dict) else None
+        if isinstance(rows, dict):  # an empty Lua table encodes as {}
+            rows = list(rows.values())
+        return self.eye.on_weapons(rows or [])
+
+    def _threats_loop(self):
+        from dcs.custom.v0 import custom_pb2_grpc
+        custom = custom_pb2_grpc.CustomServiceStub(self._chan())
+        while not self.stop.wait(self.WEAPONS_POLL_S):
+            if not self.eval_ok:
+                continue
+            try:
+                self.poll_weapons(custom)
+            except Exception as error:  # noqa: BLE001 - Eval off or mission loading: retry next tick
+                if "UNAVAILABLE" in _code(error):
+                    raise
+                self.stop.wait(5.0)
 
     def poll_stores(self, custom=None):
         """One loadout poll for every player unit (ownship first)."""
@@ -1645,11 +2186,10 @@ class GrpcFeeder:
         for unit in self.eye.player_units():
             if not unit.get("name"):
                 continue
-            if skip_own and unit["id"] == own["id"]:
-                continue  # the cockpit payload (Export.lua) is fresher; don't diff two sources
+            fuel_only = skip_own and unit["id"] == own["id"]
+            lua = (self.FUEL_LUA if fuel_only else self.STORES_LUA) % json.dumps(unit["name"])
             try:
-                raw = custom.Eval(custom_pb2.EvalRequest(lua=self.STORES_LUA % json.dumps(unit["name"])),
-                                  timeout=5).json
+                raw = custom.Eval(custom_pb2.EvalRequest(lua=lua), timeout=5).json
             except Exception as error:  # noqa: BLE001
                 code = _code(error)
                 if any(c in code for c in ("PERMISSION_DENIED", "UNIMPLEMENTED", "UNAUTHENTICATED")):

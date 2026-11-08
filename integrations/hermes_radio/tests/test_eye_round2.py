@@ -137,24 +137,41 @@ class VanishTests(unittest.TestCase):
         eye.on_units_message(fx.gone_message(100, "Pilot #001"))
         self.assertEqual(eye.picture()["recent_kills_and_losses_last_10_min"], [])
 
-    def test_my_shot_then_target_vanishes_is_likely_kill_with_splash(self):
-        """The 19:09 case: events silent, the armor just stopped showing after the pilot's attack."""
+    def test_my_shot_then_target_vanishes_is_confirmed_kill_with_splash(self):
+        """The 19:09 case: events silent, the armor just stopped showing 20 s after the pilot's bomb. Round 4:
+        that is a CONFIRMED kill (still flagged inferred), splash without 'likely'."""
         eye, clock = scenario()
         eye.on_event(fx.shot(A10, 9004, "GBU_12"))
         clock.t += 20
         eye.on_units_message(fx.gone_message(801, "Armor-1"))
         pic = eye.picture()
         s = pic["my_shots_last_15_min"]["shots"][0]
-        self.assertTrue(s["result"].startswith("likely kill"))
+        self.assertEqual(s["result"], "kill")
         self.assertEqual(s["no_longer_showing"], ["T-72B"])
-        self.assertTrue(pic["my_kills_this_mission"][0]["inferred"])
-        self.assertEqual(pic["splash_to_announce"], ["Splash one T-72B, likely"])
+        kill = pic["my_kills_this_mission"][0]
+        self.assertTrue(kill["inferred"])
+        self.assertEqual(kill["confidence"], "confirmed")
+        self.assertEqual(pic["splash_to_announce"], ["Splash one T-72B"])
         row = pic["recent_kills_and_losses_last_10_min"][0]
         self.assertTrue(row["by_me"] and row["inferred"])
         self.assertEqual(row["weapon"], "GBU_12")
-        # A real kill event later upgrades it to confirmed.
+        # A real kill event later clears the inferred flag.
         eye.on_event(fx.kill(A10, 9004, "GBU_12", T72_A))
         self.assertFalse(eye.picture()["my_kills_this_mission"][0]["inferred"])
+
+    def test_vanish_long_after_the_shot_stays_likely(self):
+        eye, clock = scenario()
+        eye.on_event(fx.shot(A10, 9004, "GBU_12"))
+        clock.t += 90
+        eye.on_units_message(fx.gone_message(801, "Armor-1"))
+        pic = eye.picture()
+        self.assertTrue(pic["my_shots_last_15_min"]["shots"][0]["result"].startswith("likely kill"))
+        self.assertEqual(pic["my_kills_this_mission"][0]["confidence"], "likely")
+        self.assertEqual(pic["splash_to_announce"], ["Splash one T-72B, likely"])
+        # A real kill event upgrades it to confirmed.
+        eye.on_event(fx.kill(A10, 9004, "GBU_12", T72_A))
+        k = eye.picture()["my_kills_this_mission"][0]
+        self.assertEqual((k["inferred"], k["confidence"]), (False, "confirmed"))
 
 
 class StreamHealthTests(unittest.TestCase):
@@ -273,7 +290,7 @@ class LoadoutTests(unittest.TestCase):
         eye.on_units_message(fx.gone_message(801, "Armor-1"))
         pic = eye.picture()
         self.assertEqual(pic["my_kills_this_mission"][0]["weapon"], "GBU-12")
-        self.assertEqual(pic["splash_to_announce"], ["Splash one T-72B, likely"])
+        self.assertEqual(pic["splash_to_announce"], ["Splash one T-72B"])  # 25 s after a bomb: confirmed
 
     def test_shot_event_after_stores_drop_merges(self):
         eye, clock = scenario()
@@ -324,6 +341,7 @@ class LoadoutTests(unittest.TestCase):
             path = os.path.join(tmp, files[0])
             self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
             rows = [json.loads(line) for line in open(path, encoding="utf-8")]
+            rows = [r for r in rows if r["kind"] != "raw_event_sample"]  # round 4 raw-event debug samples
             kinds = [r["kind"] for r in rows]
             self.assertEqual(kinds, ["stores_snapshot", "shot", "stores_change", "shot_weapon", "shot_result",
                                      "kill_by_me"])

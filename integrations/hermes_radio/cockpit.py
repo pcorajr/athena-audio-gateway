@@ -78,6 +78,54 @@ def _list(value):
     return []
 
 
+# ----------------------------------------------------------------------------- fuel (round 4)
+# Max internal fuel (lb) per airframe, for fraction-only values (LoGetEngineInfo on some modules, Unit:getFuel()).
+# Approximate DCS values; anything not listed is reported as a percentage.
+MAX_INTERNAL_FUEL_LB = {
+    "A-10A": 11087, "A-10C": 11087, "A-10C_2": 11087, "F-4E-45MC": 12057, "F-16C_50": 7162,
+    "FA-18C_hornet": 10803, "F-15ESE": 13123, "F-15E": 13123, "AV8BNA": 7759, "M-2000C": 6978,
+    "Mirage-F1CE": 7400, "Mirage-F1EE": 7400, "Mirage-F1M-EE": 7400, "Su-25T": 8355, "Su-25": 6614,
+}
+FRACTION_MAX = 1.5  # LoGetEngineInfo fuel values at or below this are a fraction of capacity, above it kilograms
+
+
+def fuel_lb_from_fraction(fraction, aircraft, source="DCS-gRPC Unit:getFuel()"):
+    """Fuel fraction -> {"total_lb", "internal_pct", "source"} (pounds only for airframes in the table)."""
+    f = _f(fraction)
+    if f is None or f <= 0:
+        return None
+    out: dict = {"internal_pct": int(round(f * 100))}
+    max_lb = MAX_INTERNAL_FUEL_LB.get(aircraft or "")
+    if max_lb:
+        out["total_lb"] = int(round(f * max_lb, -1))
+        out["internal_lb"] = out["total_lb"]
+        out["source"] = "%s fraction x %s max internal (approximate)" % (source, aircraft)
+    else:
+        out["source"] = "%s fraction (pounds unknown for this airframe: give percent)" % source
+    return out
+
+
+def cockpit_fuel(p):
+    """Packet fuel -> picture dict, or None when unknown. 0/None = unknown. Values > 1.5 are kilograms (DCS Export
+    documents kg); values <= 1.5 are a fraction of capacity (A-10C, F-4E give fractions) and need the raw
+    4-decimal values of AthenaExport fuel encoding 2 ("fu": 2). Version-1 packets rounded them to 0 or 1."""
+    fi, fe = _f(p.get("fuel_int")), _f(p.get("fuel_ext"))
+    raw = p.get("fu") is not None
+    if fi is None or fi <= 0:
+        return None
+    ext_kg = fe if fe is not None and fe > FRACTION_MAX else None
+    if fi > FRACTION_MAX:
+        out = {"internal_lb": _r(fi, -1, KG_TO_LB), "external_lb": _r(ext_kg, -1, KG_TO_LB),
+               "total_lb": _r(fi + (ext_kg or 0), -1, KG_TO_LB), "total_kg": _r(fi + (ext_kg or 0), 0)}
+        return {k: int(v) for k, v in out.items() if v is not None}
+    if not raw:
+        return None  # rounded fraction from the version-1 export script: unusable
+    out = fuel_lb_from_fraction(fi, p.get("ac"), source="cockpit")
+    if out is not None and fe is not None and 0 < fe <= FRACTION_MAX:
+        out["external_pct"] = int(round(fe * 100))
+    return out
+
+
 def parse_packet(data):
     """bytes/str -> packet dict, or None for anything that is not an AthenaExport v1 JSON object."""
     try:
@@ -141,6 +189,11 @@ class CockpitState:
         self.emitters = {}   # emitter key -> highest signal level seen while it stays on the RWR
         self.alerts = deque(maxlen=50)
         self.status = "no cockpit packets yet"
+        self.rwr_modules = {}  # aircraft type -> True when its packets carry RWR (LoGetTWSInfo), else False
+
+    def rwr_modules_json(self):
+        with self.lock:
+            return dict(self.rwr_modules)
 
     # -- ingest
     def ingest(self, pkt, src=None):
@@ -163,6 +216,12 @@ class CockpitState:
                 return out
             self.latest, self.at = pkt, now
             self.status = "ok"
+            ac = pkt.get("ac")
+            if ac:
+                if isinstance(pkt.get("rwr"), dict):
+                    self.rwr_modules[ac] = True
+                else:
+                    self.rwr_modules.setdefault(ac, False)
             for key in ("pay", "mech", "warn", "tgt"):
                 if key in pkt:
                     self.slow[key] = (pkt[key], now)
@@ -276,12 +335,11 @@ class CockpitState:
                       "pitch_deg": _r(p.get("pitch"), 0), "bank_deg": _r(p.get("bank"), 0)}
             out["flight"] = {k: (int(v) if k.endswith("_ft") or k == "vs_fpm" else v)
                              for k, v in flight.items() if v is not None}
-            fi, fe = _f(p.get("fuel_int")), _f(p.get("fuel_ext"))
-            if fi is not None or fe is not None:
-                out["fuel"] = {"internal_lb": _r(fi, -1, KG_TO_LB), "external_lb": _r(fe, -1, KG_TO_LB),
-                               "total_lb": _r((fi or 0) + (fe or 0), -1, KG_TO_LB),
-                               "total_kg": _r((fi or 0) + (fe or 0), 0)}
-                out["fuel"] = {k: int(v) for k, v in out["fuel"].items() if v is not None}
+            fuel = cockpit_fuel(p)
+            if fuel is not None:
+                out["fuel"] = fuel
+            elif p.get("fuel_int") is not None:
+                out["fuel_note"] = "cockpit fuel unreadable (0 or rounded fraction): use ownship.fuel"
             pay = self.slow.get("pay")
             if pay is not None:
                 snap = payload_to_stores(pay[0]) or {"ammo": []}

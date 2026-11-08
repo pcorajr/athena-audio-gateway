@@ -116,8 +116,8 @@ class PictureTests(unittest.TestCase):
         self.assertEqual(flankers["count"], 2)
         self.assertEqual(flankers["label"], "bandit")
         # Round 2: ready call line, BRAA first then clock (user's required order).
-        self.assertEqual(flankers["call"], "Bandit, two contacts, bearing zero six zero, twenty miles, angels "
-                                           "twenty five. Target is at your eleven o'clock, high.")
+        self.assertEqual(flankers["call"], "Bandit Su-27 two-ship, bearing zero six zero, twenty miles, angels "
+                                           "twenty five. At your eleven o'clock, high.")
         self.assertEqual(flankers["bearing_true"], "060")
         self.assertAlmostEqual(flankers["range_nm"], 20, delta=0.3)
         self.assertEqual(flankers["clock"], "11 o'clock, ahead left")

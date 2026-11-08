@@ -190,6 +190,7 @@ class CockpitState:
         self.alerts = deque(maxlen=50)
         self.status = "no cockpit packets yet"
         self.rwr_modules = {}  # aircraft type -> True when its packets carry RWR (LoGetTWSInfo), else False
+        self.engine_samples = deque(maxlen=21)  # 3-second samples, one minute of secondary damage clues
 
     def rwr_modules_json(self):
         with self.lock:
@@ -205,6 +206,7 @@ class CockpitState:
             self.src = src
             if pkt.get("ev") == "start":
                 self.started_at, self.stopped_at = now, None
+                self.engine_samples.clear()
                 self.slow.clear()
                 self.emitters.clear()
                 self.status = "cockpit feed started"
@@ -214,7 +216,12 @@ class CockpitState:
                 self.emitters.clear()
                 self.status = "cockpit feed stopped (left the aircraft or mission ended)"
                 return out
+            if self.latest and pkt.get("unit") != self.latest.get("unit"):
+                self.engine_samples.clear()
+                self.slow.clear()
             self.latest, self.at = pkt, now
+            if not self.engine_samples or now - self.engine_samples[-1][0] >= 3:
+                self.engine_samples.append((now, pkt))
             self.status = "ok"
             ac = pkt.get("ac")
             if ac:
@@ -335,6 +342,26 @@ class CockpitState:
                       "pitch_deg": _r(p.get("pitch"), 0), "bank_deg": _r(p.get("bank"), 0)}
             out["flight"] = {k: (int(v) if k.endswith("_ft") or k == "vs_fpm" else v)
                              for k, v in flight.items() if v is not None}
+            rpm = [_f(v) for v in _list(p.get("rpm"))]
+            if rpm:
+                out["engine"] = {"rpm_pct": rpm, "note": "RPM changes are secondary clues, not proof of a hit."}
+            samples = [(t, s) for t, s in self.engine_samples if now - t <= 60]
+            if len(samples) >= 2:
+                then, previous = samples[0]
+                elapsed = now - then
+                old_rpm = [_f(v) for v in _list(previous.get("rpm"))]
+                if rpm and len(rpm) == len(old_rpm):
+                    out["engine"]["rpm_change"] = [round(b - a, 1) if a is not None and b is not None else None
+                                                     for a, b in zip(old_rpm, rpm)]
+                    out["engine"]["window_s"] = round(elapsed, 1)
+                old_fuel, new_fuel = cockpit_fuel(previous), cockpit_fuel(p)
+                if elapsed > 0 and old_fuel and new_fuel and old_fuel.get("source") == new_fuel.get("source"):
+                    before, after = old_fuel.get("total_lb"), new_fuel.get("total_lb")
+                    if before is not None and after is not None:
+                        out["fuel_trend"] = {"window_s": round(elapsed, 1),
+                                             "loss_lb_per_min": round((before - after) * 60 / elapsed, 1),
+                                             "note": "Observed fuel loss (burn, leak or jettison), not a confirmed leak; "
+                                                     "engine fuel-flow telemetry unavailable."}
             fuel = cockpit_fuel(p)
             if fuel is not None:
                 out["fuel"] = fuel

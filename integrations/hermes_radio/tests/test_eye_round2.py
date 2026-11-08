@@ -64,12 +64,12 @@ class SpokenCallTests(unittest.TestCase):
     def test_required_order_air_and_ground(self):
         self.assertEqual(call_line("bandit", "038", 12.2, 10, "air", 15200, "high"),
                          "Bandit, bearing zero three eight, twelve miles, angels fifteen. "
-                         "Target is at your ten o'clock, high.")
+                         "At your ten o'clock, high.")
         self.assertEqual(call_line("enemy armor", "038", 3.0, 11, "ground"),
                          "Enemy armor, bearing zero three eight, three miles, ground target. "
                          "Target is at your eleven o'clock.")
         self.assertIn("surface target", call_line("enemy ship", "100", 20, 2, "sea"))
-        self.assertIn("below one thousand feet", call_line("bandit", "100", 5, 2, "air", 400, "low"))
+        self.assertIn("angels zero", call_line("bandit", "100", 5, 2, "air", 400, "low"))
 
     def test_picture_groups_and_airbases_have_calls(self):
         eye, _ = scenario()

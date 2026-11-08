@@ -5,7 +5,7 @@ human GCI controller. Minimal rules: the picture is the only source of facts; ev
 the model's judgement. With an Athena Eye attached (ATHENA_EYE_HOST), the picture comes from the
 in-memory DCS-gRPC tracker in eye.py; otherwise from the Athena state service (legacy path).
 """
-from collections import deque
+from collections import Counter, deque
 import http.client
 import json
 import re
@@ -13,8 +13,8 @@ import threading
 import time
 import unicodedata
 
-from .contract import response, speaker_matches
-from .eye import KILL_REPORT, _QUESTION
+from .contract import MAX_SPEECH_CHARS, response, speaker_matches
+from .eye import KILL_REPORT, _QUESTION, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
 
@@ -26,6 +26,7 @@ Facts that matter:
 - my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
 - ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words.
 - ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
+- Damage / "I'm hit": ownship.damage hit events and getLife/getLife0 drops are primary evidence. Read the damage call. Cockpit warning lights, engine RPM changes and fuel-loss trend are secondary clues only. No warnings NEVER means no damage; acknowledge the pilot even if telemetry is unavailable. A fuel loss trend alone is not proof of a leak.
 - event_stream.state other than "live" means shot and kill reports may be missing; mention it only when asked about shots or kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 - cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
@@ -38,12 +39,14 @@ Facts that matter:
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
 - Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
-- A picture is at most three groups: read the picture_top3 calls (threats first), then "plus N more groups" when picture_more_groups is above zero. Never more than four sentences.
+- An air picture or bogey dope is the three closest hostile air groups WITHIN FIFTY nautical miles only: read picture_top3 verbatim, both sentences of EVERY call. If empty say "no bandits within fifty miles". Never append extra-group counts. Ground pictures use the nearest requested ground groups instead.
+- Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
+- Never say "overhead" unless that contact has overhead_allowed true (within three nautical miles). Nineteen miles is NOT overhead.
 - A bearing or position request for a kind of target ("bearing to enemy armor", "where is the SAM") = the NEAREST matching group only, unless the pilot says "all" or "every".
 - Calm, natural, clear and short: usually one or two sentences. Summarise groups instead of listing everything.
 - Start with "Prometheus, Athena," (or just "Prometheus," for a quick follow-up).
 - Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRAA first then clock (bearing, range, altitude or ground target, then the clock). Use that call line VERBATIM; never give a range or a clock position without the bearing. Format for reference:
-  Air: "Bandit, bearing zero three eight, twelve miles, angels fifteen. Target is at your ten o'clock, high."
+  Air: "Bandit Su-27 two-ship, bearing zero three eight, twelve miles, angels fifteen. At your ten o'clock, high."
   Ground: "Enemy armor, bearing zero three eight, three miles, ground target. Target is at your eleven o'clock."
 - Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
 - If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" only when it says so).
@@ -105,7 +108,15 @@ ACK = re.compile(r"\b(copy|copies|roger|wilco|egress\w*|going to investigate|inv
                  r"pushing|commencing|engaging|in the weeds|on my way|proceeding|acknowledged?)\b", re.I)
 REQUEST = re.compile(r"(\?|\b(picture|bogey dope|bearing|vector|where|what|which|how|say|give|any|status|threats?|"
                      r"declare|request|fuel|left|range|braa|bra|check|are there|is there|tell me|need)\b)", re.I)
-PICTURE_ASK = re.compile(r"\b(picture|what do you see|what's out there|whats out there|threats? around)\b", re.I)
+PICTURE_ASK = re.compile(r"\b(picture|bogey dope|what do you see|what's out there|whats out there|threats? around|mission status)\b", re.I)
+GROUND_ASK = re.compile(r"\b(ground|vehicles?|armor|infantry|trucks?|tanks?|sams?|triple a)\b", re.I)
+TRAFFIC_ASK = re.compile(r"\b(traffic|blue only|only blue)\b", re.I)
+ATC_ASK = re.compile(r"\b(take ?off|landing|land|approach|taxi\w*|runway)\b", re.I)
+DAMAGE_ASK = re.compile(r"\b(i('?m| am| got| was| have been) hit|hit me|taking hits|damage report|my damage|"
+                        r"i (took|have|sustained) damage|i('?m| am) damaged|am i damaged|"
+                        r"damage to (me|my (aircraft|jet|plane|ownship)))\b", re.I)
+CONFIRM_ASK = re.compile(r"\bconfirm\b", re.I)
+KILL_ASK = re.compile(r"\b(kills?|killed|splash|destroyed)\b", re.I)
 BEARING_ASK = re.compile(r"\b(bearing|vector|heading to|where('s| is| are)?|braa|bra|steer)\b", re.I)
 ALL_ASK = re.compile(r"\b(all|every|each|everything|list)\b", re.I)
 CLASS_HINTS = {
@@ -115,8 +126,17 @@ CLASS_HINTS = {
                    "splash_to_announce is present say it, else \"copy, splash\" with the target type if known.",
     "ack": "ACK OR INTENT CALL: one short sentence. Acknowledge; add at most working_target.call when it helps. "
            "No picture, no other groups.",
-    "picture": "PICTURE: at most three groups, the picture_top3 calls verbatim (threats first), then \"plus N more "
-               "groups\" if picture_more_groups is above zero. Nothing else unless an alert must be announced.",
+    "picture": "AIR PICTURE: picture_top3 verbatim, the three nearest hostile air groups within fifty miles. "
+               "Every bearing, range, angels, clock and high/low/level must survive. No extra-group counts.",
+    "ground_picture": "GROUND PICTURE: nearest requested ground groups, at most three, call lines verbatim.",
+    "traffic": "TRAFFIC: aircraft only, including helos, from air_traffic. Blue means blue coalition. "
+               "Do not substitute ground units. Read the nearest aircraft call lines verbatim.",
+    "atc": "ATC: check the requested airbase's traffic.count and traffic.aircraft, not capped friendly_groups. "
+           "Include on-field aircraft and arrivals/departures. Never say no traffic when count is nonzero.",
+    "damage": "DAMAGE: acknowledge the pilot. Use ownship.damage events and life percentage first, "
+              "cockpit warnings/RPM/fuel-loss trends second. No warnings is not evidence of no damage.",
+    "kill_confirm": "KILL CONFIRMATION REQUEST, not a pilot kill report: answer from my_kills_this_mission "
+                    "and my_shots_last_15_min. No air picture. Do not upgrade likely kills merely on a question.",
     "bearing_one": "BEARING REQUEST: give ONLY the nearest matching group's call line (hostile_groups are nearest "
                    "first), not every group.",
 }
@@ -124,19 +144,68 @@ SPEECH_CAP = 360  # whole answer, characters (~25 s of speech); trimmed at a sen
 ACK_CAP = 220
 
 
-def call_class(text):
+def call_class(text, pic=None):
     """dev_note | kill_report | ack | picture | bearing_one | None for one pilot transmission."""
     t = (text or "").strip()
     if DEV_NOTE.search(t):
         return "dev_note"
     if KILL_REPORT.search(t) and not _QUESTION.search(t):
         return "kill_report"
+    target_damage = re.search(r"\bdamag\w*\b", t, re.I) and (
+        re.search(r"\b(targets?|enemy|hostiles?|bandits?)\b", t, re.I) or GROUND_ASK.search(t))
+    if DAMAGE_ASK.search(t) and not target_damage:
+        return "damage"
+    if CONFIRM_ASK.search(t) and KILL_ASK.search(t):
+        return "kill_confirm"
+    if ATC_ASK.search(t):
+        return "atc"
+    if TRAFFIC_ASK.search(t) and not GROUND_ASK.search(t):
+        return "traffic"
+    age = (pic or {}).get("last_attack_age_s")
+    explicit = target_damage or focus_of(t) or BEARING_ASK.search(t) or PICTURE_ASK.search(t) or GROUND_ASK.search(t)
+    if CONFIRM_ASK.search(t) and not explicit and age is not None and 0 <= age < 300:
+        return "kill_confirm"
     if PICTURE_ASK.search(t):
-        return "picture"
+        return "ground_picture" if GROUND_ASK.search(t) else "picture"
     if BEARING_ASK.search(t) and not ALL_ASK.search(t):
         return "bearing_one"
     if ACK.search(t) and not REQUEST.search(t):
         return "ack"
+    return None
+
+
+def requested_calls(klass, text, pic):
+    """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
+    if not pic.get("ownship"):
+        return None
+    if klass == "picture" and "picture_top3" in pic:
+        return pic["picture_top3"] or [pic["air_picture_empty_call"]]
+    if klass == "traffic" and "air_traffic" in pic:
+        coal = ("blue" if re.search(r"\bblue\b", text, re.I) else
+                "red" if re.search(r"\bred\b", text, re.I) else
+                pic["ownship"].get("coalition") if re.search(r"\bfriendl\w*\b", text, re.I) else None)
+        groups = (pic["air_traffic"].get(coal, []) if coal else
+                  [g for rows in pic["air_traffic"].values() for g in rows])
+        groups = sorted(groups, key=lambda g: g["range_nm"])
+        return [g["call"] for g in groups[:3]] or ["No %saircraft showing within %s miles." % (
+            (coal + " ") if coal else "", words(pic.get("contacts_within_nm", 80)))]
+    if klass == "damage":
+        damage = pic["ownship"].get("damage") or {}
+        recent = [r for r in damage.get("events", []) if r["age_s"] < 300]
+        if recent:
+            return [recent[-1]["call"]]
+        return None  # the model can describe secondary clues, but cannot deny the pilot's report
+    if klass == "kill_confirm" and "my_kills_this_mission" in pic:
+        kills = pic["my_kills_this_mission"]
+        if not kills:
+            return ["No confirmed kills yet."]
+        lines = []
+        for confidence in ("confirmed", "likely"):
+            counts = Counter(k["target"] for k in kills if k.get("confidence") == confidence)
+            if counts:
+                lines.append("%s %s." % ("Confirmed:" if confidence == "confirmed" else "Likely:",
+                                          ", ".join("%s %s" % (words(n), t) for t, n in counts.items())))
+        return lines
     return None
 
 
@@ -419,9 +488,10 @@ class SimpleController:
             except Exception:  # noqa: BLE001 - never block the answer on bookkeeping
                 report = None
         pic, error = self._picture_with_retry()
+        klass = call_class(text, pic)
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
-        result = {"summary": self.picture_summary(pic),
+        result = {"summary": self.picture_summary(pic), "picture": pic,
                   "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""}
         if klass:
             result["call_class"] = klass
@@ -443,8 +513,6 @@ class SimpleController:
             messages.append({"role": "system", "content": CLASS_HINTS[klass]})
         messages.append({"role": "user", "content": text})
         announced = (splash_keys or []) + (rwr_keys or [])
-        if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
-            self.eye.mark_announced(announced)
         t_llm = time.monotonic()
         answer = None
         for attempt in (1, 2):
@@ -454,12 +522,43 @@ class SimpleController:
             except Exception as failure:  # noqa: BLE001 - one retry, then a spoken fallback
                 self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
                           attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
-        answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
+        calls = requested_calls(klass, text, pic)
+        if calls is not None:
+            age = (pic.get("data_age_s") or {}).get("units")
+            stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
+            if age is not None and age > 60:
+                stale.append("Contact data is %s seconds old." % words(age))
+            prefix = "Prometheus, Athena, "
+            answer = prefix + " ".join(stale + calls)
+            alerts, announced = [], []
+            if len(answer) > MAX_SPEECH_CHARS:
+                # Never clip a requested call into a misleading partial group report.
+                self._log(request, "controller_error", outcome="fixed_response_overflow",
+                          counts={"speech_chars": len(answer)})
+                answer = prefix + "requested calls are too long for one transmission. Ask for one group at a time."
+            else:
+                remaining = MAX_SPEECH_CHARS - len(answer)
+                for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
+                    for i, alert in enumerate(pic.get(field) or []):
+                        if len(alert) + 1 > remaining:
+                            continue  # keep this alert pending for a later transmission
+                        remaining -= len(alert) + 1
+                        alerts.append(alert)
+                        if keys and i < len(keys):
+                            announced.append(keys[i])
+                answer = prefix + " ".join(stale + alerts + calls)
+        else:
+            answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
+        if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
+            self.eye.mark_announced(announced)
         llm_ms = round((time.monotonic() - t_llm) * 1000)
         self.history.append((text, answer))
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
             memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"})
-        for index, part in enumerate(split_parts(answer), 1):
+        # Fixed replies are budgeted above: first sentence, then all remaining calls
+        # in the second frame. The gateway allows two frames, not 420-char chunks.
+        parts = split_parts(answer, MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
+        for index, part in enumerate(parts, 1):
             self._log(request, "reply_generated", text=part, outcome="intended", part=index,
                       timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
             yield response(request, speech=part, state="ok")

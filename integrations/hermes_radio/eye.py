@@ -2288,6 +2288,12 @@ class GrpcFeeder:
 
 
 def build(host, port, player=PLAYER, *, stores_dir=None, prompt_path=None):
+    # memory6: one source setting for both independent readers.
+    import os
+    if "ATHENA_DCS_SOURCE" in os.environ:
+        from metis.state_service.memory_source import resolve_source
+        source = resolve_source()
+        host, port = source.host, source.port
     eye = Eye(player, source="%s:%d" % (host, port), stores_dir=stores_dir)
     return eye, GrpcFeeder(eye, host, port, prompt_path=prompt_path)
 

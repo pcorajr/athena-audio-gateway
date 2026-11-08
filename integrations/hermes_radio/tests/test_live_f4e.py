@@ -130,5 +130,32 @@ class AlertGroupTests(unittest.TestCase):
         self.assertEqual(group_alerts([{"call": "C.", "key": "c-new"}]), (["C."], ["c-new"]))
 
 
+class Radio7bReviewTests(unittest.TestCase):
+    def run_confirm(self, text, kills, splashes):
+        pic = base()
+        pic["last_attack_age_s"] = 20
+        pic["my_kills_this_mission"] = kills
+        pic["splash_to_announce"] = [s for s, _ in splashes]
+        pic["_splash_keys"] = [k for _, k in splashes]
+        eye = FakeEye(pic)
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda messages: "LLM")
+        return c.exchange(req(text))["speech"], eye.marked
+
+    def test_matching_category_confirmation_reads_the_kill_once(self):
+        t55 = {"target": "T-55", "category": "armor", "weapon": "GBU-38", "age_s": 5, "seq": 1, "confidence": "confirmed"}
+        strela = {"target": "Strela-1 9P31", "category": "SAM", "weapon": "AGM-65H", "age_s": 4, "seq": 2,
+                  "confidence": "confirmed"}
+        speech, marked = self.run_confirm("Athena, confirm armor kill", [t55], [("Splash one T-55.", "k1")])
+        self.assertEqual(speech.lower().count("splash one t-55"), 1, speech)
+        self.assertIn("k1", marked)
+        speech, marked = self.run_confirm("Athena, confirm air defense kill", [t55, strela],
+                                          [("Splash one T-55.", "k1"), ("Splash one Strela-1 9P31.", "k2")])
+        self.assertEqual(speech.lower().count("splash one strela-1 9p31"), 1, speech)
+        self.assertIn("k2", marked)
+        # the unrelated T-55 is either announced on its own (and acknowledged) or left pending
+        self.assertEqual("k1" in marked, "splash one t-55" in speech.lower(), speech)
+
+
 if __name__ == "__main__":
     unittest.main()

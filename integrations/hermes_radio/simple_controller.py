@@ -225,6 +225,13 @@ def call_class(text, pic=None):
     return None
 
 
+def _splash_target(alert):
+    """'Splash one T-55 (likely).' -> 't-55'; never empty (an empty target would match everything)."""
+    t = re.sub(r"^\s*splash\s+(one|two|three|\w+)\s+", "", (alert or "").lower()).strip(" .!")
+    t = re.sub(r"\s*\(?likely\)?$", "", t).strip(" .,")
+    return t or "\x00no-target\x00"
+
+
 def spoken_target(name, category=None):
     """Radio-safe target name: scenery codes become words, unknowns become 'target'."""
     name = (name or "").strip().lstrip("- ").strip()
@@ -808,8 +815,9 @@ class SimpleController:
                 remaining = MAX_SPEECH_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                     for i, alert in enumerate(pic.get(field) or []):
-                        if (field == "splash_to_announce" and klass == "kill_confirm"
-                                and getattr(self, "_confirm_covers_own_splashes", False)):
+                        if field == "splash_to_announce" and klass == "kill_confirm" and (
+                                getattr(self, "_confirm_covers_own_splashes", False)
+                                or _splash_target(alert) in " ".join(calls).lower()):
                             # the confirmation itself reads the kill; mark the splash as said, don't repeat it
                             if keys and i < len(keys):
                                 announced.append(keys[i])

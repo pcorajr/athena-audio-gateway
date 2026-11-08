@@ -14,7 +14,7 @@ import time
 import unicodedata
 
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
-from .eye import KILL_REPORT, _QUESTION, words
+from .eye import KILL_REPORT, _QUESTION, domain, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
 
@@ -152,9 +152,8 @@ CATEGORY_ALIASES = {"vehicles": "ground vehicle", "vehicle": "ground vehicle", "
 CATEGORY_WORDS = {"armor": "enemy armor", "AAA": "triple A", "SAM": "SAM", "infantry": "enemy infantry",
                   "ground vehicle": "enemy vehicles", "scenery": "structures", "static": "structures",
                   "artillery": "enemy artillery", "train": "trains", "ship": "ships"}
-# Categories that are never "ground units" for a generic "what remains" (air or map objects).
-NOT_GROUND = {"fighter", "attack", "bomber", "helicopter", "transport", "tanker", "awacs", "aircraft", "air", "plane",
-              "uav", "drone", "scenery", "static", "ship"}
+# Map objects are never "ground units" for a generic "what remains"; air/sea comes from eye.domain().
+NOT_GROUND = {"scenery", "static", "unknown"}
 NON_WEAPON = re.compile(r"(ALQ|LITENING|AAQ|\bpod\b|TGP|fuel tank|\btank\b|smoke)", re.I)
 SCENERY_NAMES = ((re.compile(r"\bMOST\b|BRIDGE", re.I), "bridge"), (re.compile(r"HANGAR", re.I), "hangar"),
                  (re.compile(r"BUNKER", re.I), "bunker"), (re.compile(r"TOWER", re.I), "tower"))
@@ -665,7 +664,7 @@ class SimpleController:
             n = sum(enemy.get(c, 0) for c in cats)
             label = CATEGORY_WORDS.get(cats[0], "enemy " + str(cats[0]))
             return ("%s %s remain." % (words(n).capitalize(), label)) if n else "No %s remaining." % label
-        ground = [(k, v) for k, v in enemy.items() if v and k not in NOT_GROUND]
+        ground = [(k, v) for k, v in enemy.items() if v and k not in NOT_GROUND and domain(k) == "ground"]
         if not ground:
             return "No enemy ground units remaining."
         parts = ["%s %s" % (words(v), CATEGORY_WORDS.get(k, "enemy " + str(k)))

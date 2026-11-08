@@ -360,5 +360,36 @@ class ReviewFix3Tests(unittest.TestCase):
         self.assertIn("Now confirmed, earlier likely", say(c, "confirm kill"))
 
 
+class ReviewFix4Tests(unittest.TestCase):
+    """RV-1 radio6d: every category Eye.domain() calls air or sea is excluded from ground survivors."""
+
+    AIR_SEA = ("fighter", "attack", "bomber", "AWACS", "tanker", "transport", "helicopter", "attack helo",
+               "ship", "carrier")
+
+    def answer(self, red):
+        eye = FakeEye()
+        eye.pic["alive_totals_by_coalition"] = {"red": red}
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda messages: "LLM ANSWER")
+        return say(c, "confirm kill, tell me what remains")
+
+    def test_air_and_sea_alone_are_not_ground(self):
+        for cat in self.AIR_SEA:
+            with self.subTest(cat=cat):
+                answer = self.answer({cat: 2})
+                self.assertIn("No enemy ground units remaining", answer)
+                self.assertNotIn(cat, answer.split("Athena, ", 1)[1].replace("No kills showing.", ""))
+
+    def test_air_and_sea_mixed_with_ground(self):
+        red = {cat: 1 for cat in self.AIR_SEA}
+        red.update({"armor": 2, "artillery": 1, "train": 1})
+        answer = self.answer(red)
+        self.assertIn("two enemy armor", answer)
+        self.assertIn("one enemy artillery", answer)
+        self.assertIn("one trains", answer)
+        for cat in ("AWACS", "attack helo", "carrier", "fighter", "tanker"):
+            self.assertNotIn(cat, answer)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -169,6 +169,16 @@ ROCKET_PAT = re.compile(r"(hydra|s-5|s_5|s-8|s_8|s-13|s_13|s-24|s_24|s-25|s_25|z
 
 
 SHELL_PAT = re.compile(r"(shells?\.|\buor\b|-uor-|uor-|uof|ubr|ofz|bzt|ozt|\d+\s?mm)", re.I)
+def group_alerts(alerts, limit=2):
+    """(calls, keys): identical words are spoken once with all their keys acknowledged together; at most
+    ``limit`` distinct calls per reply. Keys of calls not chosen are not returned, so they stay pending."""
+    groups = {}
+    for a in alerts:
+        groups.setdefault(a["call"], []).append(a["key"])
+    chosen = list(groups.items())[:limit]
+    return [call for call, _ in chosen], [keys if len(keys) > 1 else keys[0] for _, keys in chosen]
+
+
 def weapon_kind(name, burst=False):
     if burst:
         return "gun"
@@ -2020,18 +2030,7 @@ class Eye:
         pic["threats"] = self._threats_json(own, now)
         alerts = self.cockpit.pending_alerts(self.announced, now) + self._pending_threat_alerts(now)
         if alerts:
-            calls, keys, extra = [], [], []
-            for a in alerts:
-                if a["call"] in calls:
-                    extra.append(a["key"])  # same words already queued: mark it with the first one
-                    continue
-                calls.append(a["call"])
-                keys.append(a["key"])
-            calls, keys = calls[:2], keys[:2]
-            if extra:
-                keys[0] = [keys[0]] + extra if not isinstance(keys[0], list) else keys[0] + extra
-            pic["rwr_alert_to_announce"] = calls
-            pic["_rwr_keys"] = keys
+            pic["rwr_alert_to_announce"], pic["_rwr_keys"] = group_alerts(alerts)
         pic["my_shots_last_15_min"] = self._shots_json(own, now)
         pic["last_attack_age_s"] = (round(now - max(self._last_activity(s, now) for s in self.shots), 1)
                                     if self.shots else None)

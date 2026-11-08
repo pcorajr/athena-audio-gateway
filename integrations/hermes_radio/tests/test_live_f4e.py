@@ -76,5 +76,59 @@ class DebriefPhraseTests(unittest.TestCase):
         self.assertIn("OVERVIEW", PROMPT)
 
 
+class Radio7ReviewTests(unittest.TestCase):
+    """RV-1 radio7: mission status overview survives, scoped splash suppression, alert key groups."""
+
+    def test_mission_status_keeps_the_model_overview(self):
+        from integrations.hermes_radio.simple_controller import call_class
+        self.assertIsNone(call_class("Athena, mission status", {"last_attack_age_s": None}))
+        pic = base()
+        pic["picture_top3"] = ["Bandit MiG-15bis, bearing three four zero, forty four miles, angels twenty three."]
+        overview = "Prometheus, Athena, nine kills so far, seven enemy armor remain, fuel seven thousand pounds."
+        eye = FakeEye(pic)
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda messages: overview)
+        self.assertIn("nine kills so far", c.exchange(req("Athena, what's the mission status?"))["speech"])
+
+    def test_filtered_confirmation_leaves_unrelated_splash_pending(self):
+        pic = base()
+        pic["last_attack_age_s"] = 20
+        pic["my_kills_this_mission"] = [{"target": "T-55", "category": "armor", "weapon": "GBU-38", "age_s": 5,
+                                         "seq": 1, "confidence": "confirmed"}]
+        pic["splash_to_announce"] = ["Splash one T-55."]
+        pic["_splash_keys"] = ["k-t55"]
+        for text in ("Athena, confirm wingman kill", "Athena, confirm air defense kill"):
+            eye = FakeEye(dict(pic))
+            c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                                 llm=lambda messages: "LLM")
+            speech = c.exchange(req(text))["speech"]
+            # the T-55 is not part of this confirmation: it is announced as its own splash (or left pending)
+            if "Splash one T-55" not in speech:
+                self.assertNotIn("k-t55", eye.marked, text)
+            else:
+                self.assertIn("k-t55", eye.marked, text)
+        eye = FakeEye(dict(pic))
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda messages: "LLM")
+        speech = c.exchange(req("Athena, confirm kill"))["speech"]
+        self.assertEqual(speech.lower().count("splash one t-55"), 1)
+        self.assertIn("k-t55", eye.marked)
+
+
+class AlertGroupTests(unittest.TestCase):
+    def test_duplicates_of_a_dropped_call_stay_pending(self):
+        from integrations.hermes_radio.eye import group_alerts
+        alerts = [{"call": "A.", "key": "a"}, {"call": "B.", "key": "b"}, {"call": "C.", "key": "c-old"},
+                  {"call": "C.", "key": "c-new"}, {"call": "A.", "key": "a2"}]
+        calls, keys = group_alerts(alerts)
+        self.assertEqual(calls, ["A.", "B."])
+        self.assertEqual(keys, [["a", "a2"], "b"])
+        flat = [x for k in keys for x in (k if isinstance(k, list) else [k])]
+        self.assertNotIn("c-new", flat)
+        self.assertNotIn("c-old", flat)
+        # next turn: A and B acknowledged, C-old expired -> C-new is still announced
+        self.assertEqual(group_alerts([{"call": "C.", "key": "c-new"}]), (["C."], ["c-new"]))
+
+
 if __name__ == "__main__":
     unittest.main()

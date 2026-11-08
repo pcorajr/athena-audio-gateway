@@ -162,7 +162,7 @@ class AirPictureTests(unittest.TestCase):
         eye, _ = make_eye(*(contact(i, distance=d) for i, d in enumerate((19, 29, 39, 45, 51), 1)))
         pic = eye.picture()
         self.assertEqual(len(pic["picture_top3"]), 3)
-        for text in ("air picture", "bogey dope", "give me the picture", "mission status"):
+        for text in ("air picture", "bogey dope", "give me the picture"):  # mission status = overview
             speech, _, _ = exchange(eye, text)
             for line in pic["picture_top3"]:
                 self.assertIn(line, speech)

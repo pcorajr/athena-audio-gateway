@@ -111,7 +111,7 @@ ACK = re.compile(r"\b(copy|copies|roger|wilco|egress\w*|going to investigate|inv
                  r"pushing|commencing|engaging|in the weeds|on my way|proceeding|acknowledged?)\b", re.I)
 REQUEST = re.compile(r"(\?|\b(picture|bogey dope|bearing|vector|where|what|which|how|say|give|any|status|threats?|"
                      r"declare|request|fuel|left|range|braa|bra|check|are there|is there|tell me|need)\b)", re.I)
-PICTURE_ASK = re.compile(r"\b(picture|bogey dope|what do you see|what's out there|whats out there|threats? around|mission status)\b", re.I)
+PICTURE_ASK = re.compile(r"\b(picture|bogey dope|what do you see|what's out there|whats out there|threats? around)\b", re.I)
 GROUND_ASK = re.compile(r"\b(ground|vehicles?|armor|infantry|trucks?|tanks?|sams?|triple a)\b", re.I)
 TRAFFIC_ASK = re.compile(r"\b(traffic|blue only|only blue)\b", re.I)
 ATC_ASK = re.compile(r"\b(take ?off|landing|land|approach|taxi\w*|runway)\b", re.I)
@@ -619,6 +619,7 @@ class SimpleController:
         owner = "wingman" if wingman else "me"
         prefix = "wingman " if wingman else ""
         cats = next((c for pattern, c in CATEGORY_ASK if pattern.search(text)), None)
+        self._confirm_covers_own_splashes = not wingman and not cats  # own, unfiltered: every pending splash is read
         rows = self._kill_rows(pic, wingman, time.time() if pic_time is None else pic_time)
         if cats:
             rows = [r for r in rows if r[2] in cats]
@@ -783,6 +784,7 @@ class SimpleController:
                 self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
                           attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
         self._pending_ack = None
+        self._confirm_covers_own_splashes = False
         calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
                  and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
         if calls is not None:
@@ -806,7 +808,8 @@ class SimpleController:
                 remaining = MAX_SPEECH_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                     for i, alert in enumerate(pic.get(field) or []):
-                        if field == "splash_to_announce" and klass == "kill_confirm":
+                        if (field == "splash_to_announce" and klass == "kill_confirm"
+                                and getattr(self, "_confirm_covers_own_splashes", False)):
                             # the confirmation itself reads the kill; mark the splash as said, don't repeat it
                             if keys and i < len(keys):
                                 announced.append(keys[i])

@@ -27,6 +27,11 @@ def main():
     parser.add_argument("--transcript-dir", default=os.environ.get("ATHENA_RADIO_TRANSCRIPT_DIR"))
     parser.add_argument("--speaker", default=os.environ.get("ATHENA_RADIO_SPEAKER", "Prometheus,Player,Client"),
                         help="comma-separated, case-insensitive SRS pilot names")
+    parser.add_argument("--stores-dir", default=os.environ.get("ATHENA_EYE_STORES_DIR"),
+                        help="durable loadout/shot log directory (stores-YYYYMMDD.jsonl); default: transcript dir")
+    parser.add_argument("--whisper-prompt-out", default=os.environ.get("ATHENA_WHISPER_DYNAMIC_PROMPT"),
+                        help="file the eye keeps current with callsign + nearby airfields for the gateway's "
+                             "--athena-dynamic-prompt-file; default: <transcript dir>/whisper-prompt-dynamic.txt")
     args = parser.parse_args()
     cache = feeder = None
     try:
@@ -39,7 +44,9 @@ def main():
             from .eye import build
             from .simple_controller import SimpleController
             logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-            eye, feeder = build(args.eye_host, args.eye_port, player=args.speaker)
+            eye, feeder = build(args.eye_host, args.eye_port, player=args.speaker,
+                                stores_dir=args.stores_dir or str(transcript.root),
+                                prompt_path=args.whisper_prompt_out or str(transcript.root / "whisper-prompt-dynamic.txt"))
             feeder.start()
             transcript.log(kind="eye_start", outcome="starting", source="%s:%d" % (args.eye_host, args.eye_port))
             controller = SimpleController(None, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"),

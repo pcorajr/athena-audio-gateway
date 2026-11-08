@@ -124,5 +124,53 @@ class FeederTests(unittest.TestCase):
             server.stop(0)
 
 
+if HAVE_GRPC:
+    class SilentEventsDcs(FakeDcs):
+        """Round 2 regression: the FIRST StreamEvents subscription stays open but silent (as after the
+        2026-11-07 DCS client reboot); a fresh subscription delivers. Eval answers the loadout."""
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            self.event_subscriptions = 0
+            self.lua = []
+
+        def StreamEvents(self, request, context):
+            self.event_subscriptions += 1
+            if self.event_subscriptions > 1:
+                for e in self.events:
+                    yield ParseDict(e, mission_pb2.StreamEventsResponse())
+            while context.is_active():
+                time.sleep(0.02)
+
+        def Eval(self, request, context):
+            import json
+            self.lua.append(request.lua)
+            return custom_pb2.EvalResponse(json=json.dumps({"fuel": 0.5, "ammo": [
+                {"type": "AIM_120C", "name": "AIM-120C", "count": 4, "category": 1},
+                {"type": "weapons.shells.M61_20_HE", "name": "20mm HE", "count": 510, "category": 0}]}))
+
+
+@unittest.skipUnless(HAVE_GRPC, "grpc / DCS-gRPC stubs not available")
+class FeederRound2Tests(unittest.TestCase):
+    def test_silent_event_stream_is_resubscribed_and_loadout_polled(self):
+        dcs = SilentEventsDcs(fx.UNITS, [fx.shot(fx.PROMETHEUS, 5001, "AIM_120C")], session_id=7)
+        server, port = start_server(dcs)
+        eye = Eye(source="fake")
+        feeder = GrpcFeeder(eye, "127.0.0.1", port, events_stale_s=1.0, watchdog_period=0.2, stores_poll=0.3)
+        feeder.start()
+        try:
+            self.assertTrue(wait_for(lambda: eye.picture()["my_shots_last_15_min"]["total"] == 1, 15))
+            self.assertGreaterEqual(dcs.event_subscriptions, 2)
+            self.assertGreaterEqual(eye.stream_health()["resubscribes"].get("events_stale"), 1)
+            self.assertTrue(wait_for(lambda: eye.picture()["ownship"]["loadout"].get("available"), 10))
+            lo = eye.picture()["ownship"]["loadout"]
+            self.assertEqual((lo["weapons"][0]["weapon"], lo["weapons"][0]["count"], lo["gun_rounds"]),
+                             ("AIM-120C", 4, 510))
+            self.assertEqual(eye.picture()["ownship"]["fuel_fraction"], 0.5)
+            self.assertIn("getAmmo", dcs.lua[0])
+        finally:
+            feeder.close()
+            server.stop(0)
+
+
 if __name__ == "__main__":
     unittest.main()

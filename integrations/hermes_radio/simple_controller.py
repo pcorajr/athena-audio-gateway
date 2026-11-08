@@ -20,17 +20,22 @@ PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the r
 Every turn you get a live PICTURE (JSON) from the Athena Eye tracking system. It is your only source of truth: ownship (Prometheus' aircraft), contact groups already computed from Prometheus (bearing, range in nautical miles, altitude, aspect, closure, and "clock" = clock position relative to Prometheus' nose with ahead/behind/left/right), nearby airbases, Prometheus' own shots and their results, recent kills and losses, recent events and alive totals. data_age_s tells you how old the data is; if it is old or the picture is not connected, say so briefly and still give what you have. Never invent contacts, kills or numbers that are not in the picture.
 
 Facts that matter:
-- Every unit listed in contacts and totals is ALIVE. Something is dead or killed ONLY if it appears in recent_kills_and_losses or a shot result says kill. Never call something destroyed otherwise.
-- my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, miss = no hit within the window. intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
+- Every unit listed in contacts and totals is ALIVE. Something is dead or killed ONLY if it appears in recent_kills_and_losses, my_kills_this_mission or a shot result says kill. Entries marked inferred ("no longer showing, likely destroyed") had no death report: say "likely destroyed".
+- my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
+- ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds; fuel_fraction is internal fuel (0.5 = half). If loadout is not available, say so with the reason in a few words.
+- event_stream.state other than "live" means shot and kill reports may be missing; mention it only when asked about shots or kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 
 How to talk:
+- Answer ONLY what was asked. Acknowledgements, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "airborne", "weapons hot", "target destroyed") get ONE short sentence and NO picture.
+- Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
 - Calm, natural, clear and short: usually one or two sentences. Summarise groups instead of listing everything.
 - Start with "Prometheus, Athena," (or just "Prometheus," for a quick follow-up).
-- EVERY positional call uses this exact order, BRAA first then clock:
-  Air: "<call>, bearing zero three eight, twelve miles, angels fifteen. Target is at your ten o'clock, high." (vertical = high/low/level from the picture).
-  Ground: "<call>, bearing zero three eight, three miles, ground target. Target is at your eleven o'clock." (no angels, no high/low for ground).
-  Read bearings digit by digit, ranges as whole miles in words, angels = thousands of feet ("low" under a thousand).
+- Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRAA first then clock (bearing, range, altitude or ground target, then the clock). Use that call line VERBATIM; never give a range or a clock position without the bearing. Format for reference:
+  Air: "Bandit, bearing zero three eight, twelve miles, angels fifteen. Target is at your ten o'clock, high."
+  Ground: "Enemy armor, bearing zero three eight, three miles, ground target. Target is at your eleven o'clock."
+- Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
+- If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" when it says so).
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
 - Air threats first (nearest and hot first), then SAMs, then ground.
 - No markdown, no lists, no parentheses, no abbreviations with periods. Write numbers so a text-to-speech voice reads them well.
@@ -98,6 +103,8 @@ class SimpleController:
         self._turn = threading.Lock()  # one exchange at a time; later arrivals wait their turn
         self._waiting = 0
         self._waiting_lock = threading.Lock()
+        self.empty_transcripts = 0  # whisper returned nothing usable (suppressed, counted)
+        self.transmissions = 0
         # Duck-typed for server code that may consult a provider attribute.
         self.provider = self
 
@@ -184,6 +191,26 @@ class SimpleController:
             out["shots"] = pic["my_shots_last_15_min"].get("by_result")
         if isinstance(pic.get("recent_kills_and_losses_last_10_min"), list):
             out["kills_losses"] = len(pic["recent_kills_and_losses_last_10_min"])
+            out["kills_inferred"] = sum(1 for r in pic["recent_kills_and_losses_last_10_min"] if r.get("inferred"))
+        if isinstance(pic.get("my_kills_this_mission"), list):
+            out["my_kills"] = len(pic["my_kills_this_mission"])
+        if pic.get("splash_to_announce"):
+            out["splash"] = pic["splash_to_announce"]
+        es = pic.get("event_stream")
+        if isinstance(es, dict):
+            out["events"] = es.get("state")
+            out["events_per_min"] = es.get("events_per_min")
+            out["last_event_age_s"] = es.get("last_event_age_s")
+            if es.get("resubscribes"):
+                out["resubscribes"] = es["resubscribes"]
+        loadout = own.get("loadout") if isinstance(own, dict) else None
+        if isinstance(loadout, dict):
+            out["loadout"] = ({w.get("weapon"): w.get("count") for w in loadout.get("weapons", [])}
+                              if loadout.get("available") else "n/a: " + str(loadout.get("reason"))[:60])
+            if loadout.get("available"):
+                out["gun_rounds"] = loadout.get("gun_rounds")
+        if isinstance(own, dict) and own.get("fuel_fraction") is not None:
+            out["fuel"] = own["fuel_fraction"]
         if isinstance(hostile, list) and hostile and isinstance(hostile[0], dict) and "clock" in hostile[0]:
             h = hostile[0]
             out["nearest_hostile"] = "%s %s %snm %s" % (h.get("count"), h.get("category"), h.get("range_nm"),
@@ -220,8 +247,11 @@ class SimpleController:
             self._log(request, "route", route="ignored", outcome="not_pilot")
             yield response(request, reason="unaddressed_or_noncommand")
             return
+        self.transmissions += 1
         if _JUNK.match(text):
-            self._log(request, "route", route="ignored", outcome="empty_transcript")
+            self.empty_transcripts += 1
+            self._log(request, "route", route="ignored", outcome="empty_transcript",
+                      counts={"empty_transcripts": self.empty_transcripts, "transmissions": self.transmissions})
             yield response(request, reason="unaddressed_or_noncommand")
             return
         with self._waiting_lock:
@@ -239,9 +269,11 @@ class SimpleController:
     def _answer(self, request, text):
         start = time.monotonic()
         pic, error = self._picture_with_retry()
+        splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         self._log(request, "tool", tool="picture", args={}, outcome="error" if error else "ok",
                   result={"summary": self.picture_summary(pic),
                           "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""},
+                  counts={"empty_transcripts": self.empty_transcripts, "transmissions": self.transmissions},
                   timings_ms={"tool": round((time.monotonic() - start) * 1000)})
         messages = [{"role": "system", "content": PROMPT}]
         for q, a in self.history:
@@ -249,6 +281,8 @@ class SimpleController:
         messages.append({"role": "system", "content": "PICTURE " + json.dumps(
             pic, ensure_ascii=True, default=str, separators=(",", ":"))})
         messages.append({"role": "user", "content": text})
+        if splash_keys and self.eye is not None and hasattr(self.eye, "mark_announced"):
+            self.eye.mark_announced(splash_keys)
         t_llm = time.monotonic()
         answer = None
         for attempt in (1, 2):

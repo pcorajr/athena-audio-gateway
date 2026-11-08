@@ -114,7 +114,10 @@ class PictureTests(unittest.TestCase):
 
         flankers = group(pic, "Su-27")
         self.assertEqual(flankers["count"], 2)
-        self.assertEqual(flankers["call"], "bandit")
+        self.assertEqual(flankers["label"], "bandit")
+        # Round 2: ready call line, BRAA first then clock (user's required order).
+        self.assertEqual(flankers["call"], "Bandit, two contacts, bearing zero six zero, twenty miles, angels "
+                                           "twenty five. Target is at your eleven o'clock, high.")
         self.assertEqual(flankers["bearing_true"], "060")
         self.assertAlmostEqual(flankers["range_nm"], 20, delta=0.3)
         self.assertEqual(flankers["clock"], "11 o'clock, ahead left")
@@ -130,13 +133,15 @@ class PictureTests(unittest.TestCase):
         sam = group(pic, "SA-11 Buk SR 9S18M1")
         self.assertEqual(sam["count"], 2)
         self.assertEqual(sam["category"], "SAM")
-        self.assertEqual(sam["call"], "SAM site")
+        self.assertEqual(sam["label"], "SAM site")
         self.assertEqual(sam["clock"], "3 o'clock, right")
         self.assertNotIn("alt_ft", sam)
 
         armor = group(pic, "T-72B")
         self.assertEqual(armor["clock"], "6 o'clock, behind")
-        self.assertEqual(armor["call"], "enemy armor")
+        self.assertEqual(armor["label"], "enemy armor")
+        self.assertEqual(armor["call"], "Enemy armor, bearing two seven zero, five miles, ground target. "
+                                        "Target is at your six o'clock.")
 
         tanker = group(pic, "KC-135", "friendly_groups")
         self.assertEqual(tanker["clock"], "9 o'clock, left")
@@ -242,6 +247,11 @@ class ShotTests(unittest.TestCase):
         eye.on_event(fx.dead(fx.UNITS[1]))
         eye.on_event({"time": 112.0, "unit_lost": {"initiator": {"unit": fx.UNITS[1]}}})
         kills = eye.picture()["recent_kills_and_losses_last_10_min"]
+        # Round 2: the Frogfoot left the unit stream without a death event -> listed as inferred.
+        inferred = [k for k in kills if k.get("inferred")]
+        self.assertEqual([k["victim"]["type"] for k in inferred], ["Su-25T"])
+        self.assertEqual(inferred[0]["event"], "no longer showing, likely destroyed")
+        kills = [k for k in kills if not k.get("inferred")]
         self.assertEqual(len(kills), 1)
         self.assertEqual(kills[0]["event"], "killed")
         self.assertEqual(kills[0]["killer"]["player"], "Prometheus")

@@ -25,6 +25,15 @@ def main():
     parser.add_argument("--model", default=os.environ.get("ATHENA_RADIO_MODEL", "gpt-5.4-mini"))
     parser.add_argument("--reasoning", choices=("none", "minimal", "low", "medium", "high"), default=None,
                         help="Omitted by default; selected mini rejects low reasoning with tools")
+    parser.add_argument("--llm-backend", choices=("openai", "codex"),
+                        default=os.environ.get("ATHENA_RADIO_BACKEND", "openai"),
+                        help="eye mode: codex = ChatGPT/Codex subscription via Hermes credentials, falling back to "
+                             "--model on the OpenAI API on any failure")
+    parser.add_argument("--codex-model", default=os.environ.get("ATHENA_RADIO_CODEX_MODEL", "gpt-6-luna"))
+    parser.add_argument("--codex-effort", choices=("none", "minimal", "low", "medium", "high"),
+                        default=os.environ.get("ATHENA_RADIO_CODEX_EFFORT", "low"))
+    parser.add_argument("--codex-timeout", type=float, default=float(os.environ.get("ATHENA_RADIO_CODEX_TIMEOUT", "6")),
+                        help="seconds before the Codex call is abandoned for the API fallback")
     parser.add_argument("--controller-timeout", type=float, default=6.0)
     parser.add_argument("--request-timeout", type=float, default=2.0, help="HTTP header/body deadline in seconds")
     parser.add_argument("--cache-interval", type=float, default=2.0)
@@ -61,6 +70,13 @@ def main():
                                error=listener.error or "")
             controller = SimpleController(None, transcript, model=args.model, api_key=os.environ.get("OPENAI_API_KEY"),
                                           base_url=args.openai_base_url, eye=eye, speaker=args.speaker)
+            if args.llm_backend == "codex":
+                from .codex_llm import CodexLLM
+                controller._llm = CodexLLM(controller.ask, model=args.codex_model, effort=args.codex_effort,
+                                           timeout=args.codex_timeout, fallback_label="openai-api:" + args.model)
+                controller._llm.credentials.warm()
+                transcript.log(kind="llm_backend", outcome="codex", provider="openai-codex", model=args.codex_model,
+                               effort=args.codex_effort, fallback="openai-api:" + args.model)
             server = RadioServer(controller, port=args.port, request_timeout=args.request_timeout, speaker=args.speaker)
             serve(server)
             return 0

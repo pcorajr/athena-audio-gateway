@@ -135,6 +135,29 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.assertEqual(sum(row["type"] == "life_damage" for _, row in self.link.queue), first + 1)
         self.assertTrue(any(row["type"] == "own_damage" for _, row in self.link.queue))
 
+    def test_ai_landing_does_not_finalize_before_continued_combat(self):
+        self.assert_landing_keeps_terminal_report(mine=False)
+
+    def test_pilot_landing_does_not_finalize_before_continued_combat(self):
+        self.assert_landing_keeps_terminal_report(mine=True)
+
+    def assert_landing_keeps_terminal_report(self, *, mine):
+        self.link.publish("event", {"kind": "land", "mine": mine})
+        self.assertFalse(self.drain())
+        self.assertEqual(self.reports(), [])
+        self.assertEqual(self.link._auto_debriefed, set())
+        self.link.publish("event", {"kind": "kill", "mine": True})
+        self.assertFalse(self.drain())
+        self.link.publish("event", {"kind": "mission_end"})
+        self.assertTrue(self.drain())
+        self.assertEqual(self.reports(), ["mission-1"])
+        sent = [c["observation"]["payload"]["kind"] for c in self.calls if c["operation"] == "observe"]
+        self.assertEqual(sent, ["land", "kill", "mission_end"])
+        self.assertTrue(next(c for c in self.calls if c["operation"] == "debrief")["automatic"])
+        self.link.invalidate()
+        self.assertFalse(self.drain())
+        self.assertEqual(self.reports(), ["mission-1"])
+
     def test_mission_end_flushes_event_then_reports_once_across_unload(self):
         self.link.publish("event", {"kind": "mission_end"})
         self.assertFalse(self.link._auto_debrief_one())

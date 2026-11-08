@@ -77,8 +77,8 @@ type Client struct {
 	// mvpPilot is the SRS GUID of the current pilot. Identity is keyed on this
 	// GUID: a name flip inside the pilot list on the same connection (single
 	// player SRS flips "player" <-> "Prometheus") is not an identity change.
-	mvpPilot        types.GUID
-	transcript      *transcript.Writer
+	mvpPilot   types.GUID
+	transcript *transcript.Writer
 
 	// secureCoalitionRadios indicates if the client should only receive transmissions from the same coalition.
 	// Written by the TCP receiver goroutine (updateServerSettings) and read by the UDP receiver

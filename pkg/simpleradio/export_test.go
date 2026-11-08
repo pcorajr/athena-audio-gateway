@@ -35,7 +35,7 @@ func CaptureSRSMVPFixture(ctx context.Context, writer *transcript.Writer, prefix
 	c, tr, _ := mvpTestClient()
 	c.transcript = writer
 	c.rxChan = make(chan Transmission, 16)
-	packets, err := c.encodeMVP(make(Audio, 32000))
+	packets, err := c.encodeMVP(make(Audio, 32000), tr.Radio)
 	if err != nil {
 		return nil, nil, err
 	}

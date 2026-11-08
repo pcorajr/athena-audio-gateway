@@ -80,10 +80,16 @@ func (m Modulation) String() string {
 // F-16 tunes 225.000-399.975 on COM1 and 108.000-151.975 on COM2, while the
 // F-4E primary radio is limited to 225.0-399.95 AM.
 type Config struct {
-	// FrequencyHz is the single command frequency, in hertz.
+	// FrequencyHz is the primary command frequency, in hertz. Used alone when
+	// Channels is empty.
 	FrequencyHz uint64
-	// Modulation is the command-channel modulation.
+	// Modulation is the primary command-channel modulation.
 	Modulation Modulation
+	// Channels, when non-empty, lists every command channel (frequency and
+	// modulation). A transmission is admitted on any of them, and its reply
+	// goes back on the channel it arrived on. Overrides FrequencyHz/Modulation
+	// for matching.
+	Channels []Channel
 	// FrequencyToleranceHz absorbs the small rounding differences seen between
 	// SRS clients reporting the same tuned frequency. Zero means exact match.
 	FrequencyToleranceHz uint64
@@ -97,6 +103,26 @@ type Config struct {
 	MaxUtterance time.Duration
 	// MaxSamples is the hard sample-count cap. Exceeding it fails closed.
 	MaxSamples int
+}
+
+// Channel is one command channel: a frequency and its modulation.
+type Channel struct {
+	FrequencyHz uint64
+	Modulation  Modulation
+}
+
+// String renders the channel as the transcript does, e.g. "133.000 AM".
+func (c Channel) String() string {
+	return fmt.Sprintf("%.3f %s", float64(c.FrequencyHz)/1_000_000, c.Modulation)
+}
+
+// CommandChannels returns the configured command channels: Channels when set,
+// otherwise the single FrequencyHz/Modulation pair.
+func (c Config) CommandChannels() []Channel {
+	if len(c.Channels) > 0 {
+		return c.Channels
+	}
+	return []Channel{{FrequencyHz: c.FrequencyHz, Modulation: c.Modulation}}
 }
 
 // DefaultConfig returns the Athena MVP defaults. FrequencyHz and PilotName have
@@ -119,14 +145,21 @@ var ErrInvalidConfig = errors.New("invalid admission config")
 // frequency or pilot name is fatal: without both, the gate would admit
 // everything or nothing in a way the operator did not intend.
 func (c Config) Validate() error {
-	if c.FrequencyHz == 0 {
-		return fmt.Errorf("%w: command frequency must be set", ErrInvalidConfig)
+	seen := make(map[Channel]bool)
+	for _, ch := range c.CommandChannels() {
+		if ch.FrequencyHz == 0 {
+			return fmt.Errorf("%w: command frequency must be set", ErrInvalidConfig)
+		}
+		if ch.Modulation != ModulationAM && ch.Modulation != ModulationFM {
+			return fmt.Errorf("%w: modulation must be AM or FM", ErrInvalidConfig)
+		}
+		if seen[ch] {
+			return fmt.Errorf("%w: duplicate command channel %s", ErrInvalidConfig, ch)
+		}
+		seen[ch] = true
 	}
 	if strings.TrimSpace(c.PilotName) == "" {
 		return fmt.Errorf("%w: pilot name must be set", ErrInvalidConfig)
-	}
-	if c.Modulation != ModulationAM && c.Modulation != ModulationFM {
-		return fmt.Errorf("%w: modulation must be AM or FM", ErrInvalidConfig)
 	}
 	if c.MinUtterance <= 0 {
 		return fmt.Errorf("%w: minimum utterance must be positive", ErrInvalidConfig)
@@ -203,11 +236,8 @@ func (g *Gate) Config() Config { return g.cfg }
 // leaking information: channel checks precede identity checks, so traffic on
 // other frequencies is discarded without ever consulting the speaker.
 func (g *Gate) Admit(c Candidate) Decision {
-	if !g.matchesFrequency(c.FrequencyHz) {
-		return reject(RejectFrequency)
-	}
-	if c.Modulation != g.cfg.Modulation {
-		return reject(RejectModulation)
+	if rejection := g.matchChannel(c.FrequencyHz, c.Modulation); rejection != RejectNone {
+		return reject(rejection)
 	}
 
 	name := strings.TrimSpace(c.SpeakerName)
@@ -234,10 +264,31 @@ func (g *Gate) Admit(c Candidate) Decision {
 	return Decision{Admitted: true, Rejection: RejectNone}
 }
 
-// matchesFrequency compares against the configured frequency within tolerance,
+// Matches reports whether a transmission on hz/mod is on a command channel.
+func (g *Gate) Matches(hz uint64, mod Modulation) bool {
+	return g.matchChannel(hz, mod) == RejectNone
+}
+
+// matchChannel finds a command channel matching frequency and modulation.
+// Frequency mismatch on every channel is RejectFrequency; a frequency match
+// whose modulation differs on every such channel is RejectModulation.
+func (g *Gate) matchChannel(hz uint64, mod Modulation) Rejection {
+	result := RejectFrequency
+	for _, ch := range g.cfg.CommandChannels() {
+		if !g.matchesFrequency(hz, ch.FrequencyHz) {
+			continue
+		}
+		if ch.Modulation == mod {
+			return RejectNone
+		}
+		result = RejectModulation
+	}
+	return result
+}
+
+// matchesFrequency compares against a configured frequency within tolerance,
 // using unsigned-safe subtraction.
-func (g *Gate) matchesFrequency(hz uint64) bool {
-	want := g.cfg.FrequencyHz
+func (g *Gate) matchesFrequency(hz, want uint64) bool {
 	if hz == want {
 		return true
 	}

@@ -31,8 +31,10 @@ func (c *Client) captureFailure(t transmissionPackets, reason string) {
 	c.captureRecord(t, "inbound", reason)
 }
 
-// Assembly is independent per heard origin. Only admitMVPPacket can mint a
-// reply route; observing a nonpilot/self/ambiguous packet cannot grant one.
+// Assembly is independent per heard origin and command channel. Only
+// admitMVPPacket can mint a reply route; observing a nonpilot/self/ambiguous
+// packet cannot grant one. Each capture carries the channel it was heard on
+// so the reply goes back on that channel (multi-frequency, 2026-11-07).
 func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, out chan<- transmissionPackets) {
 	type capture struct {
 		receiver *receiver
@@ -40,9 +42,13 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 		origin   types.GUID
 		receipt  *captureReceipt
 	}
+	type captureKey struct {
+		origin types.GUID
+		radio  types.Radio
+	}
 	ledger := &captureLedger{ctx: ctx, writer: c.transcript, pending: make(map[*captureReceipt]transcript.Record)}
 	defer ledger.cancel()
-	active := map[types.GUID]*capture{}
+	active := map[captureKey]*capture{}
 	ticker := time.NewTicker(frameLength)
 	defer ticker.Stop()
 	for {
@@ -68,14 +74,7 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 				continue
 			}
 			route, _ := c.admitMVPPacket(packet, b.epoch)
-			for radio := range c.receivers {
-				matched := false
-				for _, f := range packet.Frequencies {
-					matched = matched || exactMVPRadio(types.Radio{Frequency: f.Frequency, Modulation: types.Modulation(f.Modulation), IsEncrypted: f.Encryption != 0}, radio)
-				}
-				if !matched {
-					continue
-				}
+			if radio, matched := c.mvpPacketRadio(packet); matched {
 				origin := types.GUID(packet.OriginGUID)
 				// receiveUDP snapshots the epoch before blocking Read. A stale
 				// datagram must not start assembly and poison admitted packets.
@@ -85,14 +84,15 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 					c.captureFailure(transmissionPackets{radio: radio, origin: origin, traceID: shortuuid.New()}, "packet_epoch_mismatch")
 					continue
 				}
-				a := active[origin]
+				key := captureKey{origin: origin, radio: mvpChannel(radio)}
+				a := active[key]
 				if a == nil {
 					if len(active) >= 64 {
 						c.captureFailure(transmissionPackets{radio: radio, origin: origin, traceID: shortuuid.New()}, "assembly_capacity_fragment")
 						continue
 					}
 					a = &capture{receiver: &receiver{radio: radio}, id: shortuuid.New(), origin: origin}
-					active[origin] = a
+					active[key] = a
 					a.receipt = ledger.begin(c.captureIdentity(transmissionPackets{radio: radio, origin: origin, traceID: a.id}))
 				}
 				// Keep observation epoch even when no reply token was minted.
@@ -105,14 +105,14 @@ func (c *Client) receiveMVPVoice(ctx context.Context, in <-chan voiceDatagram, o
 				a.receiver.receive(packet, route)
 			}
 		case <-ticker.C:
-			for origin, a := range active {
+			for key, a := range active {
 				if !a.receiver.hasTransmission() {
 					continue
 				}
 				tr, valid := a.receiver.takeCompleted()
-				tr.traceID, tr.origin = a.id, origin
+				tr.traceID, tr.origin = a.id, a.origin
 				tr.receipt = a.receipt
-				delete(active, origin)
+				delete(active, key)
 				if !valid {
 					c.captureFailure(tr, "short_overflow_or_invalid_audio")
 					continue

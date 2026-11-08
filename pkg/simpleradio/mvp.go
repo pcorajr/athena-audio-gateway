@@ -3,6 +3,7 @@ package simpleradio
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"sync/atomic"
@@ -24,6 +25,9 @@ type mvpRoute struct {
 	origin types.GUID
 	epoch  uint64
 	used   *atomic.Bool
+	// radio is the configured channel the pilot transmitted on. The reply is
+	// bound to it: it goes out on this channel and nowhere else.
+	radio types.Radio
 	// Content-free packet admission reason for observed non-command audio.
 	rejection string
 }
@@ -35,19 +39,65 @@ type mvpIdentity struct {
 	seat   int
 }
 
+// maxMVPRadios bounds the MVP radio list.
+const maxMVPRadios = 10
+
 func validateMVPConfig(cfg types.ClientConfiguration) error {
 	if !cfg.SRSMVP {
 		return nil
 	}
-	if len(cfg.Radios) != 1 || strings.TrimSpace(cfg.PilotName) == "" || pilotListMatch(cfg.ClientName, cfg.PilotName) {
-		return errors.New("MVP requires one radio and a distinct pilot name")
+	if len(cfg.Radios) == 0 || len(cfg.Radios) > maxMVPRadios || strings.TrimSpace(cfg.PilotName) == "" || pilotListMatch(cfg.ClientName, cfg.PilotName) {
+		return errors.New("MVP requires 1..10 radios and a distinct pilot name")
 	}
-	r := cfg.Radios[0]
-	if r.Frequency <= 0 || math.IsNaN(r.Frequency) || math.IsInf(r.Frequency, 0) || r.Frequency != math.Trunc(r.Frequency) ||
-		(r.Modulation != types.ModulationAM && r.Modulation != types.ModulationFM) || r.IsEncrypted || r.GuardFrequency != 0 || r.ShouldRetransmit {
-		return errors.New("MVP requires one unencrypted AM/FM command radio without guard or retransmit")
+	for i, r := range cfg.Radios {
+		if r.Frequency <= 0 || math.IsNaN(r.Frequency) || math.IsInf(r.Frequency, 0) || r.Frequency != math.Trunc(r.Frequency) ||
+			(r.Modulation != types.ModulationAM && r.Modulation != types.ModulationFM) || r.IsEncrypted || r.GuardFrequency != 0 || r.ShouldRetransmit {
+			return errors.New("MVP requires unencrypted AM/FM command radios without guard or retransmit")
+		}
+		for _, other := range cfg.Radios[:i] {
+			if exactMVPRadio(r, other) {
+				return errors.New("MVP command radios must be distinct")
+			}
+		}
 	}
 	return nil
+}
+
+// mvpChannel normalizes a radio to its channel identity (frequency and
+// modulation) for per-channel bookkeeping.
+func mvpChannel(r types.Radio) types.Radio {
+	return types.Radio{Frequency: r.Frequency, Modulation: r.Modulation}
+}
+
+// mvpConfiguredRadio reports whether r is exactly one of the configured
+// command radios. The radio list is immutable after construction.
+func (c *Client) mvpConfiguredRadio(r types.Radio) bool {
+	for _, radio := range c.clientInfo.RadioInfo.Radios {
+		if exactMVPRadio(r, radio) {
+			return true
+		}
+	}
+	return false
+}
+
+// mvpPacketRadio returns the first configured radio (in configuration order)
+// that the packet was transmitted on, unencrypted. Deterministic: a packet
+// sent on several of our channels at once is captured, and answered, once.
+func (c *Client) mvpPacketRadio(packet *voice.Packet) (types.Radio, bool) {
+	for _, radio := range c.clientInfo.RadioInfo.Radios {
+		for _, f := range packet.Frequencies {
+			if exactMVPRadio(types.Radio{Frequency: f.Frequency, Modulation: types.Modulation(f.Modulation), IsEncrypted: f.Encryption != 0}, radio) {
+				return radio, true
+			}
+		}
+	}
+	return types.Radio{}, false
+}
+
+// mvpChannelBusyLocked reports whether audio was heard on the channel within
+// the receive gap. Caller holds clientsLock.
+func (c *Client) mvpChannelBusyLocked(r types.Radio) bool {
+	return time.Now().Before(c.mvpChannelUntil[mvpChannel(r)])
 }
 
 // Caller holds clientsLock. Names are matched across the entire live snapshot,
@@ -58,7 +108,7 @@ func (c *Client) mvpIdentityLocked() mvpIdentity {
 }
 
 func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
-	if !c.mvp || len(c.clientInfo.RadioInfo.Radios) != 1 {
+	if !c.mvp || len(c.clientInfo.RadioInfo.Radios) == 0 {
 		return mvpIdentity{}, "radio_configuration"
 	}
 	// The pilot setting is a comma-separated list (e.g. "Prometheus,Player,Client"):
@@ -82,7 +132,7 @@ func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
 		}
 		onRadio := false
 		for _, radio := range peer.RadioInfo.Radios {
-			if exactMVPRadio(radio, c.clientInfo.RadioInfo.Radios[0]) {
+			if c.mvpConfiguredRadio(radio) {
 				onRadio = true
 			}
 		}
@@ -166,14 +216,25 @@ func (c *Client) mvpReadinessLocked() transcript.Record {
 		reason = "ready"
 	}
 	r := transcript.Record{Kind: "radio_readiness", Speaker: "Athena", Route: "ignored", Outcome: reason}
-	if len(c.clientInfo.RadioInfo.Radios) == 1 {
-		radio := c.clientInfo.RadioInfo.Radios[0]
-		r.FrequencyHz, r.Modulation = uint64(radio.Frequency), "AM"
-		if radio.Modulation == types.ModulationFM {
-			r.Modulation = "FM"
+	radios := c.clientInfo.RadioInfo.Radios
+	if len(radios) > 0 {
+		r.FrequencyHz, r.Modulation = uint64(radios[0].Frequency), mvpModulationName(radios[0].Modulation)
+	}
+	if len(radios) > 1 {
+		channels := make([]string, 0, len(radios))
+		for _, radio := range radios {
+			channels = append(channels, fmt.Sprintf("%.3f %s", radio.Frequency/1_000_000, mvpModulationName(radio.Modulation)))
 		}
+		r.Text = "channels=" + strings.Join(channels, ",")
 	}
 	return r
+}
+
+func mvpModulationName(m types.Modulation) string {
+	if m == types.ModulationFM {
+		return "FM"
+	}
+	return "AM"
 }
 
 func (c *Client) invalidateMVP() {
@@ -203,17 +264,15 @@ func (c *Client) admitMVPPacket(packet *voice.Packet, epoch uint64) (mvpRoute, b
 	if c.mvpWriter == nil {
 		return reject("transport_unavailable")
 	}
-	if len(c.clientInfo.RadioInfo.Radios) != 1 {
+	if len(c.clientInfo.RadioInfo.Radios) == 0 {
 		return reject("radio_configuration")
 	}
-	matched := false
-	for _, f := range packet.Frequencies {
-		if f.Encryption == 0 && exactMVPRadio(types.Radio{Frequency: f.Frequency, Modulation: types.Modulation(f.Modulation)}, c.clientInfo.RadioInfo.Radios[0]) {
-			matched = true
-		}
-	}
+	radio, matched := c.mvpPacketRadio(packet)
 	if matched {
-		c.mvpChannelUntil = time.Now().Add(maxRxGap)
+		if c.mvpChannelUntil == nil {
+			c.mvpChannelUntil = make(map[types.Radio]time.Time)
+		}
+		c.mvpChannelUntil[mvpChannel(radio)] = time.Now().Add(maxRxGap)
 	}
 	if identityReason != "" {
 		return reject(identityReason)
@@ -234,7 +293,7 @@ func (c *Client) admitMVPPacket(packet *voice.Packet, epoch uint64) (mvpRoute, b
 		return reject("packet_replayed")
 	}
 	c.mvpLastOrigin, c.mvpLastPacket = origin, packet.PacketID
-	return mvpRoute{origin: origin, epoch: epoch, used: &atomic.Bool{}}, true
+	return mvpRoute{origin: origin, epoch: epoch, used: &atomic.Bool{}, radio: radio}, true
 }
 
 func (c *Client) validMVPLocked(t Transmission) bool {
@@ -267,7 +326,9 @@ func (c *Client) mvpRejectionLocked(t Transmission) string {
 	if t.route.origin != identity.guid {
 		return "radio_origin_mismatch"
 	}
-	if !exactMVPRadio(t.Radio, c.clientInfo.RadioInfo.Radios[0]) {
+	// Reply only on a configured channel, and only on the one the pilot
+	// transmitted on (bound into the route at reception).
+	if !c.mvpConfiguredRadio(t.Radio) || !exactMVPRadio(t.Radio, t.route.radio) {
 		return "radio_channel_mismatch"
 	}
 	return ""
@@ -320,24 +381,24 @@ func (c *Client) TransmitMVP(ctx context.Context, t Transmission, expires time.T
 	if !time.Now().Before(expires) {
 		return Delivery{Outcome: "expired"}
 	}
-	packets, err := c.encodeMVP(t.Audio)
+	packets, err := c.encodeMVP(t.Audio, t.Radio)
 	if err != nil {
 		return Delivery{Outcome: "encode_failed"}
 	}
 	return c.sendMVP(ctx, t, expires, packets)
 }
 
-// encodeMVP uses exactly the sole configured command route, never the legacy
-// all-radios frequency list. The caller holds txLock for packet numbering.
-func (c *Client) encodeMVP(audio Audio) ([]voice.Packet, error) {
-	if len(c.clientInfo.RadioInfo.Radios) != 1 || len(audio) == 0 {
+// encodeMVP encodes on exactly one configured command radio (the one the
+// pilot transmitted on), never the legacy all-radios frequency list and never
+// an unlisted channel. The caller holds txLock for packet numbering.
+func (c *Client) encodeMVP(audio Audio, radio types.Radio) ([]voice.Packet, error) {
+	if !c.mvpConfiguredRadio(radio) || len(audio) == 0 {
 		return nil, errors.New("invalid MVP audio or radio")
 	}
 	encoder, err := opus.NewEncoder(int(rate.Wideband.Hertz()), channels, opusApplicationVoIP)
 	if err != nil {
 		return nil, err
 	}
-	radio := c.clientInfo.RadioInfo.Radios[0]
 	frequencies := []voice.Frequency{{Frequency: radio.Frequency, Modulation: byte(radio.Modulation)}}
 	packets := make([]voice.Packet, 0)
 	for i := 0; i < len(audio); i += int(frameSize) {
@@ -371,7 +432,7 @@ func (c *Client) sendMVP(ctx context.Context, t Transmission, expires time.Time,
 			return d
 		}
 		c.clientsLock.RLock()
-		busy := time.Now().Before(c.mvpChannelUntil)
+		busy := c.mvpChannelBusyLocked(t.Radio)
 		c.clientsLock.RUnlock()
 		for _, r := range c.receivers {
 			busy = busy || r.isReceivingTransmission()
@@ -405,7 +466,7 @@ func (c *Client) sendMVP(ctx context.Context, t Transmission, expires time.Time,
 		if reason == "" && i == 0 && !time.Now().Before(expires) {
 			reason = "expired"
 		}
-		if reason == "" && i == 0 && time.Now().Before(c.mvpChannelUntil) {
+		if reason == "" && i == 0 && c.mvpChannelBusyLocked(t.Radio) {
 			reason = "channel_busy"
 		}
 		if reason != "" {

@@ -125,14 +125,20 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		if config.AthenaCommandModulation != nil {
 			gateConfig.Modulation = *config.AthenaCommandModulation
 		}
+		gateConfig.Channels = config.AthenaCommandChannels
 		gate, gateErr := admission.NewGate(gateConfig)
 		if gateErr != nil {
 			return nil, fmt.Errorf("failed to construct application: %w", gateErr)
 		}
 		admissionGate = gate
+		channelNames := make([]string, 0, len(gateConfig.CommandChannels()))
+		for _, ch := range gateConfig.CommandChannels() {
+			channelNames = append(channelNames, ch.String())
+		}
 		log.Info().
 			Uint64("frequencyHz", gateConfig.FrequencyHz).
 			Stringer("modulation", gateConfig.Modulation).
+			Strs("channels", channelNames).
 			Str("pilot", gateConfig.PilotName).
 			Msg("Athena command-channel admission gate enabled")
 	}

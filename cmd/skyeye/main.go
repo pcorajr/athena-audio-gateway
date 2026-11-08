@@ -165,7 +165,7 @@ func init() {
 	skyeye.Flags().DurationVar(&athenaResponseMaxAge, "athena-response-max-age", mvp.DefaultMaxAge, "MVP maximum assembled-reception to first-send age; must be positive")
 	// Setting these replaces the GCI controller lane with a text exchange
 	// against Hermes. Leaving them unset preserves upstream SkyEye behaviour.
-	skyeye.Flags().StringVar(&athenaCommandFrequency, "athena-command-frequency", "", "Athena command channel frequency, e.g. 30.0FM. Enables the Athena admission gate; requires --athena-pilot-name.")
+	skyeye.Flags().StringVar(&athenaCommandFrequency, "athena-command-frequency", "", "Athena command channel(s), comma-separated, each with explicit modulation, e.g. 133.0AM,251.0AM,33.0FM. Enables the Athena admission gate; requires --athena-pilot-name. In --athena-srs-mvp mode it defaults to --srs-frequencies and must match it; replies go out on the channel the pilot transmitted on.")
 	skyeye.Flags().StringVar(&athenaPilotName, "athena-pilot-name", "", "Exact SRS client name permitted to issue Athena commands. All other transmitters are discarded before speech recognition.")
 	skyeye.Flags().StringVar(&athenaHermesEndpoint, "athena-hermes-endpoint", "", "URL of the Hermes text bridge. Replaces the GCI controller lane; requires the Athena admission gate.")
 	skyeye.Flags().DurationVar(&athenaHermesTimeout, "athena-hermes-timeout", 0, "Bound on a single Hermes exchange. Zero uses the bridge default. Never retried.")
@@ -244,19 +244,57 @@ var skyeye = &cobra.Command{
 	Run:     run,
 }
 
-// loadAthenaCommandChannel parses the Athena command-channel frequency.
+// loadAthenaCommandChannels parses the Athena command channels.
 //
 // Parsing is strict, unlike ParseRadioFrequency: an unrecognized or omitted
 // modulation is fatal rather than silently defaulting to AM. On a command
 // channel a wrong default is worse than a refusal, because it produces a
 // channel that simply never matches and a gateway that appears healthy while
 // ignoring every transmission.
-func loadAthenaCommandChannel() (uint64, *admission.Modulation) {
-	if athenaCommandFrequency == "" {
-		return 0, nil
+func loadAthenaCommandChannels() []admission.Channel {
+	channels, err := parseAthenaCommandChannels(athenaCommandFrequency, srsFrequencies, athenaSRSMVP)
+	if err != nil {
+		log.Fatal().Err(err).Str("input", athenaCommandFrequency).Msg("failed to parse --athena-command-frequency")
 	}
+	for _, ch := range channels {
+		log.Info().
+			Uint64("frequencyHz", ch.FrequencyHz).
+			Stringer("modulation", ch.Modulation).
+			Msg("parsed Athena command channel")
+	}
+	return channels
+}
 
-	raw := strings.TrimSpace(athenaCommandFrequency)
+// parseAthenaCommandChannels parses a comma-separated command channel list.
+// In MVP mode an empty list derives from the SRS radio list, so one flag is
+// enough; outside MVP an empty list disables the gate (nil, nil).
+func parseAthenaCommandChannels(command string, srs []string, mvp bool) ([]admission.Channel, error) {
+	entries := strings.Split(command, ",")
+	if strings.TrimSpace(command) == "" {
+		if !mvp || len(srs) == 0 {
+			return nil, nil
+		}
+		entries = srs
+	}
+	channels := make([]admission.Channel, 0, len(entries))
+	seen := make(map[admission.Channel]bool, len(entries))
+	for _, entry := range entries {
+		ch, err := parseAthenaChannel(entry)
+		if err != nil {
+			return nil, err
+		}
+		if seen[ch] {
+			return nil, fmt.Errorf("duplicate Athena command channel %s", ch)
+		}
+		seen[ch] = true
+		channels = append(channels, ch)
+	}
+	return channels, nil
+}
+
+// parseAthenaChannel parses one "<MHz>AM" / "<MHz>FM" entry.
+func parseAthenaChannel(entry string) (admission.Channel, error) {
+	raw := strings.TrimSpace(entry)
 	upper := strings.ToUpper(raw)
 
 	var modulation admission.Modulation
@@ -269,25 +307,18 @@ func loadAthenaCommandChannel() (uint64, *admission.Modulation) {
 		modulation = admission.ModulationAM
 		numeric = strings.TrimSpace(upper[:len(upper)-2])
 	default:
-		log.Fatal().
-			Str("input", raw).
-			Msg("--athena-command-frequency must end in AM or FM, e.g. 30.0FM")
+		return admission.Channel{}, errors.New("--athena-command-frequency entries must end in AM or FM, e.g. 30.0FM")
 	}
 
 	mhz, err := strconv.ParseFloat(numeric, 64)
 	if err != nil {
-		log.Fatal().Err(err).Str("input", raw).Msg("failed to parse --athena-command-frequency")
+		return admission.Channel{}, fmt.Errorf("failed to parse --athena-command-frequency entry: %w", err)
 	}
 	if math.IsNaN(mhz) || math.IsInf(mhz, 0) || mhz <= 0 {
-		log.Fatal().Str("input", raw).Msg("--athena-command-frequency must be a real positive number")
+		return admission.Channel{}, errors.New("--athena-command-frequency entries must be real positive numbers")
 	}
 
-	hz := uint64(math.Round(mhz * 1_000_000))
-	log.Info().
-		Uint64("frequencyHz", hz).
-		Stringer("modulation", modulation).
-		Msg("parsed Athena command channel")
-	return hz, &modulation
+	return admission.Channel{FrequencyHz: uint64(math.Round(mhz * 1_000_000)), Modulation: modulation}, nil
 }
 
 func main() {
@@ -478,26 +509,44 @@ func preRun(cmd *cobra.Command, _ []string) error {
 
 // The legacy parser consumes only a decimal prefix and defaults unknown
 // modulation to AM. MVP accepts only spellings that parser preserves.
+// Multi-frequency (2026-11-07): 1..conf.MaxSRSMVPRadios distinct entries, each
+// with explicit AM or FM, e.g. 133.0AM,251.0AM,33.0FM.
 func validateSRSMVPRadioFlags(frequencies []string) error {
-	if len(frequencies) != 1 {
-		return errors.New("MVP requires exactly one srs-frequencies entry")
+	if len(frequencies) == 0 || len(frequencies) > conf.MaxSRSMVPRadios {
+		return fmt.Errorf("MVP requires 1..%d srs-frequencies entries", conf.MaxSRSMVPRadios)
 	}
-	raw := frequencies[0]
+	seen := make(map[string]bool, len(frequencies))
+	for _, raw := range frequencies {
+		key, err := validateSRSMVPRadioFlag(raw)
+		if err != nil {
+			return err
+		}
+		if seen[key] {
+			return errors.New("MVP srs-frequencies entries must be distinct")
+		}
+		seen[key] = true
+	}
+	return nil
+}
+
+// validateSRSMVPRadioFlag checks one entry and returns a canonical
+// frequency/modulation key for duplicate detection.
+func validateSRSMVPRadioFlag(raw string) (string, error) {
 	pos := strings.IndexFunc(raw, func(r rune) bool {
 		return (r < '0' || r > '9') && r != '.'
 	})
 	if pos < 0 {
-		return errors.New("MVP SRS frequency requires decimal MHz and explicit AM or FM")
+		return "", errors.New("MVP SRS frequency requires decimal MHz and explicit AM or FM")
 	}
 	suffix := strings.TrimSpace(raw[pos:])
 	if suffix != "AM" && suffix != "FM" {
-		return errors.New("MVP SRS frequency requires explicit AM or FM")
+		return "", errors.New("MVP SRS frequency requires explicit AM or FM")
 	}
 	mhz, err := strconv.ParseFloat(raw[:pos], 64)
 	if err != nil || math.IsNaN(mhz) || math.IsInf(mhz, 0) || mhz <= 0 {
-		return errors.New("MVP SRS frequency must be a real positive number")
+		return "", errors.New("MVP SRS frequency must be a real positive number")
 	}
-	return nil
+	return strconv.FormatFloat(mhz, 'f', -1, 64) + suffix, nil
 }
 
 func run(_ *cobra.Command, _ []string) {
@@ -541,7 +590,14 @@ func run(_ *cobra.Command, _ []string) {
 	volume := loadVoiceVolume()
 	locs := loadLocations()
 	customAircraft := loadAircraft()
-	athenaFrequencyHz, athenaModulation := loadAthenaCommandChannel()
+	athenaChannels := loadAthenaCommandChannels()
+	var athenaFrequencyHz uint64
+	var athenaModulation *admission.Modulation
+	if len(athenaChannels) > 0 {
+		athenaFrequencyHz = athenaChannels[0].FrequencyHz
+		primary := athenaChannels[0].Modulation
+		athenaModulation = &primary
+	}
 
 	config := conf.Configuration{
 		ACMIFile:                     acmiFile,
@@ -570,6 +626,7 @@ func run(_ *cobra.Command, _ []string) {
 		AthenaLiveTX:                 athenaLiveTX,
 		AthenaResponseMaxAge:         athenaResponseMaxAge,
 		AthenaCommandModulation:      athenaModulation,
+		AthenaCommandChannels:        athenaChannels,
 		AthenaPilotName:              athenaPilotName,
 		AthenaHermesEndpoint:         athenaHermesEndpoint,
 		AthenaHermesTimeout:          athenaHermesTimeout,

@@ -37,17 +37,31 @@ func TestSRSMVPInvalidStartupBeforeNetwork(t *testing.T) {
 		"missing bridge":     func(c *conf.Configuration) { c.AthenaHermesEndpoint = "" },
 		"remote bridge":      func(c *conf.Configuration) { c.AthenaHermesEndpoint = "http://192.0.2.1:1234/radio/v1/exchange" },
 		"missing radio":      func(c *conf.Configuration) { c.SRSFrequencies = nil },
-		"multiple radios":    func(c *conf.Configuration) { c.SRSFrequencies = append(c.SRSFrequencies, c.SRSFrequencies[0]) },
-		"wrong radio":        func(c *conf.Configuration) { c.SRSFrequencies[0].Frequency++ },
-		"wrong modulation":   func(c *conf.Configuration) { c.SRSFrequencies[0].Modulation = 1 },
-		"expiry zero":        func(c *conf.Configuration) { c.AthenaResponseMaxAge = 0 },
-		"expiry negative":    func(c *conf.Configuration) { c.AthenaResponseMaxAge = -time.Second },
-		"speech limit":       func(c *conf.Configuration) { c.AthenaHermesMaxSpeech = bridge.DefaultMaxSpeechChars + 1 },
-		"timeout negative":   func(c *conf.Configuration) { c.AthenaHermesTimeout = -time.Second },
-		"diagnostic WAV":     func(c *conf.Configuration) { c.AthenaDebugAudioDir = "not-created" },
-		"persona":            func(c *conf.Configuration) { c.AthenaPersonas = []string{"hermes"} },
-		"cloud STT":          func(c *conf.Configuration) { c.Recognizer = conf.WhisperAPI },
-		"gRPC":               func(c *conf.Configuration) { c.EnableGRPC = true },
+		"duplicate radios":   func(c *conf.Configuration) { c.SRSFrequencies = append(c.SRSFrequencies, c.SRSFrequencies[0]) },
+		"radio not a command channel": func(c *conf.Configuration) {
+			c.SRSFrequencies = append(c.SRSFrequencies, simpleradio.RadioFrequency{Frequency: 251000000 * unit.Hertz, Modulation: 0})
+		},
+		"command channel without radio": func(c *conf.Configuration) {
+			c.AthenaCommandChannels = []admission.Channel{{FrequencyHz: 133000000, Modulation: admission.ModulationAM}, {FrequencyHz: 251000000, Modulation: admission.ModulationAM}}
+		},
+		"too many radios": func(c *conf.Configuration) {
+			c.SRSFrequencies, c.AthenaCommandChannels = nil, nil
+			for i := range conf.MaxSRSMVPRadios + 1 {
+				hz := uint64(100000000 + i*1000000)
+				c.SRSFrequencies = append(c.SRSFrequencies, simpleradio.RadioFrequency{Frequency: unit.Frequency(hz) * unit.Hertz})
+				c.AthenaCommandChannels = append(c.AthenaCommandChannels, admission.Channel{FrequencyHz: hz, Modulation: admission.ModulationAM})
+			}
+		},
+		"wrong radio":      func(c *conf.Configuration) { c.SRSFrequencies[0].Frequency++ },
+		"wrong modulation": func(c *conf.Configuration) { c.SRSFrequencies[0].Modulation = 1 },
+		"expiry zero":      func(c *conf.Configuration) { c.AthenaResponseMaxAge = 0 },
+		"expiry negative":  func(c *conf.Configuration) { c.AthenaResponseMaxAge = -time.Second },
+		"speech limit":     func(c *conf.Configuration) { c.AthenaHermesMaxSpeech = bridge.DefaultMaxSpeechChars + 1 },
+		"timeout negative": func(c *conf.Configuration) { c.AthenaHermesTimeout = -time.Second },
+		"diagnostic WAV":   func(c *conf.Configuration) { c.AthenaDebugAudioDir = "not-created" },
+		"persona":          func(c *conf.Configuration) { c.AthenaPersonas = []string{"hermes"} },
+		"cloud STT":        func(c *conf.Configuration) { c.Recognizer = conf.WhisperAPI },
+		"gRPC":             func(c *conf.Configuration) { c.EnableGRPC = true },
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := validSRSMVPConfig()
@@ -118,6 +132,31 @@ func TestSRSMVPApplicationUsesLocalBackendsAndLoggingChoice(t *testing.T) {
 		if speaker.speech != "Synthetic unavailable answer." || len(radio.audio) != 1 || radio.audio[0] != 0.25 {
 			t.Fatal("local synthesis/volume path not used")
 		}
+	}
+}
+
+// Multi-frequency (2026-11-07): 133.0 AM, 251.0 AM and 33.0 FM together.
+func TestSRSMVPMultiFrequencyConfigValid(t *testing.T) {
+	cfg := validSRSMVPConfig()
+	cfg.SRSFrequencies = []simpleradio.RadioFrequency{
+		{Frequency: 133000000 * unit.Hertz, Modulation: 0},
+		{Frequency: 251000000 * unit.Hertz, Modulation: 0},
+		{Frequency: 33000000 * unit.Hertz, Modulation: 1},
+	}
+	cfg.AthenaCommandChannels = []admission.Channel{
+		{FrequencyHz: 33000000, Modulation: admission.ModulationFM},
+		{FrequencyHz: 133000000, Modulation: admission.ModulationAM},
+		{FrequencyHz: 251000000, Modulation: admission.ModulationAM},
+	}
+	if err := cfg.ValidateSRSMVP(); err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.CommandChannels(); len(got) != 3 {
+		t.Fatalf("channels %+v", got)
+	}
+	cfg.AthenaCommandChannels[0].Modulation = admission.ModulationAM // 33.0 AM is not tunable as listed
+	if cfg.ValidateSRSMVP() == nil {
+		t.Fatal("33.0 AM command channel accepted against a 33.0 FM radio")
 	}
 }
 

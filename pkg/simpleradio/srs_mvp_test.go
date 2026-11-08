@@ -40,7 +40,7 @@ func mvpTestClient() (*Client, Transmission, *mvpWriterFake) {
 	c := &Client{mvp: true, liveTX: true, pilotName: "Prometheus", mvpEpoch: 1, mvpWriter: writer, packetNumber: 1,
 		clientInfo: types.ClientInfo{GUID: "RelayGUID0000000000000", Name: "gateway", Coalition: coalitions.Blue, RadioInfo: types.RadioInfo{Radios: []types.Radio{radio}}},
 		clients:    map[types.GUID]types.ClientInfo{peer.GUID: peer}, receivers: map[types.Radio]*receiver{radio: {radio: radio}}}
-	transmission := Transmission{TraceID: "synthetic-1", ClientName: "Prometheus", Radio: radio, ReceivedAt: time.Now(), Audio: make(Audio, frameSize*2), route: mvpRoute{origin: peer.GUID, epoch: 1, used: &atomic.Bool{}}}
+	transmission := Transmission{TraceID: "synthetic-1", ClientName: "Prometheus", Radio: radio, ReceivedAt: time.Now(), Audio: make(Audio, frameSize*2), route: mvpRoute{origin: peer.GUID, epoch: 1, used: &atomic.Bool{}, radio: radio}}
 	return c, transmission, writer
 }
 
@@ -91,9 +91,8 @@ func TestSRSMVPOneRadioAndNoReplay(t *testing.T) {
 	if w.writes != 2 {
 		t.Fatal("replayed a transmission")
 	}
-	c.clientInfo.RadioInfo.Radios = append(c.clientInfo.RadioInfo.Radios, types.Radio{Frequency: 250000000})
-	if _, err := c.encodeMVP(tr.Audio); err == nil {
-		t.Fatal("encoded multiple radios")
+	if _, err := c.encodeMVP(tr.Audio, types.Radio{Frequency: 250000000}); err == nil {
+		t.Fatal("encoded on an unlisted radio")
 	}
 	ch := make(chan []voice.Packet, 1)
 	c.encodeVoice(t.Context(), ch)
@@ -355,7 +354,7 @@ func TestSRSMVPReceiveDecodePipeline(t *testing.T) {
 	for _, scenario := range []string{"valid", "overflow", "malformed_opus"} {
 		t.Run(scenario, func(t *testing.T) {
 			c, tr, _ := mvpTestClient()
-			encoded, err := c.encodeMVP(make(Audio, frameSize))
+			encoded, err := c.encodeMVP(make(Audio, frameSize), tr.Radio)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -438,7 +437,7 @@ func TestSRSMVPWriteDeadlinesAndSendClocks(t *testing.T) {
 func TestSRSMVPConfigBeforeConnect(t *testing.T) {
 	for _, cfg := range []types.ClientConfiguration{
 		{SRSMVP: true},
-		{SRSMVP: true, PilotName: "Prometheus", Radios: []types.Radio{{Frequency: 133000000}, {Frequency: 250000000}}},
+		{SRSMVP: true, PilotName: "Prometheus", Radios: []types.Radio{{Frequency: 133000000}, {Frequency: 133000000}}},
 		{SRSMVP: true, PilotName: "Prometheus", Radios: []types.Radio{{Frequency: 133000000, ShouldRetransmit: true}}},
 		{SRSMVP: true, PilotName: "Prometheus", Radios: []types.Radio{{Frequency: 133000000, Modulation: types.ModulationMIDS}}},
 	} {

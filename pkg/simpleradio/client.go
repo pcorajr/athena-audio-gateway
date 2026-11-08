@@ -66,14 +66,16 @@ type Client struct {
 	clientsLock sync.RWMutex
 	// MVP fields are immutable after construction, except epoch/writer/packet
 	// state, which are protected by clientsLock.
-	mvp             bool
-	liveTX          bool
-	pilotName       string
-	mvpEpoch        uint64
-	mvpWriter       io.Writer
-	mvpLastOrigin   types.GUID
-	mvpLastPacket   uint64
-	mvpChannelUntil time.Time
+	mvp           bool
+	liveTX        bool
+	pilotName     string
+	mvpEpoch      uint64
+	mvpWriter     io.Writer
+	mvpLastOrigin types.GUID
+	mvpLastPacket uint64
+	// mvpChannelUntil is per command channel (frequency+modulation): a reply
+	// waits only for audio heard on its own channel.
+	mvpChannelUntil map[types.Radio]time.Time
 	// mvpPilot is the SRS GUID of the current pilot. Identity is keyed on this
 	// GUID: a name flip inside the pilot list on the same connection (single
 	// player SRS flips "player" <-> "Prometheus") is not an identity change.

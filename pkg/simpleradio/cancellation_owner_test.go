@@ -16,7 +16,7 @@ func TestCancellationOwnerFollowsRealCaptureAcrossQueues(t *testing.T) {
 			c, tr, _ := mvpTestClient()
 			c.transcript = &transcript.Writer{Root: t.TempDir()}
 			c.rxChan = make(chan Transmission, 1)
-			encoded, err := c.encodeMVP(make(Audio, frameSize))
+			encoded, err := c.encodeMVP(make(Audio, frameSize), tr.Radio)
 			if err != nil {
 				t.Fatal(err)
 			}

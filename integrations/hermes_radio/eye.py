@@ -5,6 +5,18 @@ airbases), no freshness gates; every picture carries its data age instead.
 
 Eye is pure state (feed it plain dicts in DCS-gRPC JSON shape, i.e. protobuf MessageToDict with
 proto field names). GrpcFeeder converts live DCS-gRPC streams into those dicts, reconnecting forever.
+
+Kill picture contract (round 6): my_kills_this_mission is cumulative, without a time/count cap.
+my_kills_recent is its last 600 seconds, NOT the mission tally. Each kill has target_id, target_kind,
+seq (first observation, stable on duplicate/confirmation), t (Unix seconds), mission_time (DCS seconds),
+shooter_id, confidence and category. kill_seq is the latest kill cursor; kills_since(seq, shooter="me")
+returns new kills without a time window (also accepts "all_friendly" or a shooter id as a string).
+Consumers retain their own confirmation cursor; merely reading the picture never acknowledges kills.
+friendly_kills_this_mission / friendly_kills_recent include me and other friendly shooters.
+kill_tallies contains me, all_friendly and by_shooter (stable shooter-id keys, shooter descriptor,
+flight_member, total, confirmed, likely, by_category and by_type). Categories include armor, AAA,
+SAM, infantry, vehicles and scenery; other categories are retained. Tallies include likely kills,
+explicitly counted separately. Mission start/reset clears all tallies; sequence numbers never rewind.
 """
 from collections import Counter, OrderedDict, deque
 import argparse
@@ -17,7 +29,7 @@ import sys
 import threading
 import time
 
-from .cockpit import CockpitListener, CockpitState, _f, fuel_lb_from_fraction
+from .cockpit import CockpitListener, CockpitState, _f, _known_type, clean_name, fuel_lb_from_fraction, weapon_name
 
 PLAYER = "Prometheus,Player,Client"
 M_TO_FT = 3.28084
@@ -124,7 +136,7 @@ def classify(type_name, group_category=None):
         return "armor"
     if INFANTRY_PAT.search(t):
         return "infantry"
-    if gc.endswith("GROUND"):
+    if gc.endswith("GROUND") or re.search(r"ural|gaz-|uaz|zil-|kamaz|truck|hummer", t, re.I):
         return "ground vehicle"
     return "unknown"
 
@@ -150,7 +162,7 @@ def weapon_kind(name, burst=False):
     if burst:
         return "gun"
     n = name or ""
-    if ROCKET_PAT.search(n) and not AAM_PAT.search(n):
+    if (ROCKET_PAT.search(n) or re.search(r"agr[-_]20", n, re.I)) and not AAM_PAT.search(n):
         return "rocket"
     if BOMB_PAT.search(n):
         return "bomb"
@@ -257,8 +269,8 @@ def closure_kt(bearing, own_track, own_speed, tgt_track, tgt_speed):
 
 def _is_pilot(name, allowed):
     """Case-insensitive match of name against a comma-separated pilot list ("Prometheus,Player,Client")."""
-    name = (name or "").strip().casefold()
-    return bool(name) and any(name == item.strip().casefold() for item in str(allowed).split(","))
+    name = clean_name(name).casefold()
+    return bool(name) and any(name == clean_name(item).casefold() for item in str(allowed).split(","))
 
 
 def _three(deg):
@@ -325,6 +337,41 @@ def call_line(label, bearing3, range_nm, clock_hour, dom, alt_ft=None, vertical=
 
 
 # ----------------------------------------------------------------------------- normalization
+def descriptor_type(d):
+    for source in (d, d.get("descriptor") or {}, d.get("desc") or {}):
+        for key in ("type", "type_name", "typeName", "display_name", "displayName"):
+            if _known_type(source.get(key)):
+                return source[key]
+    return ""
+
+
+SCENERY_NAMES = (
+    (r"most|bridge", "bridge"),
+    (r"hangar|angar", "hangar"),
+    (r"bunker|pillbox", "bunker"),
+    (r"oil|fuel|tank|cistern|reservoir", "storage tank"),
+    (r"powertranspole|power.?line", "power pole"),
+    (r"tower|bashn", "tower"),
+    (r"building|house|sklad|warehouse|\bbdg\b", "building"),
+)
+
+
+def scenery_name(name):
+    for pattern, label in SCENERY_NAMES:
+        if re.search(pattern, name or "", re.I):
+            return label
+    return re.sub(r"[^\w]+|_", " ", name or "scenery").strip().title()
+
+
+def object_type(obj):
+    name = obj.get("type") or obj.get("name") or obj.get("kind") or "unknown"
+    if obj.get("kind") in ("scenery", "static") or obj.get("category") == "scenery":
+        return scenery_name(name if _known_type(name) else obj.get("kind", "scenery"))
+    if obj.get("kind") == "weapon":
+        return weapon_name(name)
+    return name
+
+
 def _coal(value):
     v = (value or "").upper()
     if v.endswith("RED"):
@@ -349,11 +396,11 @@ def norm_unit(d):
     vel = d.get("velocity") or {}
     ori = d.get("orientation") or {}
     gcat = group.get("category", "")
-    type_name = d.get("type", "")
+    type_name = descriptor_type(d)
     return {
         "id": int(d.get("id", 0)), "name": d.get("name", ""), "type": type_name, "callsign": d.get("callsign", ""),
         "group": group.get("name", ""), "coalition": _coal(d.get("coalition")), "group_category": gcat,
-        "category": classify(type_name, gcat), "player": d.get("player_name") or None,
+        "category": classify(type_name, gcat), "player": clean_name(d.get("player_name")) or None,
         "lat": lat, "lon": lon, "alt_m": alt,
         "heading": ori.get("heading", vel.get("heading", 0.0)), "track": vel.get("heading", ori.get("heading", 0.0)),
         "speed_ms": vel.get("speed", 0.0),
@@ -373,9 +420,9 @@ def norm_object(wrapper):
             d = wrapper[kind] or {}
             lat, lon, alt = _pos(d)
             name = d.get("name") or d.get("display_name") or ""
-            type_name = d.get("type", "") or ("airbase" if kind == "airbase" else "")
+            type_name = descriptor_type(d) or ("airbase" if kind == "airbase" else "")
             return {"kind": kind, "id": int(d.get("id", 0) or 0), "name": name, "type": type_name,
-                    "coalition": _coal(d.get("coalition")), "category": kind if kind != "static" else classify(type_name),
+                    "coalition": _coal(d.get("coalition")), "category": "scenery" if kind == "static" else kind,
                     "player": None, "lat": lat, "lon": lon, "alt_m": alt}
     return None
 
@@ -383,7 +430,7 @@ def norm_object(wrapper):
 def _brief(obj):
     if not obj:
         return None
-    out = {"type": obj.get("type"), "name": obj.get("name"), "coalition": obj.get("coalition"),
+    out = {"type": object_type(obj), "name": clean_name(obj.get("name")), "coalition": obj.get("coalition"),
            "category": obj.get("category")}
     if obj.get("player"):
         out["player"] = obj["player"]
@@ -393,9 +440,9 @@ def _brief(obj):
 def _label(obj):
     if not obj:
         return "unknown"
-    who = obj.get("player") or obj.get("type") or obj.get("name") or obj.get("kind") or "unknown"
+    who = obj.get("player") or object_type(obj)
     if obj.get("player") and obj.get("type"):
-        who = "%s (%s)" % (obj["player"], obj["type"])
+        who = "%s (%s)" % (clean_name(obj["player"]), object_type(obj))
     coal = obj.get("coalition")
     return "%s %s" % (coal, who) if coal and coal != "unknown" else who
 
@@ -464,6 +511,9 @@ class Eye:
             self.used_session = Counter()  # my weapons used this mission (from stores diff or shot events)
             self.fired_events = Counter()  # my shot events this mission (fallback when stores are unavailable)
             self.my_kills = []  # confirmed/inferred kills by the pilot this mission
+            self.other_kills = []  # explicit other-shooter kills, retained for the mission
+            self.known_objects = {}  # (kind, id) -> descriptor, including scenery hit before kill
+            self.weapon_types = {}  # weapon id -> known shot/hit type, retained for the mission
             self.life = None
             self.damage_events = deque(maxlen=100)
             self.announced = set()
@@ -618,7 +668,7 @@ class Eye:
               "weapon": None, "weapon_id": None, "place": None}
         weapon = body.get("weapon")
         if isinstance(weapon, dict):
-            ev["weapon"] = weapon.get("type") or None
+            ev["weapon"] = descriptor_type(weapon) or None
             ev["weapon_id"] = int(weapon.get("id", 0) or 0) or None
             wlat, wlon, walt = _pos(weapon)
             if wlat is not None:
@@ -626,7 +676,7 @@ class Eye:
                 ev["weapon_pos"] = {"lat": wlat, "lon": wlon, "alt_m": walt,
                                     "heading": vel.get("heading", (weapon.get("orientation") or {}).get("heading")),
                                     "speed_ms": vel.get("speed")}
-        if body.get("weapon_name"):
+        if _known_type(body.get("weapon_name")):
             ev["weapon"] = ev["weapon"] or body["weapon_name"]
         place = body.get("place")
         if isinstance(place, dict):
@@ -654,6 +704,9 @@ class Eye:
                 self.used_session.clear()
                 self.fired_events.clear()
                 self.my_kills = []
+                self.other_kills = []
+                self.known_objects.clear()
+                self.weapon_types.clear()
                 self.announced = set()
                 self.life = None
                 self.damage_events.clear()
@@ -662,6 +715,14 @@ class Eye:
                 self._sam_alerted = {}
                 if self.on_mission_start is not None:
                     self.on_mission_start()
+            ev["initiator"] = self._enrich_object(ev["initiator"])
+            ev["target"] = self._enrich_object(ev["target"])
+            wid = ev["weapon_id"]
+            if wid:
+                if _known_type(ev["weapon"]):
+                    self.weapon_types[wid] = ev["weapon"]
+                else:
+                    ev["weapon"] = self.weapon_types.get(wid)
             self.events.append(ev)
             self._prune(now)
             wake = self._apply(ev)
@@ -713,6 +774,25 @@ class Eye:
         return own is not None and obj.get("kind", "unit") == "unit" and bool(obj.get("id")) \
             and obj.get("id") == own["id"]
 
+    def _enrich_object(self, obj):
+        if not obj:
+            return obj
+        key = (obj.get("kind", "unit"), obj.get("id"))
+        previous = self.known_objects.get(key) or {}
+        if key[0] == "unit":
+            previous = self.last_known.get(key[1]) or previous
+        out = dict(obj)
+        for k, v in previous.items():
+            if out.get(k) in (None, "", "unknown"):
+                out[k] = v
+        if not _known_type(obj.get("type")) and previous.get("category"):
+            out["category"] = previous["category"]
+        if not _known_type(out.get("type")):
+            out["type"] = obj.get("kind", "unknown")
+        if key[1]:
+            self.known_objects[key] = out.copy()
+        return out
+
     def _apply(self, ev):
         """Apply one event; returns True when a player fired (stores refresh wanted)."""
         kind, ini, tgt = ev["kind"], ev["initiator"], ev["target"]
@@ -750,7 +830,11 @@ class Eye:
             self._resolve(ev, "hit")
         elif kind == "kill" and me:
             self._resolve(ev, "kill")
-            self._record_my_kill(tgt, ev.get("weapon"), "kill event", ev["t"], mission_time=ev.get("mission_time"))
+            self._record_my_kill(tgt, ev.get("weapon"), "kill event", ev["t"],
+                                 mission_time=ev.get("mission_time"), shooter=ini)
+        elif kind == "kill" and ini and tgt:
+            self._record_kill(self.other_kills, tgt, ev.get("weapon"), "kill event", ev["t"],
+                              mission_time=ev.get("mission_time"), shooter=ini)
         return (kind in ("shot", "shooting_start", "shooting_end") and bool(ini) and
                 (me or bool(ini.get("player")))) or (kind == "birth" and bool(ini) and bool(ini.get("player")))
 
@@ -838,7 +922,7 @@ class Eye:
         tgt = ev.get("target") or {}
         open_shots = [s for s in self.shots if s["result"] in ("pending", "hit") or s["result"].startswith("likely")]
         if wid:
-            for s in open_shots:
+            for s in reversed(self.shots):
                 if s["weapon_id"] == wid:
                     return s
         if ev["kind"] == "kill" and tgt.get("id"):
@@ -910,6 +994,8 @@ class Eye:
         uid = unit.get("id")
         if not uid or unit.get("player"):
             return
+        if any(k["target_id"] == uid and k["target_kind"] == "unit" for k in self.other_kills):
+            return  # explicit other-shooter kill must not become mine on dead/unit_lost
         s, hit = self._attack_on(unit, ev["t"])
         if s is None:
             return
@@ -919,24 +1005,47 @@ class Eye:
         how = ("hit then %s event" if hit else "%s event after my attack on it") % ev["kind"]
         self._record_my_kill(target, s["weapon"], how, ev["t"], mission_time=ev.get("mission_time"))
 
-    def _record_my_kill(self, target, weapon, how, t, inferred=False, likely=False, mission_time=None):
+    def _record_kill(self, rows, target, weapon, how, t, inferred=False, likely=False, mission_time=None,
+                     shooter=None):
         if not target:
             return None
         tid = target.get("id")
-        splash = "Splash one %s" % spoken_type(target.get("type"))
-        for old in self.my_kills:
-            if tid and old["target_id"] == tid:
+        target_kind = target.get("kind", "unit")
+        splash = "Splash one %s" % spoken_type(object_type(target))
+        for old in rows:
+            if tid and old["target_id"] == tid and old["target_kind"] == target_kind:
+                if _known_type(target.get("type")):
+                    old.update(type=object_type(target), category=target.get("category"))
+                if old["mission_time"] is None and mission_time is not None:
+                    old["mission_time"] = mission_time
+                if _known_type(weapon):
+                    old["weapon"] = weapon
                 if old.get("likely") and not likely:  # stronger evidence later: no more "likely"
                     old.update(likely=False, confidence="confirmed", how=how, weapon=weapon or old["weapon"],
                                splash_call=splash)
                 if old["inferred"] and not inferred:  # confirmed later by a real event
                     old.update(inferred=False, how=how, weapon=weapon or old["weapon"], splash_call=splash)
                 return old
-        k = {"key": "%s-%s" % (tid, round(t, 1)), "target_id": tid, "t": t, "type": target.get("type"),
+        own = self._own_locked() or {}
+        shooter = shooter or own
+        k = {"key": "%s-%s-%s" % (target_kind, tid, round(t, 1)), "target_id": tid, "target_kind": target_kind,
+             "seq": next(self._seq), "t": t, "mission_time": mission_time, "type": object_type(target),
+             "shooter_id": str(shooter.get("id") or shooter.get("name") or "me"), "shooter": dict(shooter),
+             "friendly": rows is self.my_kills or (own.get("coalition") in ("blue", "red") and
+                                                    shooter.get("coalition") == own["coalition"]),
+             "flight_member": bool(own.get("group") and shooter.get("group") == own["group"]),
              "category": target.get("category"), "group": target.get("group"), "weapon": weapon, "how": how,
              "inferred": inferred, "likely": likely, "confidence": "likely" if likely else "confirmed",
              "splash_call": splash + (", likely" if likely else "")}
-        self.my_kills.append(k)
+        rows.append(k)
+        return k
+
+    def _record_my_kill(self, target, weapon, how, t, inferred=False, likely=False, mission_time=None, shooter=None):
+        before = len(self.my_kills)
+        k = self._record_kill(self.my_kills, target, weapon, how, t, inferred, likely, mission_time, shooter)
+        if k is None or len(self.my_kills) == before:
+            return k
+        tid = target.get("id")
         shooter = self._own_locked() or {}
         self._log_store({"kind": "kill_by_me", "target": dict(_brief(target), id=tid), "weapon": weapon, "how": how,
                          "shooter": dict(_brief(shooter) or {}, id=shooter.get("id")), "mission_time": mission_time,
@@ -1050,7 +1159,7 @@ class Eye:
         if hdg is not None and abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) > 45.0:
             return None  # flying away from Prometheus
         hour = clock_of(brg - (own.get("heading") or 0.0))
-        wtype = spoken_type(ev["weapon"] or "missile")
+        wtype = weapon_name(ev["weapon"] or "missile")
         call = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
         return self._threat_alert("launch-%s" % (ev["weapon_id"] or ev["seq"]), call, "missile launch", ev["t"],
                                   source="shot event", type=wtype, launcher=spoken_type(ini.get("type")),
@@ -1090,7 +1199,7 @@ class Eye:
                     continue
                 hour = clock_of(brg - (own.get("heading") or 0.0))
                 wid = str(r.get("id") or "%s-%s" % (r.get("type"), r.get("launcher")))
-                wtype = spoken_type(r.get("type") or "missile")
+                wtype = weapon_name(r.get("type") or "missile")
                 row = {"type": wtype, "range_nm": round(rng, 1), "clock": hour, "targeting_me": at_me,
                        "closing": closing, "launcher": spoken_type(r.get("launcher_type")) if r.get("launcher_type")
                        else None, "speed_kt": int(round(speed * MS_TO_KT))}
@@ -1531,7 +1640,7 @@ class Eye:
         g["call"] = call_line(label, g.get("bearing_mag") or g.get("bearing_true"), rng, clock_of(rel), dom,
                               g.get("alt_ft"), g.get("vertical"))
         g["overhead_allowed"] = dom == "air" and rng <= 3.0
-        names = sorted({m[2]["group"] for m in members if m[2]["group"]})
+        names = sorted({clean_name(m[2]["group"]) for m in members if m[2]["group"]})
         if names:
             g["groups"] = names[:3]
         players = sorted({m[2]["player"] for m in members if m[2].get("player")})
@@ -1575,7 +1684,8 @@ class Eye:
             if it["kind"] == "gun":
                 gun += it["count"]
                 continue
-            weapons.append({"weapon": it["name"], "type": t, "kind": it["kind"], "count": it["count"]})
+            weapons.append({"weapon": weapon_name(it["name"]), "type": weapon_name(t),
+                            "kind": it["kind"], "count": it["count"]})
         out = {"available": True, "age_s": round(now - snap["t"], 1), "weapons": weapons, "gun_rounds": gun}
         out["source"] = {"cockpit": "cockpit (Export.lua payload)", "eval": "DCS-gRPC Eval getAmmo"}.get(
             snap.get("source", "eval"), snap.get("source"))
@@ -1723,6 +1833,64 @@ class Eye:
         pic["air_picture_radius_nm"] = AIR_PICTURE_RADIUS_NM
         pic["air_picture_empty_call"] = "No bandits within fifty miles."
 
+    @staticmethod
+    def _kill_row(k, now):
+        return {"target": spoken_type(k["type"]), "target_id": k["target_id"], "target_kind": k["target_kind"],
+                "category": "vehicles" if k["category"] == "ground vehicle" else k["category"],
+                "weapon": weapon_name(k["weapon"]), "seq": k["seq"], "t": k["t"],
+                "mission_time": k["mission_time"], "shooter_id": k["shooter_id"],
+                "age_s": int(now - k["t"]), "confidence": k["confidence"], "inferred": k["inferred"],
+                "how": k["how"]}
+
+    def _friendly_kills(self, own):
+        coalition = (own or {}).get("coalition")
+        if coalition not in ("blue", "red") and self.my_kills:
+            coalition = self.my_kills[-1]["shooter"].get("coalition")
+        for k in self.other_kills:
+            if coalition in ("blue", "red") and k["shooter"].get("coalition") == coalition:
+                k["friendly"] = True
+        return sorted(self.my_kills + [k for k in self.other_kills if k["friendly"]], key=lambda k: k["seq"])
+
+    def kills_since(self, seq, shooter="me"):
+        """Non-consuming cursor query; duplicates/upgrades retain their original sequence number."""
+        with self.lock:
+            rows = self.my_kills if shooter == "me" else self._friendly_kills(self._own_locked())
+            return [self._kill_row(k, self.clock()) for k in rows if k["seq"] > seq and
+                    (shooter in ("me", "all_friendly") or k["shooter_id"] == str(shooter))]
+
+    @staticmethod
+    def _kill_counts(rows):
+        categories: dict[str, int] = dict.fromkeys(("armor", "AAA", "SAM", "infantry", "vehicles", "scenery"), 0)
+        categories.update(Counter(k["category"] or "unknown" for k in rows))
+        return {"total": len(rows), "confirmed": sum(k["confidence"] == "confirmed" for k in rows),
+                "likely": sum(k["confidence"] == "likely" for k in rows), "by_category": categories,
+                "by_type": dict(Counter(k["target"] for k in rows))}
+
+    def _mission_kills_json(self, pic, own, now):
+        mine = [self._kill_row(k, now) for k in self.my_kills]
+        friendly = self._friendly_kills(own)
+        rows = [self._kill_row(k, now) for k in friendly]
+        pic["my_kills_this_mission"] = mine
+        pic["my_kills_recent"] = [k for k in mine if now - k["t"] <= 600]
+        pic["friendly_kills_this_mission"] = rows
+        pic["friendly_kills_recent"] = [k for k in rows if now - k["t"] <= 600]
+        pic["kill_seq"] = max((k["seq"] for k in self.my_kills + self.other_kills), default=0)
+        shooters = {}
+        # Include flight members with zero kills as well as shooters already lost/despawned.
+        for u in self.units.values():
+            if own and u.get("coalition") == own.get("coalition") and u.get("group") == own.get("group"):
+                shooters[str(u["id"])] = u
+        shooters.update({k["shooter_id"]: k["shooter"] for k in friendly})
+        flight_members = {k["shooter_id"] for k in friendly if k["flight_member"]}
+        by_shooter = {}
+        for sid, shooter in shooters.items():
+            counts = self._kill_counts([k for k in rows if k["shooter_id"] == sid])
+            by_shooter[sid] = dict(counts, shooter=_brief(shooter),
+                                  flight_member=sid in flight_members or bool(own and own.get("group") and
+                                                                             shooter.get("group") == own["group"]))
+        pic["kill_tallies"] = {"me": self._kill_counts(mine), "all_friendly": self._kill_counts(rows),
+                               "by_shooter": by_shooter}
+
     def _picture_locked(self, own):
         now = self.clock()
         self._prune(now)
@@ -1741,6 +1909,8 @@ class Eye:
                 "Every unit listed in contacts/totals is ALIVE as of data_age_s.",
                 "Kills, losses and deaths come ONLY from recent_kills_and_losses / my_shots / my_kills. A kill with "
                 "confidence confirmed is a kill (say splash, no 'likely'); only confidence likely is 'likely'.",
+                "Mission totals come from kill_tallies / my_kills_this_mission, never recent lists. "
+                "For fresh confirmations use my_kills_recent seq after your last confirmation cursor.",
                 "clock is relative to Prometheus' nose (12 = ahead).",
                 "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
                 "picture_top3 = the three closest hostile air groups within 50 nm, verbatim. No extra-group count.",
@@ -1758,8 +1928,8 @@ class Eye:
             pic["ownship_note"] = "Prometheus is not currently in an aircraft (no unit with player name %s)" % self.player
         else:
             pic["ownship"] = {
-                "type": own["type"], "coalition": own["coalition"], "group": own["group"],
-                "player_name": own.get("player"),
+                "type": own["type"], "coalition": own["coalition"], "group": clean_name(own["group"]),
+                "player_name": clean_name(own.get("player")) or None,
                 "alt_ft": int(round((own["alt_m"] or 0) * M_TO_FT)),
                 "speed_kt": int(round((own["speed_ms"] or 0) * MS_TO_KT)),
                 "heading_true": _three(own["heading"] or 0),
@@ -1787,18 +1957,18 @@ class Eye:
         pic["my_shots_last_15_min"] = self._shots_json(own, now)
         pic["last_attack_age_s"] = (round(now - max(self._last_activity(s, now) for s in self.shots), 1)
                                     if self.shots else None)
-        pic["my_kills_this_mission"] = [
-            {"target": spoken_type(k["type"]), "category": k["category"], "weapon": k["weapon"],
-             "age_s": int(now - k["t"]), "confidence": k.get("confidence", "confirmed"), "inferred": k["inferred"],
-             "how": k["how"]} for k in self.my_kills[-15:]]
+        self._mission_kills_json(pic, own, now)
         pending = [k for k in self.my_kills if k["key"] not in self.announced and now - k["t"] < 600]
         if pending:
             pic["splash_to_announce"] = [k["splash_call"] for k in pending]
             pic["_splash_keys"] = [k["key"] for k in pending]
         used = self.used_session if self.used_session else self.fired_events
+        named_used = Counter()
+        for name, count in used.items():
+            named_used[weapon_name(name)] += count
         pic["my_weapons_used_this_mission"] = {
             "source": "stores (loadout diff)" if self.used_session else "shot events",
-            "by_weapon": dict(used)}
+            "by_weapon": dict(named_used)}
         pic["recent_kills_and_losses_last_10_min"] = self._kills_json(own, now)
         pic["recent_events_last_10_min"] = self._events_text(own, now)
         totals = {}
@@ -1861,7 +2031,8 @@ class Eye:
         for s in self.shots:
             if now - s["t"] > 15 * 60:
                 continue
-            row = {"weapon": s["weapon"], "kind": s["kind"], "age_s": int(now - s["t"]), "result": s["result"]}
+            row = {"weapon": weapon_name(s["weapon"]), "kind": s["kind"], "age_s": int(now - s["t"]),
+                   "result": s["result"]}
             if s.get("weapon_source") == "stores_diff":
                 row["weapon_from"] = "loadout change"
             if s.get("source") == "stores_diff" and not s.get("event_seen"):
@@ -1871,9 +2042,9 @@ class Eye:
             if s.get("vanished_targets"):
                 row["no_longer_showing"] = s["vanished_targets"]
             if s["intended_target"]:
-                row["intended_target"] = s["intended_target"]
+                row["intended_target"] = dict(s["intended_target"], **(_brief(s["intended_target"]) or {}))
             if s["hit_target"]:
-                row["hit"] = s["hit_target"]
+                row["hit"] = dict(s["hit_target"], **(_brief(s["hit_target"]) or {}))
             if s["kind"] == "gun":
                 row["hits"] = s["hits"]
             out.append(row)
@@ -1903,7 +2074,7 @@ class Eye:
             row = {"age_s": int(now - ev["t"]), "event": what, "victim": _brief(victim)}
             if killer:
                 row["killer"] = _brief(killer)
-                row["weapon"] = ev.get("weapon")
+                row["weapon"] = weapon_name(ev.get("weapon"))
                 row["by_me"] = self._is_me(killer)
             if victim and own is not None:
                 last = self.last_known.get(vid) or victim
@@ -1930,7 +2101,7 @@ class Eye:
                    "victim": _brief(u)}
             mine = next((k for k in self.my_kills if k["target_id"] == u["id"]), None)
             if mine:
-                row["by_me"], row["weapon"] = True, mine["weapon"]
+                row["by_me"], row["weapon"] = True, weapon_name(mine["weapon"])
                 if mine.get("confidence", "confirmed") == "confirmed":
                     row["event"] = "destroyed by me (stopped showing right after my attack; no death report)"
                     row["confidence"] = "confirmed"
@@ -1965,11 +2136,11 @@ class Eye:
             elif k == "base_capture":
                 text = "%s captured by %s" % (ev.get("place") or "base", _label(ini))
             elif k == "hit":
-                text = "%s hit %s with %s" % (_label(ini), _label(ev["target"]), ev.get("weapon") or "?")
+                text = "%s hit %s with %s" % (_label(ini), _label(ev["target"]), weapon_name(ev.get("weapon")))
             elif k == "own_damage":
                 text = ev["call"]
             elif k == "shot" and ini and (self._is_me(ini) or domain(ini.get("category", "")) == "air"):
-                text = "%s fired %s" % (_label(ini), ev.get("weapon") or "?")
+                text = "%s fired %s" % (_label(ini), weapon_name(ev.get("weapon")))
             elif k == "birth" and ini and ini.get("player"):
                 text = "%s spawned" % _label(ini)
             elif k in ("mission_start", "mission_end"):
@@ -1981,7 +2152,7 @@ class Eye:
             else:
                 continue
             if k == "hit" and own is not None and self._is_me(ev["target"]):
-                text = "PROMETHEUS WAS HIT by %s (%s)" % (_label(ini), ev.get("weapon") or "?")
+                text = "PROMETHEUS WAS HIT by %s (%s)" % (_label(ini), weapon_name(ev.get("weapon")))
             lines.append("%s: %s" % (ago, text))
         return lines
 

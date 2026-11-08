@@ -318,7 +318,7 @@ class ShotTests(unittest.TestCase):
         self.assertEqual(k["victim"]["type"], "SA-11 Buk LN 9A310M1")
         self.assertEqual(k["killer"]["name"], "Viper 2-1")
         self.assertFalse(k["by_me"])
-        self.assertEqual(k["weapon"], "AGM_88C")
+        self.assertEqual(k["weapon"], "AGM-88C")
         self.assertEqual(group(pic, "SA-11 Buk SR 9S18M1")["count"], 1)
         self.assertTrue(any("PROMETHEUS WAS HIT" in line for line in pic["recent_events_last_10_min"]))
 

@@ -9,6 +9,7 @@ the packets, keeps the latest cockpit state, tracks RWR lock/launch alerts and r
 from collections import deque
 import json
 import logging
+import re
 import socket
 import threading
 import time
@@ -30,6 +31,26 @@ AMMO_CATEGORY = {"gun": 0, "missile": 1, "rocket": 2, "bomb": 3, "torpedo": 4}
 # RWR signal types (DCS spells one "missle_radio_guided").
 SIGNAL_LEVEL = {"search": 0, "track": 1, "lock": 2, "launch": 3}
 _HOURS = "twelve one two three four five six seven eight nine ten eleven twelve".split()
+
+
+def clean_name(name):
+    return re.sub(r"^(?:-\s+)+", "", str(name or "").strip())
+
+
+def _known_type(value):
+    return bool(value) and str(value).strip().lower() not in ("unknown", "unknown weapon", "?") \
+        and not str(value).strip().isdigit()
+
+
+def weapon_name(name):
+    """Shared Eye/cockpit display label; retain raw DCS types in state for correlation."""
+    if not _known_type(name):
+        return "unknown weapon"
+    name = re.sub(r"^weapons\.[^.]+\.", "", str(name))
+    gun = re.match(r"(GAU[-_]?8|GAU[-_]?12|M61|GSH[-_]?23|GSH[-_]?30)(?:[-_]|$)", name, re.I)
+    if gun:
+        return re.sub(r"^(GAU|GSH)[-_]?", r"\1-", gun[1].upper())
+    return name.replace("_", "-")
 
 
 def signal_of(sig):
@@ -296,7 +317,8 @@ class CockpitState:
             spd = _f(p.get("gs")) if _f(p.get("gs")) is not None else _f(p.get("tas"))
             return {"id": -1, "name": p.get("unit") or "", "type": p.get("ac") or "", "callsign": "",
                     "group": p.get("group") or "", "coalition": coal, "group_category": "", "category": "fighter",
-                    "player": p.get("pilot"), "lat": _f(p.get("lat")), "lon": _f(p.get("lon")),
+                    "player": clean_name(p.get("pilot")) or None,
+                    "lat": _f(p.get("lat")), "lon": _f(p.get("lon")),
                     "alt_m": _f(p.get("alt")), "heading": _f(p.get("hdg")) or 0.0, "track": _f(p.get("hdg")) or 0.0,
                     "speed_ms": spd or 0.0, "seen": self.at, "source": "cockpit"}
 
@@ -316,7 +338,8 @@ class CockpitState:
                         "packets": self.packets, "status": self.status}
             age = now - self.at
             out = {"available": True, "fresh": age <= FRESH_S and self.stopped_at is None, "age_s": round(age, 1),
-                   "aircraft": p.get("ac"), "pilot": p.get("pilot")}
+                   "aircraft": p.get("ac"),
+                   "pilot": clean_name(p.get("pilot")) or None}
             if self.stopped_at is not None:
                 out["note"] = self.status
             if age > 60:
@@ -373,9 +396,15 @@ class CockpitState:
                 stations = []
                 for st in _list((pay[0] or {}).get("st")):
                     if isinstance(st, dict) and _f(st.get("c")) and (not st.get("l") or st["l"][0] == WS_WEAPON):
-                        stations.append({"station": st.get("i"), "weapon": st.get("n"), "count": int(st["c"])})
+                        stations.append({"station": st.get("i"), "weapon": weapon_name(st.get("n")),
+                                         "count": int(st["c"])})
+                by_weapon = {}
+                for a in snap["ammo"]:
+                    if a["type"] != "gun":
+                        name = weapon_name(a["name"])
+                        by_weapon[name] = by_weapon.get(name, 0) + a["count"]
                 out["payload"] = {"age_s": round(now - pay[1], 1), "stations": stations,
-                                  "by_weapon": {a["name"]: a["count"] for a in snap["ammo"] if a["type"] != "gun"},
+                                  "by_weapon": by_weapon,
                                   "gun_rounds": next((a["count"] for a in snap["ammo"] if a["type"] == "gun"), 0),
                                   "selected_station": (pay[0] or {}).get("cur")}
             out["rwr"] = self._rwr_json(p)

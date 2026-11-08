@@ -94,7 +94,7 @@ class SinglePlayerAttributionTests(unittest.TestCase):
         eye.on_event(fx.kill(A10, 9001, "AGM_65D", T72_A))
         pic = eye.picture()
         s = pic["my_shots_last_15_min"]["shots"][0]
-        self.assertEqual((s["weapon"], s["result"]), ("AGM_65D", "kill"))
+        self.assertEqual((s["weapon"], s["result"]), ("AGM-65D", "kill"))
         self.assertEqual(pic["my_kills_this_mission"][0]["target"], "T-72B")
         self.assertEqual(pic["splash_to_announce"], ["Splash one T-72B"])
         self.assertTrue(pic["recent_kills_and_losses_last_10_min"][0]["by_me"])
@@ -154,7 +154,7 @@ class VanishTests(unittest.TestCase):
         self.assertEqual(pic["splash_to_announce"], ["Splash one T-72B"])
         row = pic["recent_kills_and_losses_last_10_min"][0]
         self.assertTrue(row["by_me"] and row["inferred"])
-        self.assertEqual(row["weapon"], "GBU_12")
+        self.assertEqual(row["weapon"], "GBU-12")
         # A real kill event later clears the inferred flag.
         eye.on_event(fx.kill(A10, 9004, "GBU_12", T72_A))
         self.assertFalse(eye.picture()["my_kills_this_mission"][0]["inferred"])

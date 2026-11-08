@@ -142,6 +142,7 @@ WINGMAN_ASK = re.compile(r"\b(wing ?m[ae]n|wingie|dash two|number two|my two|fri
 CATEGORY_ASK = (
     (re.compile(r"\b(air ?defen[cs]es?|sams?|triple a|aaa|flak|shilka|strela|manpads?)\b", re.I), ("AAA", "SAM")),
     (re.compile(r"\b(armou?r|tanks?)\b", re.I), ("armor",)),
+    (re.compile(r"\b(artillery|arty|mlrs|howitzers?)\b", re.I), ("artillery",)),
     (re.compile(r"\b(infantry|troops?|soldiers?)\b", re.I), ("infantry",)),
     (re.compile(r"\b(trucks?|vehicles?|transports?)\b", re.I), ("ground vehicle",)),
     (re.compile(r"\b(bridges?|buildings?|structures?)\b", re.I), ("scenery", "static")),
@@ -149,7 +150,11 @@ CATEGORY_ASK = (
 CATEGORY_ALIASES = {"vehicles": "ground vehicle", "vehicle": "ground vehicle", "air defense": "SAM",
                     "aaa": "AAA", "sam": "SAM", "tank": "armor", "armour": "armor"}
 CATEGORY_WORDS = {"armor": "enemy armor", "AAA": "triple A", "SAM": "SAM", "infantry": "enemy infantry",
-                  "ground vehicle": "enemy vehicles", "scenery": "structures", "static": "structures"}
+                  "ground vehicle": "enemy vehicles", "scenery": "structures", "static": "structures",
+                  "artillery": "enemy artillery", "train": "trains", "ship": "ships"}
+# Categories that are never "ground units" for a generic "what remains" (air or map objects).
+NOT_GROUND = {"fighter", "attack", "bomber", "helicopter", "transport", "tanker", "awacs", "aircraft", "air", "plane",
+              "uav", "drone", "scenery", "static", "ship"}
 NON_WEAPON = re.compile(r"(ALQ|LITENING|AAQ|\bpod\b|TGP|fuel tank|\btank\b|smoke)", re.I)
 SCENERY_NAMES = ((re.compile(r"\bMOST\b|BRIDGE", re.I), "bridge"), (re.compile(r"HANGAR", re.I), "hangar"),
                  (re.compile(r"BUNKER", re.I), "bunker"), (re.compile(r"TOWER", re.I), "tower"))
@@ -383,7 +388,8 @@ class SimpleController:
         self._waiting = 0
         self._waiting_lock = threading.Lock()
         self.empty_transcripts = 0  # whisper returned nothing usable (suppressed, counted)
-        self._confirmed_kills = []  # round 6: (abs_time, target) already read back to the pilot
+        self._confirmed_kills = []
+        self._pending_ack = None  # round 6: (abs_time, target) already read back to the pilot
         self.transmissions = 0
         # Duck-typed for server code that may consult a provider attribute.
         self.provider = self
@@ -605,7 +611,9 @@ class SimpleController:
         counts = Counter(r[1] for r in rows)
         return "%s %s." % (label, ", ".join("%s %s" % (words(n), t) for t, n in counts.items()))
 
-    def kill_confirm_calls(self, text, pic, pic_time=None):
+    def kill_confirm_calls(self, text, pic, pic_time=None, commit=True):
+        """commit=False leaves the acknowledgement in self._pending_ack; the caller commits it only once the
+        answer is actually transmitted (an overflowed answer must not mark kills as read back)."""
         wingman = bool(WINGMAN_ASK.search(text))
         owner = "wingman" if wingman else "me"
         prefix = "wingman " if wingman else ""
@@ -640,7 +648,10 @@ class SimpleController:
                              else "No %skills showing." % prefix)
         lines = [" ".join(line.split()) for line in lines]
         # remember only what this answer actually reported (category-filtered rows), upgrades in place
-        self._remember(owner, new, upgraded)
+        if commit:
+            self._remember(owner, new, upgraded)
+        else:
+            self._pending_ack = (owner, new, upgraded)
         if REMAIN_ASK.search(text):
             lines.append(self.remaining_line(pic, cats))
         return lines
@@ -654,10 +665,11 @@ class SimpleController:
             n = sum(enemy.get(c, 0) for c in cats)
             label = CATEGORY_WORDS.get(cats[0], "enemy " + str(cats[0]))
             return ("%s %s remain." % (words(n).capitalize(), label)) if n else "No %s remaining." % label
-        ground = [(k, v) for k, v in enemy.items() if v and k in CATEGORY_WORDS and k not in ("scenery", "static")]
+        ground = [(k, v) for k, v in enemy.items() if v and k not in NOT_GROUND]
         if not ground:
             return "No enemy ground units remaining."
-        parts = ["%s %s" % (words(v), CATEGORY_WORDS[k]) for k, v in sorted(ground, key=lambda kv: -kv[1])]
+        parts = ["%s %s" % (words(v), CATEGORY_WORDS.get(k, "enemy " + str(k)))
+                 for k, v in sorted(ground, key=lambda kv: -kv[1])]
         return "Remaining: %s." % ", ".join(parts)
 
     # ---------------------------------------------------------------- llm
@@ -764,7 +776,8 @@ class SimpleController:
             except Exception as failure:  # noqa: BLE001 - one retry, then a spoken fallback
                 self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
                           attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
-        calls = (self.kill_confirm_calls(text, pic, pic_time) if klass == "kill_confirm" and pic.get("ownship")
+        self._pending_ack = None
+        calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
                  and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
         if calls is not None:
             age = (pic.get("data_age_s") or {}).get("units")
@@ -779,7 +792,11 @@ class SimpleController:
                 self._log(request, "controller_error", outcome="fixed_response_overflow",
                           counts={"speech_chars": len(answer)})
                 answer = prefix + "requested calls are too long for one transmission. Ask for one group at a time."
+                self._pending_ack = None  # nothing was read back: keep the previous acknowledgement state
             else:
+                if self._pending_ack:
+                    self._remember(*self._pending_ack)
+                    self._pending_ack = None
                 remaining = MAX_SPEECH_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                     for i, alert in enumerate(pic.get(field) or []):

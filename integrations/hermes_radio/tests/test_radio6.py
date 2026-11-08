@@ -308,5 +308,57 @@ class ReviewFix2Tests(unittest.TestCase):
         self.assertNotIn("T-55", total)
 
 
+class ReviewFix3Tests(unittest.TestCase):
+    """RV-1 radio6c: artillery in remains; overflowed answers do not acknowledge kills."""
+
+    def controller(self, eye):
+        return SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                                llm=lambda messages: "LLM ANSWER")
+
+    def test_artillery_only_survivors_are_reported(self):
+        eye = FakeEye()
+        eye.pic["alive_totals_by_coalition"] = {"red": {"artillery": 2}}
+        eye.pic["my_kills_this_mission"] = [kill("T-55", 30)]
+        answer = say(self.controller(eye), "confirm kill, tell me what remains")
+        self.assertIn("two enemy artillery", answer)
+        self.assertNotIn("No enemy ground units", answer)
+
+    def test_mixed_armor_artillery_and_scenery_exclusion(self):
+        eye = FakeEye()
+        eye.pic["alive_totals_by_coalition"] = {"red": {"armor": 3, "artillery": 1, "scenery": 9, "fighter": 2}}
+        answer = say(self.controller(eye), "confirm kill, what's left")
+        self.assertIn("three enemy armor", answer)
+        self.assertIn("one enemy artillery", answer)
+        self.assertNotIn("structures", answer)
+        self.assertNotIn("fighter", answer)
+        self.assertIn("One enemy artillery remain", say(self.controller(eye), "confirm kill, how much artillery remains"))
+
+    def many_kills(self, confidence="confirmed"):
+        rows = []
+        for i in range(60):
+            row = kill("Target type number %02d long name" % i, 100 + i, "armor", confidence=confidence)
+            row["seq"] = i + 1
+            rows.append(row)
+        return rows
+
+    def test_overflowed_confirmation_does_not_acknowledge(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = self.many_kills()
+        c = self.controller(eye)
+        self.assertIn("too long for one transmission", say(c, "confirm kills"))
+        eye.pic["my_kills_this_mission"] = self.many_kills()[:1]
+        self.assertIn("splash one Target type number 00", say(c, "confirm kill"))
+
+    def test_overflowed_upgrade_is_retried(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = self.many_kills("likely")[:1]
+        c = self.controller(eye)
+        self.assertIn("Likely", say(c, "confirm kill"))
+        eye.pic["my_kills_this_mission"] = self.many_kills()
+        self.assertIn("too long for one transmission", say(c, "confirm kills"))
+        eye.pic["my_kills_this_mission"] = self.many_kills()[:1]
+        self.assertIn("Now confirmed, earlier likely", say(c, "confirm kill"))
+
+
 if __name__ == "__main__":
     unittest.main()

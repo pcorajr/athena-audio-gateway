@@ -23,6 +23,9 @@ ownership by (target_kind, target_id): one active target, original seq/t, no sup
 Superseded rows remain in the internal ledger row's attribution_history, not active counts. A later
 explicit shooter correction also replaces the owner; inference cannot override explicit ownership.
 Cursor queries report new targets, not ownership changes; reread mission tallies for corrections.
+Shot results also drop superseded credit: a real hit remains "hit"; without a hit the result is
+"kill credited to another shooter". Area shots retain "kill" (or a likely result) while another
+target still supports pilot credit. my_shots_last_15_min.by_result uses those corrected results.
 Mission start/reset clears all tallies/history; sequence numbers never rewind.
 """
 from collections import Counter, OrderedDict, deque
@@ -934,7 +937,8 @@ class Eye:
                     return s
         if ev["kind"] == "kill" and tgt.get("id"):
             for s in reversed(open_shots):
-                if s["hit_target"] and s["hit_target"].get("id") == tgt["id"]:
+                if s["hit_target"] and s["hit_target"].get("id") == tgt["id"] and \
+                        s["hit_target"].get("kind", "unit") == tgt.get("kind", "unit"):
                     return s
         for s in open_shots:
             if wname and _norm_weapon_name(s["weapon"]) == wname and s["result"] == "pending":
@@ -957,14 +961,40 @@ class Eye:
         s["hits"] += 1 if outcome == "hit" else 0
         if tgt:
             s["hit_target"] = {"id": tgt.get("id"), "type": tgt.get("type"), "name": tgt.get("name"),
+                               "kind": tgt.get("kind", "unit"),
                                "coalition": tgt.get("coalition"), "category": tgt.get("category"),
                                "player": tgt.get("player")}
-        if outcome == "kill" or s["result"] != "kill":
+        if outcome == "kill" and tgt:
+            self._set_shot_kill(s, tgt, "kill")
+        elif s["result"] != "kill":
             s["result"] = outcome
         s["resolved_t"] = ev["t"]
         self._log_store({"kind": "shot_result", "weapon": s["weapon"], "weapon_kind": s["kind"], "result": outcome,
                          "target": s["hit_target"], "source": "%s event" % outcome})
         return s
+
+    @staticmethod
+    def _set_shot_kill(s, target, result):
+        """Keep each target's evidence so correcting one owner cannot erase an area shot's other kills."""
+        key = (target.get("kind", "unit"), target.get("id"))
+        credits = s.setdefault("kill_targets", {})
+        if credits.get(key) != "kill":
+            credits[key] = result
+        s["result"] = "kill" if "kill" in credits.values() else result
+
+    def _reconcile_shot_ownership(self, target):
+        key = (target.get("kind", "unit"), target.get("id"))
+        for s in self.shots:
+            credits = s.get("kill_targets", {})
+            if key not in credits:
+                continue
+            del credits[key]
+            s.get("vanished_targets", {}).pop(key, None)
+            s.pop("kill_evidence", None)
+            if credits:
+                s["result"] = "kill" if "kill" in credits.values() else next(iter(credits.values()))
+            else:
+                s["result"] = "hit" if s["hits"] else "kill credited to another shooter"
 
     @staticmethod
     def _last_activity(s, now):
@@ -981,7 +1011,8 @@ class Eye:
         for s in reversed(self.shots):
             if now - s["t"] > CREDIT_WINDOW_S:
                 break
-            hit = bool(uid) and (s["hit_target"] or {}).get("id") == uid
+            hit = bool(uid) and (s["hit_target"] or {}).get("id") == uid and \
+                (s["hit_target"] or {}).get("kind", "unit") == unit.get("kind", "unit")
             aimed = bool(uid) and (s["intended_target"] or {}).get("id") == uid
             area = s["kind"] in ("bomb", "rocket", "gun")
             same_group = bool(group) and area and group in ((s["intended_target"] or {}).get("group"),
@@ -1006,9 +1037,9 @@ class Eye:
         s, hit = self._attack_on(unit, ev["t"])
         if s is None:
             return
-        s["result"] = "kill"
         s["resolved_t"] = ev["t"]
         target = s["hit_target"] if hit else unit
+        self._set_shot_kill(s, target, "kill")
         how = ("hit then %s event" if hit else "%s event after my attack on it") % ev["kind"]
         self._record_my_kill(target, s["weapon"], how, ev["t"], mission_time=ev.get("mission_time"))
 
@@ -1018,6 +1049,8 @@ class Eye:
             return None
         tid = target.get("id")
         target_kind = target.get("kind", "unit")
+        if rows is self.other_kills and how == "kill event":
+            self._reconcile_shot_ownership(target)
         splash = "Splash one %s" % spoken_type(object_type(target))
         own = self._own_locked() or {}
         shooter = shooter or own
@@ -1102,12 +1135,11 @@ class Eye:
             window = max(window, SOFT_VANISH_CONFIRM_S)
         confirmed = hit or dt <= window
         if confirmed:
-            s["result"] = "kill"
+            self._set_shot_kill(s, unit, "kill")
             s["kill_evidence"] = "target stopped showing %d s after my attack%s" % (dt, " (hit seen)" if hit else "")
             how = "target stopped showing %d s after my attack (no death event)" % dt
         else:
-            if s["result"] != "kill":
-                s["result"] = "likely kill (inferred: target no longer showing)"
+            self._set_shot_kill(s, unit, "likely kill (inferred: target no longer showing)")
             how = "target vanished %d s after my shot (weak evidence)" % dt
         target = s.get("intended_target") or {}
         before = target.get("group_count_at_launch")
@@ -1117,7 +1149,7 @@ class Eye:
                 how += "; targeted group count %d to %d" % (before, after)
                 s["group_count_drop"] = {"from": before, "to": after}
         s["resolved_t"] = now
-        s.setdefault("vanished_targets", []).append(spoken_type(unit.get("type")))
+        s.setdefault("vanished_targets", {})[(unit.get("kind", "unit"), uid)] = spoken_type(unit.get("type"))
         self._record_my_kill(unit, s["weapon"], how, now, inferred=True, likely=not confirmed)
 
     def pilot_report(self, text):
@@ -1144,11 +1176,14 @@ class Eye:
                 target = s["hit_target"] or s["intended_target"]
                 if s["result"] == "kill" or not target or not target.get("type"):
                     continue
-                s["result"] = "kill"
+                if any(k["target_id"] == target.get("id") and
+                       k["target_kind"] == target.get("kind", "unit") for k in self.other_kills):
+                    continue
+                target = dict(target, id=target.get("id") or "pilot-%d" % int(now))
+                self._set_shot_kill(s, target, "kill")
                 s["resolved_t"] = now
                 s["kill_evidence"] = "pilot report"
-                self._record_my_kill(dict(target, id=target.get("id") or "pilot-%d" % int(now)), s["weapon"],
-                                     "pilot report", now)
+                self._record_my_kill(target, s["weapon"], "pilot report", now)
                 self._log_store({"kind": "kill_confirmed_by_pilot", "target_type": target.get("type"),
                                  "text": text[:120]})
                 return {"confirmed": spoken_type(target.get("type")), "how": "pilot report on my last attack"}
@@ -2069,7 +2104,7 @@ class Eye:
             if s.get("stores_count"):
                 row["count"] = s["stores_count"]
             if s.get("vanished_targets"):
-                row["no_longer_showing"] = s["vanished_targets"]
+                row["no_longer_showing"] = list(s["vanished_targets"].values())
             if s["intended_target"]:
                 row["intended_target"] = dict(s["intended_target"], **(_brief(s["intended_target"]) or {}))
             if s["hit_target"]:

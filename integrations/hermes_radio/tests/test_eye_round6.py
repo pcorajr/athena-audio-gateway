@@ -187,13 +187,13 @@ class MissionTallyTests(unittest.TestCase):
 
 
 class KillOwnershipTests(unittest.TestCase):
-    def attack(self):
+    def attack(self, weapon="AGM_65D"):
         eye, clock = scenario()
         unit = fx.unit(22, "Armor", "T-55", "red", "Armor", "GROUND", 42.09, 43.77, 680)
         eye.on_unit(unit)
-        eye.on_event(fx.shot(PILOT, 900, "AGM_65D"))
+        eye.on_event(fx.shot(PILOT, 900, weapon))
         clock.t += 1
-        eye.on_event(fx.hit(PILOT, 900, "AGM_65D", unit))
+        eye.on_event(fx.hit(PILOT, 900, weapon, unit))
         return eye, clock, unit
 
     def disappear(self, eye, unit, kind):
@@ -221,6 +221,11 @@ class KillOwnershipTests(unittest.TestCase):
         self.assertEqual(eye.kills_since(0, "2"), rows)
         self.assertEqual(eye.kills_since(seq, "all_friendly"), [])
         self.assertEqual(pic["kill_seq"], seq)
+        shots = pic["my_shots_last_15_min"]
+        self.assertEqual(shots["by_result"], {"hit": 1})
+        self.assertEqual(shots["shots"][0]["result"], "hit")
+        self.assertEqual(shots["shots"][0]["hit"]["id"], 22)
+        self.assertEqual(eye.shots[0]["hits"], 1)
 
     def ownership_order(self, kind, explicit_first=False):
         eye, clock, unit = self.attack()
@@ -272,7 +277,7 @@ class KillOwnershipTests(unittest.TestCase):
 
     def test_ownership_reconciliation_is_scoped_by_kind_and_id(self):
         eye, clock, unit = self.attack()
-        eye.on_event(event(target(22, "MOST(ROAD)BIG-CRUSH", "scenery")))
+        eye.on_event(event(target(22, "MOST(ROAD)BIG-CRUSH", "scenery"), wid=900))
         scenery_seq = eye.my_kills[0]["seq"]
         eye.on_gone(22)
         unit_seq = eye.my_kills[1]["seq"]
@@ -284,6 +289,7 @@ class KillOwnershipTests(unittest.TestCase):
                          [("scenery", scenery_seq)])
         self.assertEqual(eye.other_kills[0]["seq"], unit_seq)
         self.assertEqual(pic["splash_to_announce"], ["Splash one bridge"])
+        self.assertEqual(pic["my_shots_last_15_min"]["by_result"], {"kill": 1})
 
     def test_enemy_credit_removes_inferred_friendly_credit(self):
         eye, _, unit = self.attack()
@@ -297,6 +303,7 @@ class KillOwnershipTests(unittest.TestCase):
         self.assertNotIn("splash_to_announce", pic)
         self.assertEqual(eye.other_kills[0]["seq"], seq)
         self.assertEqual(eye.other_kills[0]["shooter_id"], "99")
+        self.assertEqual(pic["my_shots_last_15_min"]["by_result"], {"hit": 1})
 
     def test_explicit_owner_correction_moves_one_row_with_stable_seq(self):
         eye, _, unit = self.attack()
@@ -314,6 +321,72 @@ class KillOwnershipTests(unittest.TestCase):
         self.assertEqual(pic["kill_tallies"]["all_friendly"]["total"], 1)
         self.assertEqual(eye.my_kills[0]["seq"], seq)
         self.assertEqual([k["shooter_id"] for k in eye.my_kills[0]["attribution_history"]], ["2", "30"])
+        self.assertEqual(pic["my_shots_last_15_min"]["by_result"], {"kill": 1})
+        eye.on_event(event({"unit": unit}, WINGMAN))
+        self.assertEqual(eye.picture()["my_shots_last_15_min"]["by_result"], {"hit": 1})
+
+    def test_area_shot_keeps_other_valid_kill_until_both_are_reassigned(self):
+        for kind in ("gone", "dead"):
+            for reverse in (False, True):
+                with self.subTest(kind=kind, reverse=reverse):
+                    eye, _, unit = self.attack("GBU_12")
+                    second = dict(deepcopy(unit), id=23, name="Armor 2")
+                    eye.on_unit(second)
+                    victims = [unit, second] if not reverse else [second, unit]
+                    for victim in victims:
+                        self.disappear(eye, victim, kind)
+                    seqs = [k["seq"] for k in eye.my_kills]
+                    eye.on_event(event({"unit": unit}, WINGMAN))
+                    pic = eye.picture()
+                    self.assertEqual(pic["my_shots_last_15_min"]["by_result"], {"kill": 1})
+                    self.assertEqual([k["target_id"] for k in pic["my_kills_this_mission"]], [23])
+                    self.assertEqual(pic["kill_tallies"]["all_friendly"]["total"], 2)
+                    self.assertEqual(len(pic["splash_to_announce"]), 1)
+                    eye.on_event(event({"unit": second}, WINGMAN))
+                    pic = eye.picture()
+                    self.assertEqual(pic["my_shots_last_15_min"]["by_result"], {"hit": 1})
+                    self.assertEqual(pic["my_shots_last_15_min"]["shots"][0]["hit"]["id"], 22)
+                    self.assertEqual(pic["my_kills_this_mission"], [])
+                    self.assertNotIn("splash_to_announce", pic)
+                    self.assertEqual([k["seq"] for k in eye.other_kills], seqs)
+
+    def test_area_shot_falls_back_to_remaining_likely_kill(self):
+        eye, clock, unit = self.attack("GBU_12")
+        second = dict(deepcopy(unit), id=23, name="Armor 2")
+        eye.on_unit(second)
+        eye.on_gone(22)
+        clock.t += 90
+        eye.on_gone(23)
+        eye.on_event(event({"unit": unit}, WINGMAN))
+        shots = eye.picture()["my_shots_last_15_min"]
+        self.assertEqual(shots["by_result"], {"likely kill (inferred: target no longer showing)": 1})
+        self.assertEqual(eye.picture()["kill_tallies"]["me"]["likely"], 1)
+
+    def test_no_hit_inference_reassigned_without_inventing_hit(self):
+        for kind in ("gone", "dead"):
+            with self.subTest(kind=kind):
+                eye, _ = scenario()
+                unit = fx.unit(22, "Armor", "T-55", "red", "Armor", "GROUND", 42.09, 43.77, 680)
+                eye.on_unit(unit)
+                eye.on_event(fx.shot(PILOT, 900, "GBU_12"))
+                self.disappear(eye, unit, kind)
+                self.assertEqual(eye.picture()["my_shots_last_15_min"]["by_result"], {"kill": 1})
+                eye.on_event(event({"unit": unit}, WINGMAN))
+                shots = eye.picture()["my_shots_last_15_min"]
+                self.assertEqual(shots["by_result"], {"kill credited to another shooter": 1})
+                self.assertNotIn("hit", shots["shots"][0])
+                self.assertEqual(eye.shots[0]["hits"], 0)
+                self.assertNotIn("no_longer_showing", shots["shots"][0])
+
+    def test_pilot_report_cannot_restore_superseded_shot_credit(self):
+        eye, _, unit = self.attack()
+        eye.on_gone(22)
+        seq = eye.my_kills[0]["seq"]
+        eye.on_event(event({"unit": unit}, WINGMAN))
+        report = eye.pilot_report("splash")
+        assert report is not None
+        self.assertIsNone(report["confirmed"])
+        self.assert_wingman_only(eye, seq)
 
 
 class ReadableFactsTests(unittest.TestCase):

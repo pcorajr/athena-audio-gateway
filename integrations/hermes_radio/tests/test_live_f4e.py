@@ -66,5 +66,15 @@ class SpeechAliasTests(unittest.TestCase):
             self.assertEqual(call_class(text, {"last_attack_age_s": 30}), "kill_confirm", text)
 
 
+class DebriefPhraseTests(unittest.TestCase):
+    def test_generate_briefing_requests_debrief(self):
+        from integrations.hermes_radio.simple_controller import DEBRIEF_ASK, PROMPT
+        for text in ("Athena, Prometheus, generate briefing.", "Athena, create the debrief", "write my report",
+                     "Athena, mission end. Please provide briefing."):
+            self.assertTrue(DEBRIEF_ASK.search(text), text)
+        self.assertFalse(DEBRIEF_ASK.search("Athena, mission status"))
+        self.assertIn("OVERVIEW", PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()

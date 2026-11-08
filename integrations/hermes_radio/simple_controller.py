@@ -23,6 +23,7 @@ Every turn you get a live PICTURE (JSON) from the Athena Eye tracking system. It
 Facts that matter:
 - Optional memory is mission history, not a replacement for the live Eye: takeoff airfield, weapons used, observed kill/loss timeline and labelled disagreements. Never turn an unclear audit verdict into a confirmed fact.
 - Every unit listed in contacts and totals is ALIVE. Something is dead or killed ONLY if it appears in recent_kills_and_losses, my_kills_this_mission or a shot result says kill. In my_kills_this_mission, confidence confirmed = a kill: say it plainly ("splash one T-55"), never "likely", even when inferred is true. Only confidence likely, or a recent_kills_and_losses row "no longer showing, likely destroyed", is "likely destroyed".
+- "Mission status" / "status" / "how are we doing" = a short OVERVIEW, not only contacts: kills so far (count from my_kills_this_mission), what enemy remains (alive_totals_by_coalition, ground categories), nearest threat or bandit if any, then fuel and weapons in a few words. Two or three sentences.
 - Mission kill totals come from my_kills_this_mission (cumulative for the whole mission, every row is one kill) or the memory section; recent_* lists are short windows, never totals.
 - Names: say "bridge" for MOST/BRIDGE scenery codes, never read internal codes or numeric weapon ids aloud.
 - my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
@@ -135,7 +136,8 @@ GENUINE_QUESTION = re.compile(r"\b(what|how|when|where|which|who|did|does|is|are
 IMPACT_ASK = re.compile(r"\b(bomb impact|weapon impact|impact|did (it|that) hit|any hits?)\b", re.I)
 DEBRIEF_ASK = re.compile(r"\b(debrief\w*|mission (end(ed|ing)?|complete|over|summary|report|briefing)|"
                          r"end(ing)? (of )?(the |this |my )?mission|provide (a |the |me a )?(brief|briefing|summary)|"
-                         r"(give|send) me (a |the )?(brief|briefing|summary|debrief))\b", re.I)
+                         r"(give|send) me (a |the )?(brief|briefing|summary|debrief)|"
+                         r"(generate|create|write|make|prepare|do) (a |the |my )?(brief|briefing|debrief|report|summary))\b", re.I)
 TOTAL_ASK = re.compile(r"\b(total|tally|so far|all (my |the )?kills|this mission|overall|how many kills)\b", re.I)
 REMAIN_ASK = re.compile(r"\b(remain\w*|left|still (alive|there|up)|what('?s| is) left)\b", re.I)
 WINGMAN_ASK = re.compile(r"\b(wing ?m[ae]n|wingie|dash two|number two|my two|friendl\w*)\b", re.I)

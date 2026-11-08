@@ -689,7 +689,12 @@ class SimpleController:
 
     # ---------------------------------------------------------------- radio
     def _log(self, request, kind, **values):
-        self.transcript.log(request=request, kind=kind, provider="openai-api", model=self.model, **values)
+        last = getattr(self._llm, "last", None)  # CodexLLM: which backend answered the latest call
+        if last is not None and "llm" not in values:
+            values["llm"] = dict(last)
+        provider = "openai-codex" if getattr(self._llm, "label", "").startswith("openai-codex") else "openai-api"
+        model = getattr(self._llm, "model", self.model) if provider == "openai-codex" else self.model
+        self.transcript.log(request=request, kind=kind, provider=provider, model=model, **values)
 
     def stream(self, request):
         """Answer EVERY transmission from the pilot on the command frequency (no 'Athena' prefix needed)."""

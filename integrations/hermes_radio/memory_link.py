@@ -4,6 +4,14 @@ Developer rule: every new Eye fact = publish an observation.
 Use publish(type, payload) at the derivation seam. Unknown types are stored
 unchanged by memory. Raw Eye inputs are claims, never the independent raw ledger.
 All socket I/O runs on the publisher thread except explicitly bounded queries.
+
+Radio cumulative tally: mission_tally(owner="me", category="armor") sends
+{"operation":"mission_tally","mission":"<resolved-key>","owner":"me","category":"armor"}
+and returns the response's tally object: count, by_type, by_category, targets
+(at most 100), targets_truncated, coverage. me|wingman|friendly|all; friendly
+excludes me/wingman, all includes all sides. Categories include all, armor,
+air_defense (sam+aaa), infantry, logistics, aircraft, ship, scenery, unknown.
+The whole socket exchange has a 150 ms deadline; None means unavailable, NOT 0.
 """
 from collections import deque
 import copy
@@ -18,6 +26,38 @@ import uuid
 
 SCHEMA_VERSION = 1
 MAX_FRAME = 1024 * 1024
+SNAPSHOT_TYPES = frozenset({"cockpit", "cockpit_input", "life_damage", "fuel", "loadout"})
+SNAPSHOT_INTERVAL = 10.0
+DISCONNECT_GRACE = 60.0
+
+
+def _semantic(value):
+    """Ignore sampling metadata for comparison, never strip stored evidence."""
+    if isinstance(value, dict):
+        return {k: _semantic(v) for k, v in value.items()
+                if k not in {"t", "time", "at", "timestamp", "packets", "window_s"}
+                and not k.endswith("age_s")}
+    if isinstance(value, list):
+        return [_semantic(v) for v in value]
+    return value
+
+
+def _critical_fields(value, prefix=()):
+    """Sparse packets omit slow fields: absence is not a gear/stores change."""
+    result = {}
+    if isinstance(value, dict):
+        for key, item in value.items():
+            path = prefix + (key,)
+            if item is None:
+                continue  # sparse derived payloads use null between slow updates
+            if key in {"gear", "pay", "payload", "loadout", "stores", "ammo", "weapons", "gun_rounds",
+                       "life", "health", "life_percent", "damage"} and not isinstance(item, dict):
+                result[path] = item
+            elif key in {"pay", "payload", "loadout", "stores"}:
+                result[path] = item
+            else:
+                result.update(_critical_fields(item, path))
+    return result
 
 
 def socket_path():
@@ -59,7 +99,7 @@ def request(payload, *, path=None, timeout=0.12):
 
 
 class MemoryLink:
-    def __init__(self, eye=None, *, path=None, capacity=512, start=True):
+    def __init__(self, eye=None, *, path=None, capacity=512, start=True, clock=None):
         if capacity < 1:
             raise ValueError("positive queue capacity required")
         self.eye, self.path, self.capacity = eye, path, capacity
@@ -74,6 +114,13 @@ class MemoryLink:
         self.sent = 0
         self.failures = 0
         self._last = {}
+        self.clock = clock or time.monotonic
+        self.sampled_out = 0
+        self._samples = {}
+        self._active = set()
+        self._pending_debriefs = {}
+        self._auto_debriefed = set()
+        self._disconnected_at = None
         self.thread = None
         self.debrief_thread = None
         self.debrief_status = None
@@ -84,9 +131,12 @@ class MemoryLink:
     def invalidate(self):
         """Fence snapshots/in-flight metadata; queued facts keep their identity."""
         with self.lock:
+            self._end_mission_locked("unload")
             self.generation += 1
             self.identity = None
             self._last.clear()
+            self._samples.clear()
+            self._disconnected_at = None
             return self.generation
 
     def set_identity(self, session_id, filename, source, *, generation=None):
@@ -95,7 +145,10 @@ class MemoryLink:
             if generation is not None and generation != self.generation:
                 return False
             if self.identity != identity:
+                self._end_mission_locked("mission_change" if identity else "unload")
                 self._last.clear()
+                self._samples.clear()
+                self._disconnected_at = None
                 if generation is None:
                     self.generation += 1
             self.identity = identity
@@ -107,8 +160,47 @@ class MemoryLink:
         with self.lock:
             return self.bindings.get(self.identity)
 
-    def publish(self, kind, payload, *, at=None, generation=None):
-        """Bounded local enqueue only; no filesystem or socket work on the Eye."""
+    def _end_mission_locked(self, reason):
+        if self.identity in self._active:
+            self._pending_debriefs.setdefault(self.identity, reason)
+
+    def _sample_locked(self, kind, payload):
+        semantic = _semantic(payload)
+        token = json.dumps(semantic, sort_keys=True, default=str)
+        now = self.clock()
+        previous = self._samples.get(kind)
+        critical = _critical_fields(semantic)
+        urgent = False
+        if previous is not None:
+            old_token, last_sent, old_fields = previous
+            for path, value in critical.items():
+                if path not in old_fields:
+                    urgent = True  # first available gear/stores/life evidence
+                    continue
+                if value == old_fields[path]:
+                    continue
+                before = old_fields[path]
+                if path[-1] in {"life", "health", "life_percent"}:
+                    urgent |= (isinstance(value, (int, float)) and isinstance(before, (int, float))
+                               and value < before)
+                else:
+                    urgent = True
+            old_fields.update(critical)
+            critical = old_fields
+            if not urgent and (token == old_token or now - last_sent < SNAPSHOT_INTERVAL):
+                self.sampled_out += 1
+                return False
+        self._samples[kind] = (token, now, critical)
+        return True
+
+    def publish(self, kind, payload, *, at=None, generation=None, _activity=True):
+        """Bounded local enqueue only; no filesystem or socket work on the Eye.
+
+        High-rate snapshots are on-change, at least ten monotonic seconds apart,
+        except life drops and gear/stores changes. False can mean sampled out
+        (sampled_out counter), not just lost (dropped counter). Event types are
+        never sampled. The existing bounded queue can still lose rows on outage.
+        """
         try:
             row = {"schema_version": SCHEMA_VERSION, "id": str(uuid.uuid4()),
                    "time": time.time() if at is None else at, "type": str(kind),
@@ -117,6 +209,12 @@ class MemoryLink:
                 if self.identity is None or (generation is not None and generation != self.generation):
                     self.dropped += 1
                     return False
+                if _activity:
+                    self._active.add(self.identity)
+                if kind in SNAPSHOT_TYPES and not self._sample_locked(kind, row["payload"]):
+                    return False
+                if kind == "mission_end" or (kind == "event" and payload.get("kind") == "mission_end"):
+                    self._end_mission_locked("mission_end")
                 if len(self.queue) >= self.capacity:
                     self.queue.popleft()
                     self.dropped += 1
@@ -131,6 +229,20 @@ class MemoryLink:
     def capture_picture(self, pic, *, at=None):
         generation = pic.get("_memory_generation", self.generation)
         own = pic.get("ownship") or {}
+        with self.lock:
+            if self.identity is None or generation != self.generation:
+                self.dropped += 1
+                return
+            if pic.get("connected") is True:
+                self._disconnected_at = None
+                if own:
+                    self._active.add(self.identity)
+            elif pic.get("connected") is False and self.identity in self._active:
+                now = self.clock()
+                if self._disconnected_at is None:
+                    self._disconnected_at = now
+                elif now - self._disconnected_at > DISCONNECT_GRACE:
+                    self._end_mission_locked("disconnect")
         facts = {"loadout": own.get("loadout"), "fuel": own.get("fuel"),
                  "life_damage": {k: own[k] for k in ("life", "life0", "damage", "health") if k in own},
                  "cockpit": pic.get("cockpit"), "sam_threat": pic.get("threats"),
@@ -141,7 +253,10 @@ class MemoryLink:
         for kind, payload in facts.items():
             if payload is None:
                 continue
-            # Keep full evidence; changes include freshness and per-shot results.
+            if kind in SNAPSHOT_TYPES:
+                self.publish(kind, {"value": payload}, generation=generation, at=at, _activity=False)
+                continue
+            # Keep full event-derived evidence, including per-shot results.
             token = json.dumps(payload, sort_keys=True, default=str)
             with self.lock:
                 if self.identity is None or generation != self.generation:
@@ -150,24 +265,67 @@ class MemoryLink:
                 changed = self._last.get(kind) != token
                 self._last[kind] = token
             if changed:
-                self.publish(kind, {"value": payload}, generation=generation, at=at)
+                self.publish(kind, {"value": payload}, generation=generation, at=at, _activity=False)
+
+    def _auto_debrief_one(self):
+        """Sender-only: drain evidence before one automatic attempt per mission key.
+
+        Failed/ambiguous receipts remain visible; manual regeneration is allowed.
+        This is process-local deduplication, not a durable exactly-once protocol.
+        """
+        candidate = None
+        with self.lock:
+            for identity, reason in list(self._pending_debriefs.items()):
+                key = self.bindings.get(identity)
+                if key in self._auto_debriefed:
+                    del self._pending_debriefs[identity]
+                    continue
+                if any(queued_identity == identity for queued_identity, _ in self.queue):
+                    continue
+                candidate = (identity, reason)
+                break
+        if candidate is None:
+            return False
+        identity, reason = candidate
+        try:
+            # Overflow may have lost all queued Eye rows; the raw archive can
+            # still identify and report this mission. Resolve, never guess.
+            key = self._resolve_identity(identity)
+        except (OSError, ValueError, KeyError, TimeoutError):
+            self.failures += 1
+            return False
+        with self.lock:
+            if key in self._auto_debriefed:
+                self._pending_debriefs.pop(identity, None)
+                return False
+            if any(queued_identity == identity for queued_identity, _ in self.queue):
+                return False
+            if not self._schedule_debrief_locked(key, reason=reason):
+                return False
+            self._auto_debriefed.add(key)
+            self._pending_debriefs.pop(identity, None)
+            return True
+
+    def _resolve_identity(self, identity):
+        with self.lock:
+            key = self.bindings.get(identity)
+        if key is None:
+            reply = request({"operation": "resolve", "session_id": identity[0], "filename": identity[1],
+                             "source": identity[2]}, path=self.path)
+            key = reply["mission"]["mission_key"]
+            with self.lock:
+                self.bindings[identity] = key
+                while len(self.bindings) > 10:
+                    del self.bindings[next(iter(self.bindings))]
+        return key
 
     def _send_one(self):
         with self.lock:
             if not self.queue:
                 return False
             identity, row = self.queue.popleft()
-            key = self.bindings.get(identity)
         try:
-            if key is None:
-                reply = request({"operation": "resolve", "session_id": identity[0], "filename": identity[1],
-                                 "source": identity[2]}, path=self.path)
-                key = reply["mission"]["mission_key"]
-                with self.lock:
-                    self.bindings[identity] = key
-                    # Bound long-running Eye state too, not only its queue.
-                    while len(self.bindings) > 10:
-                        del self.bindings[next(iter(self.bindings))]
+            key = self._resolve_identity(identity)
             row["mission_key"] = key
             request({"operation": "observe", "observation": row}, path=self.path)
             self.sent += 1
@@ -190,7 +348,9 @@ class MemoryLink:
                 except Exception:
                     self.failures += 1
                 next_picture = time.monotonic() + 1
-            if not self._send_one():
+            sent = self._send_one()
+            self._auto_debrief_one()
+            if not sent:
                 self.wake.clear()
                 self.wake.wait(0.2)
 
@@ -214,6 +374,18 @@ class MemoryLink:
         except (OSError, ValueError, KeyError, TimeoutError):
             return None
 
+    def mission_tally(self, owner="me", category=None):
+        generation = self.generation
+        key = self.mission_key
+        if key is None:
+            return None
+        try:
+            result = request({"operation": "mission_tally", "mission": key,
+                              "owner": owner, "category": category}, path=self.path, timeout=0.15)["tally"]
+            return result if generation == self.generation else None
+        except (OSError, ValueError, KeyError, TimeoutError):
+            return None
+
     def schedule_debrief(self):
         """Accept a report job without holding a radio turn during disk/socket I/O.
 
@@ -224,23 +396,31 @@ class MemoryLink:
             key = self.bindings.get(self.identity)
             if key is None:
                 return False
-            if self.debrief_thread and self.debrief_thread.is_alive():
-                return (self.debrief_status or {}).get("mission_key") == key
-            self.debrief_status = {"state": "queued", "mission_key": key}
+            return self._schedule_debrief_locked(key)
 
-            def write():
-                try:
-                    path = request({"operation": "debrief", "mission": key}, path=self.path, timeout=4)["path"]
-                    status = {"state": "written", "mission_key": key, "path": path}
-                except (OSError, ValueError, KeyError, TimeoutError) as error:
-                    status = {"state": "failed", "mission_key": key, "error": type(error).__name__}
-                with self.lock:
-                    self.debrief_status = status
-                logging.getLogger(__name__).info("memory debrief: %s", status)
+    def _schedule_debrief_locked(self, key, *, reason=None):
+        if self.debrief_thread and self.debrief_thread.is_alive():
+            return reason is None and (self.debrief_status or {}).get("mission_key") == key
+        context = {"mission_key": key}
+        if reason is not None:
+            context["reason"] = reason
+        self.debrief_status = dict(context, state="queued")
 
-            self.debrief_thread = threading.Thread(target=write, name="eye-debrief", daemon=True)
-            self.debrief_thread.start()
-            return True
+        def write():
+            try:
+                path = request({"operation": "debrief", "mission": key,
+                                "automatic": reason is not None}, path=self.path, timeout=4)["path"]
+                status = dict(context, state="written", path=path)
+            except (OSError, ValueError, KeyError, TimeoutError) as error:
+                status = dict(context, state="failed", error=type(error).__name__)
+            with self.lock:
+                self.debrief_status = status
+            logging.getLogger(__name__).info("memory debrief: %s", status)
+            self.wake.set()
+
+        self.debrief_thread = threading.Thread(target=write, name="eye-debrief", daemon=True)
+        self.debrief_thread.start()
+        return True
 
     def close(self):
         self.stop.set()

@@ -4,6 +4,7 @@ Executable sample: python -m integrations.hermes_radio.tests.test_memory_replay 
 The fixture is synthetic and explicitly labelled; no DCS/SRS host is contacted.
 """
 import asyncio
+import gzip
 from datetime import datetime, timezone
 import json
 from pathlib import Path
@@ -84,12 +85,17 @@ async def replay(*, report_root=None):
             text = path.read_text()
             assert "Eye vs Memory audit" in text and "fixture-wrong-weapon" in text
             assert "| Eye wrong |" in text
-            main, appendix = text.split("## Appendix: raw evidence references")
+            main, appendix = text.split("## Evidence sidecar")
             assert "13:30:00" in main and "America/New_York" in main
             assert "Red CAP 1-1 (Su-27)" in main and "F-16C_50" in main
             assert "{" not in main and "mission_key" not in main
-            assert "raw #" in appendix and "sha256" in appendix
-            assert "You fired AIM-120C; hit Red CAP 1-1 (Su-27) at 13:30:02; destroyed Red CAP 1-1 (Su-27) at 13:30:03" in main
+            assert "evidence.jsonl.gz" in appendix
+            with gzip.open(path.with_name("evidence.jsonl.gz"), "rt") as evidence:
+                rows = [json.loads(line) for line in evidence]
+            assert sum(row["record_type"] == "raw_events" for row in rows) == 4
+            assert all(row["record"].get("digest") for row in rows if row["record_type"] == "raw_events")
+            assert "fired AIM-120C; destroyed Su-27 at 13:30:03" in main
+            assert "fired AIM-120C; hit" not in main
             assert "Captured duration: 00:00:04" in main
             return {"raw_events": len(records["raw_events"]), "observations": len(records["observations"]),
                     "dropped": link.dropped, "health_latency_ms": round(latency, 3),

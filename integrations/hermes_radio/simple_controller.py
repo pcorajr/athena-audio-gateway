@@ -117,7 +117,7 @@ ATC_ASK = re.compile(r"\b(take ?off|landing|land|approach|taxi\w*|runway)\b", re
 DAMAGE_ASK = re.compile(r"\b(i('?m| am| got| was| have been) hit|hit me|taking hits|damage report|my damage|"
                         r"i (took|have|sustained) damage|i('?m| am) damaged|am i damaged|"
                         r"damage to (me|my (aircraft|jet|plane|ownship)))\b", re.I)
-CONFIRM_ASK = re.compile(r"\bconfirm\b", re.I)
+CONFIRM_ASK = re.compile(r"\bconfirm(ed)?\b", re.I)
 KILL_ASK = re.compile(r"\b(kills?|killed|splash|destroyed|taken out|dead|eliminated|neutrali[sz]ed)\b", re.I)
 # Round 6 (radio talk): deterministic acknowledgements for attack-flow intent calls.
 INTENT_ACKS = (

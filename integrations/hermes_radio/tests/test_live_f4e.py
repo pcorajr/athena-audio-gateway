@@ -59,5 +59,12 @@ class AlertTests(unittest.TestCase):
         self.assertIn("k1", eye.marked)
 
 
+class SpeechAliasTests(unittest.TestCase):
+    def test_whisper_mishearings_of_kills(self):
+        from integrations.hermes_radio.simple_controller import call_class
+        for text in ("Athena, confirmed chaos.", "Athena, confirm chaos.", "Confirm kills."):
+            self.assertEqual(call_class(text, {"last_attack_age_s": 30}), "kill_confirm", text)
+
+
 if __name__ == "__main__":
     unittest.main()

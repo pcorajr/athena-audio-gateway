@@ -105,7 +105,7 @@ func TestGUIDKeyedIdentityFlipBetweenReceiveAndSend(t *testing.T) {
 	if r2, ok := c.admitMVPPacket(&p2, epoch); !ok {
 		t.Fatalf("packet after flip rejected: %s", r2.rejection)
 	}
-	c.mvpChannelUntil = time.Time{}
+	c.mvpChannelUntil = nil
 	tr.route = route
 	d := c.TransmitMVP(t.Context(), tr, time.Now().Add(2*time.Second))
 	if d.Outcome != "sent" || w.writes == 0 {

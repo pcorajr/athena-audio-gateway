@@ -41,7 +41,7 @@ func (c *Client) BeginMVPReply(t Transmission) func(context.Context, Audio, time
 		if !time.Now().Before(expires) {
 			return Delivery{Outcome: "expired"}
 		}
-		packets, err := c.encodeMVP(audio)
+		packets, err := c.encodeMVP(audio, t.Radio)
 		if err != nil {
 			return Delivery{Outcome: "encode_failed"}
 		}

@@ -136,6 +136,12 @@ type Configuration struct {
 	// selects the Athena default of FM. Frequency and modulation are
 	// configuration rather than constants because airframe radio ranges differ.
 	AthenaCommandModulation *admission.Modulation
+	// AthenaCommandChannels lists every Athena command channel (frequency and
+	// modulation). When empty, the single AthenaCommandFrequencyHz /
+	// AthenaCommandModulation pair is the only channel. In MVP mode the SRS
+	// radios must be exactly this set; replies go out on the channel the pilot
+	// transmitted on.
+	AthenaCommandChannels []admission.Channel
 	// AthenaPilotName is the exact SRS client name permitted to issue commands
 	// on the Athena command channel. Transmissions from any other client are
 	// discarded before speech recognition.
@@ -183,20 +189,55 @@ func (c Configuration) ValidateSRSMVP() error {
 		return nil
 	}
 	if c.AthenaCommandFrequencyHz == 0 || c.AthenaCommandModulation == nil || strings.TrimSpace(c.AthenaPilotName) == "" ||
-		len(c.SRSFrequencies) != 1 || c.AthenaResponseMaxAge <= 0 || c.AthenaHermesTimeout < 0 ||
+		len(c.SRSFrequencies) == 0 || len(c.SRSFrequencies) > MaxSRSMVPRadios || c.AthenaResponseMaxAge <= 0 || c.AthenaHermesTimeout < 0 ||
 		c.AthenaHermesMaxSpeech < 0 || c.AthenaHermesMaxSpeech > bridge.DefaultMaxSpeechChars {
-		return errors.New("MVP requires explicit command frequency/modulation, pilot, one radio and positive response max age")
+		return errors.New("MVP requires explicit command frequency/modulation, pilot, 1..10 radios and positive response max age")
 	}
-	mod := *c.AthenaCommandModulation
-	if (mod != admission.ModulationAM && mod != admission.ModulationFM) ||
-		c.SRSFrequencies[0].Frequency.Hertz() != float64(c.AthenaCommandFrequencyHz) ||
-		int(c.SRSFrequencies[0].Modulation) != int(mod) {
-		return errors.New("MVP SRS radio must exactly match the command frequency/modulation")
+	channels := c.CommandChannels()
+	if len(channels) != len(c.SRSFrequencies) {
+		return errors.New("MVP SRS radios must exactly match the command channels")
+	}
+	commands := make(map[admission.Channel]bool, len(channels))
+	for _, ch := range channels {
+		if (ch.Modulation != admission.ModulationAM && ch.Modulation != admission.ModulationFM) || ch.FrequencyHz == 0 || commands[ch] {
+			return errors.New("MVP command channels must be distinct explicit AM/FM frequencies")
+		}
+		commands[ch] = true
+	}
+	radios := make(map[admission.Channel]bool, len(c.SRSFrequencies))
+	for _, f := range c.SRSFrequencies {
+		hz := f.Frequency.Hertz()
+		ch := admission.Channel{FrequencyHz: uint64(hz), Modulation: admission.Modulation(f.Modulation)}
+		if hz != float64(ch.FrequencyHz) || !commands[ch] || radios[ch] {
+			return errors.New("MVP SRS radios must exactly match the command channels")
+		}
+		radios[ch] = true
 	}
 	if c.AthenaDebugAudioDir != "" || len(c.AthenaPersonas) != 0 || c.EnableGRPC || c.Recognizer != WhisperLocal {
 		return errors.New("MVP requires local STT, no diagnostic audio, no personas and no gRPC")
 	}
 	return bridge.ValidateMVPEndpoint(c.AthenaHermesEndpoint)
+}
+
+// MaxSRSMVPRadios bounds the MVP radio list (SRS clients expose at most ~10
+// radios per client).
+const MaxSRSMVPRadios = 10
+
+// CommandChannels returns the Athena command channels: AthenaCommandChannels
+// when set, otherwise the single frequency/modulation pair (FM when the
+// modulation is unset), or nil when no command frequency is configured.
+func (c Configuration) CommandChannels() []admission.Channel {
+	if len(c.AthenaCommandChannels) > 0 {
+		return c.AthenaCommandChannels
+	}
+	if c.AthenaCommandFrequencyHz == 0 {
+		return nil
+	}
+	mod := admission.ModulationFM
+	if c.AthenaCommandModulation != nil {
+		mod = *c.AthenaCommandModulation
+	}
+	return []admission.Channel{{FrequencyHz: c.AthenaCommandFrequencyHz, Modulation: mod}}
 }
 
 var DefaultCallsigns = []string{"Sky Eye", "Thunderhead", "Eagle Eye", "Ghost Eye", "Sky Keeper", "Bandog", "Long Caster", "Galaxy"}

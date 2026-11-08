@@ -405,6 +405,7 @@ def _norm_weapon_name(name):
 class Eye:
     def __init__(self, player=PLAYER, *, clock=time.time, source="unconfigured", stores_dir=None):
         self.player, self.clock, self.source = player, clock, source
+        self.memory = None  # memory6: optional nonblocking observation publisher
         self.lock = threading.RLock()
         self._seq = itertools.count(1)
         self.on_mission_start = None
@@ -469,6 +470,8 @@ class Eye:
 
     # -- durable stores/shot log
     def _log_store(self, record):
+        if self.memory is not None:  # memory6: every new Eye fact = publish an observation
+            self.memory.publish(record.get("kind", "derived_fact"), record, at=self.clock())
         if not self.stores_dir:
             return
         try:
@@ -632,6 +635,8 @@ class Eye:
             self.events.append(ev)
             self._prune(now)
             wake = self._apply(ev)
+            if self.memory is not None:  # memory6: include takeoff/landing, loss and damage evidence
+                self.memory.publish("event", dict(ev, mine=self._is_me(ev.get("initiator"))), at=now)
         if wake and self.on_player_shot is not None:
             try:
                 self.on_player_shot()
@@ -1152,6 +1157,8 @@ class Eye:
         """One AthenaExport packet (cockpit.CockpitListener). Payload -> the same stores diff as the Eval loadout
         (source "cockpit"); new RWR locks/launches -> durable log + rwr_alert_to_announce."""
         res = self.cockpit.ingest(pkt, src)
+        if self.memory is not None:  # memory6: retain cockpit changes even between radio pictures
+            self.memory.publish("cockpit_input", {"packet": pkt, "derived": res}, at=self.clock())
         with self.lock:
             for a in res["alerts"]:
                 self._log_store({"kind": "rwr_alert", "signal": a["signal"], "emitter": a["type"],
@@ -1961,6 +1968,8 @@ class GrpcFeeder:
     def close(self):
         self.stop.set()
         self._stores_wake.set()
+        if self.eye.memory is not None:  # memory6: publisher lifetime follows feeder
+            self.eye.memory.close()
         if self.channel is not None:
             self.channel.close()
 
@@ -2039,6 +2048,11 @@ class GrpcFeeder:
                 raise
             return
         with self._session_lock:
+            if self.eye.memory is not None:  # memory6: bind claims to memory's canonical mission key
+                from dcs.hook.v0 import hook_pb2, hook_pb2_grpc
+                filename = hook_pb2_grpc.HookServiceStub(self._chan()).GetMissionFilename(
+                    hook_pb2.GetMissionFilenameRequest(), timeout=2).name
+                self.eye.memory.set_identity(sid, filename, "%s:%d" % (self.host, self.port))
             old, self.eye.session_id = self.eye.session_id, sid
             if old is not None and sid != old:
                 LOG.info("eye: new DCS session (mission change); resetting picture")
@@ -2295,6 +2309,8 @@ def build(host, port, player=PLAYER, *, stores_dir=None, prompt_path=None):
         source = resolve_source()
         host, port = source.host, source.port
     eye = Eye(player, source="%s:%d" % (host, port), stores_dir=stores_dir)
+    from .memory_link import attach  # memory6: isolated optional integration
+    attach(eye)
     return eye, GrpcFeeder(eye, host, port, prompt_path=prompt_path)
 
 

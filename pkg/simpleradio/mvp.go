@@ -65,6 +65,14 @@ func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
 	// the earliest list entry present wins. Duplicates are resolved deterministically
 	// (peer on the command radio first, then lowest GUID) so the identity never flips
 	// between syncs just because of map iteration order.
+	// Sticky GUID (2026-11-07 round 2): once a pilot GUID is chosen it stays the
+	// pilot while that GUID is connected with ANY name from the list, even if
+	// its name flips or a better-ranked name appears.
+	if c.mvpPilot != "" && c.mvpPilot != c.clientInfo.GUID {
+		if peer, ok := c.clients[c.mvpPilot]; ok && pilotListRank(peer.Name, c.pilotName) >= 0 {
+			return mvpIdentity{guid: peer.GUID, unitID: peer.RadioInfo.UnitID, unit: peer.RadioInfo.Unit, seat: peer.Seat}, ""
+		}
+	}
 	var pilot types.ClientInfo
 	bestRank, bestOnRadio, found := 0, false, false
 	for _, peer := range c.clients {
@@ -103,6 +111,20 @@ func exactMVPRadio(a, b types.Radio) bool {
 	return a.Frequency == b.Frequency && a.Modulation == b.Modulation && !a.IsEncrypted && !b.IsEncrypted
 }
 
+// mvpRekeyLocked records the current pilot GUID and bumps the epoch only when
+// the pilot GUID changes (or the pilot disappears). Name, unit and seat changes
+// on the same SRS connection keep in-flight replies valid. Caller holds the
+// write lock. Returns true when the epoch changed.
+func (c *Client) mvpRekeyLocked(before mvpIdentity) bool {
+	after := c.mvpIdentityLocked()
+	c.mvpPilot = after.guid
+	if before.guid != after.guid {
+		c.mvpEpoch++
+		return true
+	}
+	return false
+}
+
 func (c *Client) syncMVPClients(peers []types.ClientInfo) {
 	c.clientsLock.Lock()
 	before := c.mvpIdentityLocked()
@@ -112,9 +134,7 @@ func (c *Client) syncMVPClients(peers []types.ClientInfo) {
 			c.clients[peer.GUID] = peer
 		}
 	}
-	if before != c.mvpIdentityLocked() {
-		c.mvpEpoch++
-	}
+	c.mvpRekeyLocked(before)
 	record := c.mvpReadinessLocked()
 	c.clientsLock.Unlock()
 	c.transcript.Log(record)
@@ -127,10 +147,7 @@ func (c *Client) syncMVPClient(peer types.ClientInfo) {
 	if peer.GUID != c.clientInfo.GUID {
 		c.clients[peer.GUID] = peer
 	}
-	changed := before != c.mvpIdentityLocked()
-	if changed {
-		c.mvpEpoch++
-	}
+	changed := c.mvpRekeyLocked(before)
 	record := c.mvpReadinessLocked()
 	c.clientsLock.Unlock()
 	if changed || beforeReason != record.Outcome {
@@ -166,6 +183,7 @@ func (c *Client) invalidateMVP() {
 	c.clientsLock.Lock()
 	c.mvpEpoch++
 	c.clients = make(map[types.GUID]types.ClientInfo)
+	c.mvpPilot = ""
 	c.mvpWriter = nil
 	c.mvpLastOrigin, c.mvpLastPacket = "", 0
 	record := c.mvpReadinessLocked()

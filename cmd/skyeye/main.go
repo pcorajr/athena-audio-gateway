@@ -93,6 +93,7 @@ var (
 	athenaHermesTimeout          time.Duration
 	athenaDebugAudioDir          string
 	athenaPromptFile             string
+	athenaDynamicPromptFile      string
 	athenaPersonas               []string
 	athenaPersonaMaxDistance     int
 	athenaHermesMaxSpeech        int
@@ -172,6 +173,7 @@ func init() {
 	skyeye.Flags().IntVar(&athenaPersonaMaxDistance, "athena-persona-max-distance", 1, "Edit distance tolerated when matching a spoken persona name, absorbing transcription slips. 0 requires an exact match.")
 	skyeye.Flags().IntVar(&athenaHermesMaxSpeech, "athena-hermes-max-speech", 0, "Maximum characters in a transmittable answer. Longer answers are suppressed, not truncated. 0 uses the bridge default.")
 	skyeye.Flags().StringVar(&athenaPromptFile, "athena-prompt-file", "", "Path to a file whose contents replace the speech recognizer's initial prompt. Tunes transcription vocabulary without a rebuild.")
+	skyeye.Flags().StringVar(&athenaDynamicPromptFile, "athena-dynamic-prompt-file", "", "Path to a file appended to the speech recognizer's prompt on every transmission (callsign, nearby airfields). Re-read when it changes; ignored when missing or stale.")
 	skyeye.Flags().StringVar(&athenaDebugAudioDir, "athena-debug-audio-dir", "", "DIAGNOSTIC ONLY: write each admitted transmission's audio to this directory as WAV. Contradicts the ADR 0014 no-retention rule; leave unset for normal operation.")
 	skyeye.Flags().StringVar(&voiceLockPath, "voice-lock-path", "", "Path to lock file for concurrent text-to-speech when using multiple instances")
 	if runtime.GOOS == "darwin" {
@@ -575,6 +577,7 @@ func run(_ *cobra.Command, _ []string) {
 		AthenaPersonas:               athenaPersonas,
 		AthenaPersonaMaxDistance:     athenaPersonaMaxDistance,
 		AthenaPromptFile:             athenaPromptFile,
+		AthenaDynamicPromptFile:      athenaDynamicPromptFile,
 		AthenaDebugAudioDir:          athenaDebugAudioDir,
 		VoiceSpeed:                   voiceSpeed,
 		Volume:                       volume,

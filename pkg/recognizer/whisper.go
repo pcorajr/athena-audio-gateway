@@ -36,7 +36,8 @@ func NewWhisperRecognizer(model *whisper.Model, callsign string, opts ...Option)
 
 // leadInSilence is prepended to every sample: radio audio starts abruptly and
 // whisper tends to drop the first word without it.
-const leadInSilence = 400 * time.Millisecond
+// 0.6 s since round 2 (2026-11-07): 0.4 s still clipped the first word.
+const leadInSilence = 600 * time.Millisecond
 
 // padLeadIn returns a new slice with leadInSilence of zero samples (16 kHz)
 // followed by sample. The input slice is not modified.

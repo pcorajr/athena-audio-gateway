@@ -7,11 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestPadLeadInAddsFourHundredMillisecondsOfSilence(t *testing.T) {
+func TestPadLeadInAddsSixHundredMillisecondsOfSilence(t *testing.T) {
 	t.Parallel()
 	in := []float32{0.5, -0.25, 1}
 	out := padLeadIn(in)
-	const want = 6400 // 0.4 s at 16 kHz
+	const want = 9600 // 0.6 s at 16 kHz
 	require.Len(t, out, want+len(in))
 	for i := range want {
 		if out[i] != 0 {
@@ -24,5 +24,5 @@ func TestPadLeadInAddsFourHundredMillisecondsOfSilence(t *testing.T) {
 
 func TestPadLeadInEmptySample(t *testing.T) {
 	t.Parallel()
-	assert.Len(t, padLeadIn(nil), 6400)
+	assert.Len(t, padLeadIn(nil), 9600)
 }

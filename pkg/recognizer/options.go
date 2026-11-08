@@ -8,6 +8,8 @@ type recognizerOptions struct {
 	athenaMode bool
 	// promptOverride replaces the generated prompt entirely when non-empty.
 	promptOverride string
+	// dynamic, when set, appends live vocabulary written by the adapter.
+	dynamic *dynamicPrompt
 }
 
 // Option configures a recognizer.
@@ -45,10 +47,10 @@ func WithPromptOverride(prompt string) Option {
 // initialPrompt returns the prompt text for this recognizer's configuration.
 func (o recognizerOptions) initialPrompt(callsign string) string {
 	if o.promptOverride != "" {
-		return o.promptOverride
+		return withDynamic(o.promptOverride, o.dynamic)
 	}
 	if o.athenaMode {
-		return athenaPrompt(callsign, o.locations, "")
+		return withDynamic(athenaPrompt(callsign, o.locations, ""), o.dynamic)
 	}
 	return prompt(callsign, o.locations)
 }

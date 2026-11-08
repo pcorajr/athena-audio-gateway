@@ -165,6 +165,10 @@ type Configuration struct {
 	// the contents of a file. Which vocabulary transcribes best is empirical
 	// and speaker-dependent, so it is tunable without a rebuild.
 	AthenaPromptFile string
+	// AthenaDynamicPromptFile is appended to the recognizer prompt on every
+	// transmission. The Athena adapter rewrites it with the callsign and the
+	// airfields near ownship; missing or stale files are ignored.
+	AthenaDynamicPromptFile string
 	// AthenaDebugAudioDir, when set, writes each admitted transmission's audio
 	// to that directory as a WAV file. Diagnostic use only: this contradicts
 	// the ADR 0014 rule that audio never leaves the gateway process. Empty

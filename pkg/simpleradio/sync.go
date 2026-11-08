@@ -67,10 +67,7 @@ func (c *Client) removeClient(info types.ClientInfo) {
 	before := c.mvpIdentityLocked()
 	beforeReason := c.mvpReadinessLocked().Outcome
 	delete(c.clients, info.GUID)
-	changed := c.mvp && before != c.mvpIdentityLocked()
-	if changed {
-		c.mvpEpoch++
-	}
+	changed := c.mvp && c.mvpRekeyLocked(before)
 	record := c.mvpReadinessLocked()
 	c.clientsLock.Unlock()
 	if c.mvp && (changed || beforeReason != record.Outcome) {

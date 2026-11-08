@@ -347,6 +347,10 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 		recognizerOpts = append(recognizerOpts, recognizer.WithPromptOverride(override))
 		log.Info().Str("file", config.AthenaPromptFile).Msg("loaded recognizer prompt override")
 	}
+	if config.AthenaDynamicPromptFile != "" {
+		recognizerOpts = append(recognizerOpts, recognizer.WithDynamicPromptFile(config.AthenaDynamicPromptFile))
+		log.Info().Str("file", config.AthenaDynamicPromptFile).Msg("recognizer dynamic prompt file enabled")
+	}
 
 	log.Info().Msg("constructing speech-to-text recognizer")
 	var speechRecognizer recognizer.Recognizer

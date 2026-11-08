@@ -105,7 +105,9 @@ func TestSRSMVPOneRadioAndNoReplay(t *testing.T) {
 func TestSRSMVPIdentityInvalidation(t *testing.T) {
 	// "duplicate" is no longer an invalidation: duplicate pilot names resolve
 	// deterministically (see TestPacket108RadioRejectionReasons/pilot_duplicate_resolved).
-	for _, kind := range []string{"reconnect", "rename", "unit", "seat", "snapshot_replaced", "disconnect"} {
+	// "unit"/"seat" changes on the same SRS GUID are no longer invalidations
+	// (round 2: identity is keyed on the GUID, see TestGUIDKeyedIdentity).
+	for _, kind := range []string{"reconnect", "rename", "snapshot_replaced", "disconnect"} {
 		t.Run(kind, func(t *testing.T) {
 			c, tr, w := mvpTestClient()
 			peer := c.clients[tr.route.origin]

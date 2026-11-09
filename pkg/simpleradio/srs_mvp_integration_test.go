@@ -30,12 +30,21 @@ func startTextFixture(t *testing.T, scenario string) string {
 func startTextFixtureWithAck(t *testing.T, scenario, ack string, transcriptRoot ...string) string {
 	t.Helper()
 	root, src, python := os.Getenv("SRSMVP_TEXT_ADAPTER_ROOT"), os.Getenv("SRSMVP_ATHENA_SRC"), os.Getenv("SRSMVP_PYTHON")
-	for name, path := range map[string]string{"adapter root": root, "Athena src": src, "Python": python} {
+	// SRSMVP_ATHENA_SRC is a path list: <project-athena>/legacy/src:<project-athena>/src
+	// (athena and the full metis live only in legacy/src).
+	paths := map[string]string{"adapter root": root, "Python": python}
+	for i, p := range filepath.SplitList(src) {
+		paths[fmt.Sprintf("Athena src[%d]", i)] = p
+	}
+	if src == "" {
+		paths["Athena src"] = src
+	}
+	for name, path := range paths {
 		if !filepath.IsAbs(path) {
 			t.Fatalf("%s must be an explicitly approved absolute path", name)
 		}
 	}
-	cmd := exec.Command(python, "-B", "-m", "integrations.hermes_radio.fixture_server", "--port", "0", "--scenario", scenario)
+	cmd := exec.Command(python, "-B", "-m", "legacy.integrations.hermes_radio_legacy.fixture_server", "--port", "0", "--scenario", scenario)
 	cmd.Dir = root
 	// Do not inherit credentials, model routes or production configuration.
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir(), "PYTHONPATH=" + src + string(os.PathListSeparator) + root, "PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1"}

@@ -2748,7 +2748,10 @@ def build(host, port, player=PLAYER, *, stores_dir=None, prompt_path=None):
     # memory6: one source setting for both independent readers.
     import os
     if "ATHENA_DCS_SOURCE" in os.environ or os.environ.get("ATHENA_MEMORY_ENABLED") == "1":
-        from metis.state_service.memory_source import resolve_source
+        try:
+            from athena_memory.memory_source import resolve_source
+        except ImportError:  # older memory builds ship it under metis
+            from metis.state_service.memory_source import resolve_source
         source = resolve_source()
         host, port = source.host, source.port
     eye = Eye(player, source="%s:%d" % (host, port), stores_dir=stores_dir)

@@ -3,9 +3,9 @@ import unittest
 from datetime import timedelta
 from unittest.mock import Mock, patch
 
-from integrations.hermes_radio.controller import Controller
-from integrations.hermes_radio.tests.test_v2 import FakeProvider, call, req, world
-from integrations.hermes_radio.fixture_data import NOW
+from legacy.integrations.hermes_radio_legacy.controller import Controller
+from legacy.integrations.hermes_radio_legacy.tests.test_v2 import FakeProvider, call, req, world
+from legacy.integrations.hermes_radio_legacy.fixture_data import NOW
 
 
 class ExpiryTests(unittest.TestCase):

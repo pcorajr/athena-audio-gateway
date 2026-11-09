@@ -44,7 +44,7 @@ Some Athena settings (all in `~/.config/athena-gateway/mvp.yaml` or flags): `ath
 
 ## Legacy, not on the live path
 
-Older Athena lanes and upstream features still in the code: `athenaCommandLane` with personas, the Hermes API-server bridge (`bridge.NewAPIServerClient`), the generic HTTP bridge client, upstream GCI (`pkg/brevity`, `pkg/parser`, `pkg/radar`, `pkg/composer`, `pkg/encyclopedia`), auto-picture and threat monitoring, telemetry/ACMI, remote recognizers. They are kept until a cleanup epic removes them.
+Older Athena lanes and upstream features still in the code: `athenaCommandLane` with personas, the Hermes API-server bridge (`bridge.NewAPIServerClient`), the generic HTTP bridge client, upstream GCI (`pkg/brevity`, `pkg/parser`, `pkg/radar`, `pkg/composer`, `pkg/encyclopedia`), auto-picture and threat monitoring, telemetry/ACMI, remote recognizers. They are deliberately retained so upstream SkyEye commits keep cherry-picking cleanly (see Upstream tracking policy); they are linked but not executed in MVP mode. Python legacy code lives under `legacy/` ([legacy.md](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/legacy.md)).
 
 ## Upstream tracking policy
 

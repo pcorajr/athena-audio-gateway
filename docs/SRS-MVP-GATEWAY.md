@@ -157,13 +157,14 @@ After **both candidates are reviewed**, the controller runs composition:
 
 ```sh
 SRSMVP_TEXT_ADAPTER_ROOT=/absolute/path/to/accepted-SRS-H \
-SRSMVP_ATHENA_SRC=/absolute/path/to/accepted-Athena/src \
+SRSMVP_ATHENA_SRC=/absolute/path/to/accepted-Athena/legacy/src:/absolute/path/to/accepted-Athena/src \
 SRSMVP_PYTHON=/absolute/path/to/approved/python \
 make test-athena-mvp-integration
 ```
 
+`SRSMVP_ATHENA_SRC` is a path list: `athena` and the full `metis` live only in project-athena `legacy/src`, so it must come first.
 The integration target runs only `TestSRSMVPTextRoundTrip`. It starts the
-specified `integrations.hermes_radio.fixture_server --port 0 --scenario <name>`
+specified `legacy.integrations.hermes_radio_legacy.fixture_server --port 0 --scenario <name>`
 with `-B`, explicit PYTHONPATH and a restricted environment, reads its content-free
 loopback readiness URL, and requires clean SIGTERM teardown. The fixture is
 owned by SRS-H and injects fake model/state dependencies into its real adapter.

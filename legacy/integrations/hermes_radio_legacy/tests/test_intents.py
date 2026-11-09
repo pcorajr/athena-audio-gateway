@@ -4,8 +4,8 @@ import unittest
 from unittest.mock import Mock
 
 from integrations.hermes_radio.contract import ContractError
-from integrations.hermes_radio.hermes_client import INTENTS, HermesClassifier, classify, extract_intent, parse_intent
-from integrations.hermes_radio.tests.support import fake_hermes, model_reply
+from legacy.integrations.hermes_radio_legacy.hermes_client import INTENTS, HermesClassifier, classify, extract_intent, parse_intent
+from legacy.integrations.hermes_radio_legacy.tests.support import fake_hermes, model_reply
 
 
 class IntentTests(unittest.TestCase):

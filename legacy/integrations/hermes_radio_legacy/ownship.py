@@ -16,7 +16,7 @@ from metis.state_service.socket_protocol import (
 )
 
 from .context import validate_factual_context
-from .contract import safe_text
+from integrations.hermes_radio.contract import safe_text
 from .failures import response_failure
 
 _OWN_KEYS = frozenset({"unit_id", "unit_name", "player_name", "callsign", "coalition",

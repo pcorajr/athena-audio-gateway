@@ -4,9 +4,9 @@ import unittest
 from unittest.mock import Mock, patch
 
 from athena.state_service_client import ClientQueryError
-from integrations.hermes_radio.controller import Controller, compact_result
-from integrations.hermes_radio.fixture_data import NOW
-from integrations.hermes_radio.tests.test_v2 import FakeProvider, call, req, world
+from legacy.integrations.hermes_radio_legacy.controller import Controller, compact_result
+from legacy.integrations.hermes_radio_legacy.fixture_data import NOW
+from legacy.integrations.hermes_radio_legacy.tests.test_v2 import FakeProvider, call, req, world
 
 
 def live_shape(age=3685, maximum=None):

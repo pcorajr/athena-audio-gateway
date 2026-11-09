@@ -6,7 +6,7 @@ import re
 import time
 
 from athena.state_service_client import ClientQueryError
-from .contract import MAX_SPEECH_CHARS, response, safe_text, strict_json
+from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, response, safe_text, strict_json
 from .openai_provider import ProviderError
 from .failures import failure_code, safe_code
 from .tools import TOOLS, SCHEMAS, arguments, identity

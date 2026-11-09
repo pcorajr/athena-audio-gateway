@@ -10,12 +10,13 @@ import unittest
 from unittest.mock import Mock, patch
 
 from integrations.hermes_radio.contract import MAX_BODY_BYTES
-from integrations.hermes_radio.facts import CAPABILITIES, Facts
-from integrations.hermes_radio.fixture_data import bridge_request, state_frame, wire
-from integrations.hermes_radio.fixture_server import FixtureClassifier, FixtureFacts
-from integrations.hermes_radio.hermes_client import HermesClassifier
-from integrations.hermes_radio.server import Adapter, RadioServer
-from integrations.hermes_radio.tests.support import fake_hermes, fake_state, model_reply, post
+from legacy.integrations.hermes_radio_legacy.facts import CAPABILITIES, Facts
+from legacy.integrations.hermes_radio_legacy.fixture_data import bridge_request, state_frame, wire
+from legacy.integrations.hermes_radio_legacy.fixture_server import FixtureClassifier, FixtureFacts
+from legacy.integrations.hermes_radio_legacy.hermes_client import HermesClassifier
+from integrations.hermes_radio.server import RadioServer
+from legacy.integrations.hermes_radio_legacy.adapter import Adapter
+from legacy.integrations.hermes_radio_legacy.tests.support import fake_hermes, fake_state, model_reply, post
 
 
 @contextmanager

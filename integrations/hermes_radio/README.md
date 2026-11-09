@@ -24,17 +24,8 @@ One process, `python -m integrations.hermes_radio`, listening on `127.0.0.1:8650
 **Answers every pilot transmission.** The pilot does not need to say "Athena" first. Only the configured pilot (`--speaker`, default `Prometheus,Player,Client`) is answered; empty or junk transcripts are dropped.
 
 ## Legacy, not on the live path
-
-Kept in the tree and still imported at start-up, but not used when the Eye is attached:
-
-- `controller.py` (old OpenAI tool-calling `Controller`), `tools.py` (`RadioTools`, `SnapshotCache`), `openai_provider.py`, `context.py`, `ownship.py`, `projections.py`, `failures.py`, `tactical.py`, `facts.py`, `hermes_client.py` (keyword intent classifier).
-- The state-service picture (`SimpleController._state_service_picture`) and the `--state-client-config`, `--controller-timeout`, `--cache-interval` options. They need the retired Metis state service.
-- The old "Hermes `/v1/responses` classifier" design and its `--hermes-*` flags.
-
-A cleanup epic will remove them. Do not extend them.
-
-Test support (not runtime): `fixture_server.py`, `fixture_data.py`, `stream_fixture.py`, `text_smoke.py`, `transcript_fixture.py`.
-
+The old State Service adapter (`Controller`, `RadioTools`, `OpenAIProvider`, `Adapter`, `facts`, `tactical`, the keyword intent classifier, ...), its fixtures and tests were moved to [`legacy/integrations/hermes_radio_legacy/`](../../legacy/integrations/hermes_radio_legacy/README.md) (REL-5, `git mv`, history kept). The live adapter imports nothing from there and no longer accepts `--state-client-config`, `--reasoning`, `--controller-timeout` or `--cache-interval` (passing one is now an argparse error, and running without `--eye-host` exits 1); the legacy entry point is `python -m legacy.integrations.hermes_radio_legacy`. Reference only: see [legacy.md](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/legacy.md). Do not extend it.
+`transcript_fixture.py` stays here (the Go transcript test uses it).
 ## Running it
 
 Normally you do not run it by hand. The launcher `~/.hermes/cache/athena-srs-mvp-20261106/run/eye-up-r8.sh` starts Memory, this adapter and the gateway from a frozen release snapshot. See [start-stop](https://github.com/pcorajr/project-athena/blob/dev/docs/runbooks/start-stop.md).
@@ -92,6 +83,9 @@ PYTHONPATH=$HOME/Ai-Workspace/projects/project-athena/src:$PWD \
 
 Tests use synthetic data, ephemeral loopback HTTP and test-owned Unix sockets. They read no credentials and need no DCS. They prove transport, validation and logic, not live voice quality, latency or recognition.
 
+The default run covers live code only. Legacy tests run on demand from the repo root; `athena` and the full `metis` live only in project-athena `legacy/src`, so the path must be `PYTHONPATH=$HOME/Ai-Workspace/projects/project-athena/legacy/src:$HOME/Ai-Workspace/projects/project-athena/src:$PWD`: `python -B -m pytest legacy` (or `unittest discover -s legacy/integrations/hermes_radio_legacy/tests -p 'test_*.py'`).
+
+
 ## Offline text smoke (no audio)
 
-`python -m integrations.hermes_radio.text_smoke --question 'picture' --question 'loadout'` sends text questions to an **already running** adapter (`--url`, default `http://127.0.0.1:8650/radio/v1/exchange`) as the pilot and records the replies and latency in the transcript. It never touches audio or SRS. Note that it causes real model calls and real transcript entries, so run it only when the stack is up on purpose.
+`python -m legacy.integrations.hermes_radio_legacy.text_smoke --question 'picture' --question 'loadout'` sends text questions to an **already running** adapter (`--url`, default `http://127.0.0.1:8650/radio/v1/exchange`) as the pilot and records the replies and latency in the transcript. It never touches audio or SRS. Note that it causes real model calls and real transcript entries, so run it only when the stack is up on purpose.

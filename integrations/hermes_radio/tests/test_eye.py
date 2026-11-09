@@ -437,9 +437,9 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(any(r.get("outcome") == "queued_behind_previous" for r in c.transcript.records))
 
     def test_server_queues_instead_of_503(self):
-        from integrations.hermes_radio.fixture_data import bridge_request
+        from integrations.hermes_radio.tests.bridge import bridge_request
         from integrations.hermes_radio.server import RadioServer
-        from integrations.hermes_radio.tests.support import post
+        from integrations.hermes_radio.tests.bridge import post
         release = threading.Event()
 
         def llm(messages):

@@ -82,7 +82,7 @@ class FixtureLauncherTests(unittest.TestCase):
         self.assertEqual(completed.stderr, b"fixture_startup_failed\n")
 
     def test_production_cli_requires_explicit_configuration(self):
-        completed = subprocess.run([sys.executable, "-B", "-m", "integrations.hermes_radio", "--help"],
+        completed = subprocess.run([sys.executable, "-B", "-m", "legacy.integrations.hermes_radio_legacy", "--help"],
                                    capture_output=True, timeout=8)
         self.assertEqual(completed.returncode, 0)
         self.assertIn(b"--state-client-config", completed.stdout)

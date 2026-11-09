@@ -24,7 +24,7 @@ One process, `python -m integrations.hermes_radio`, listening on `127.0.0.1:8650
 **Answers every pilot transmission.** The pilot does not need to say "Athena" first. Only the configured pilot (`--speaker`, default `Prometheus,Player,Client`) is answered; empty or junk transcripts are dropped.
 
 ## Legacy, not on the live path
-The old State Service adapter (`Controller`, `RadioTools`, `OpenAIProvider`, `Adapter`, `facts`, `tactical`, the keyword intent classifier, ...), its fixtures and tests were moved to [`legacy/integrations/hermes_radio_legacy/`](../../legacy/integrations/hermes_radio_legacy/README.md) (REL-5, `git mv`, history kept). The live adapter imports nothing from there and no longer accepts `--state-client-config`, `--reasoning`, `--controller-timeout` or `--cache-interval`; the legacy entry point is `python -m legacy.integrations.hermes_radio_legacy`. Reference only: see [legacy.md](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/legacy.md). Do not extend it.
+The old State Service adapter (`Controller`, `RadioTools`, `OpenAIProvider`, `Adapter`, `facts`, `tactical`, the keyword intent classifier, ...), its fixtures and tests were moved to [`legacy/integrations/hermes_radio_legacy/`](../../legacy/integrations/hermes_radio_legacy/README.md) (REL-5, `git mv`, history kept). The live adapter imports nothing from there and no longer accepts `--state-client-config`, `--reasoning`, `--controller-timeout` or `--cache-interval` (passing one is now an argparse error, and running without `--eye-host` exits 1); the legacy entry point is `python -m legacy.integrations.hermes_radio_legacy`. Reference only: see [legacy.md](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/legacy.md). Do not extend it.
 `transcript_fixture.py` stays here (the Go transcript test uses it).
 ## Running it
 
@@ -83,7 +83,7 @@ PYTHONPATH=$HOME/Ai-Workspace/projects/project-athena/src:$PWD \
 
 Tests use synthetic data, ephemeral loopback HTTP and test-owned Unix sockets. They read no credentials and need no DCS. They prove transport, validation and logic, not live voice quality, latency or recognition.
 
-The default run covers live code only. Legacy tests run on demand from the repo root with the same `PYTHONPATH`: `python -B -m pytest legacy` (or `unittest discover -s legacy/integrations/hermes_radio_legacy/tests -p 'test_*.py'`).
+The default run covers live code only. Legacy tests run on demand from the repo root; `athena` and the full `metis` live only in project-athena `legacy/src`, so the path must be `PYTHONPATH=$HOME/Ai-Workspace/projects/project-athena/legacy/src:$HOME/Ai-Workspace/projects/project-athena/src:$PWD`: `python -B -m pytest legacy` (or `unittest discover -s legacy/integrations/hermes_radio_legacy/tests -p 'test_*.py'`).
 
 
 ## Offline text smoke (no audio)

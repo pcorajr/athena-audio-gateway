@@ -9,7 +9,7 @@ Contents: `controller`, `tools`, `openai_provider`, `context`, `ownship`, `proje
 Requires `athena` and `metis` (State Service client) on `PYTHONPATH` — the retired State Service is not running.
 
 ```
-export PYTHONPATH=<project-athena>/src:<gateway root>
+export PYTHONPATH=<project-athena>/legacy/src:<project-athena>/src:<gateway root>
 python -m legacy.integrations.hermes_radio_legacy --state-client-config FILE   # legacy adapter
 python -m legacy.integrations.hermes_radio_legacy.fixture_server --port 0 --scenario current_state
 python -m pytest legacy            # 126 tests, run from the gateway root

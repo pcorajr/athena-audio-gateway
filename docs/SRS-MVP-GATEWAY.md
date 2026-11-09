@@ -163,7 +163,7 @@ make test-athena-mvp-integration
 ```
 
 The integration target runs only `TestSRSMVPTextRoundTrip`. It starts the
-specified `integrations.hermes_radio.fixture_server --port 0 --scenario <name>`
+specified `legacy.integrations.hermes_radio_legacy.fixture_server --port 0 --scenario <name>`
 with `-B`, explicit PYTHONPATH and a restricted environment, reads its content-free
 loopback readiness URL, and requires clean SIGTERM teardown. The fixture is
 owned by SRS-H and injects fake model/state dependencies into its real adapter.

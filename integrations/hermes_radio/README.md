@@ -2,7 +2,7 @@
 
 This is the Python half of the Athena voice stack. The Go gateway (this repo's `cmd/skyeye`) turns pilot speech into text and posts it here; this process decides what Athena says and returns text for the gateway to speak.
 
-> Documentation home: **project-athena** (`../../../project-athena/docs/architecture/README.md` on the Athena host). This README covers only the code in this folder. Name note: the folder is called `hermes_radio` for historical reasons. The live adapter does **not** use a Hermes session.
+> Documentation home: **project-athena** ([architecture](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/README.md); also `../../../project-athena` on the Athena host). This README covers only the code in this folder. Name note: the folder is called `hermes_radio` for historical reasons. The live adapter does **not** use a Hermes session.
 
 ## What it does now
 
@@ -37,7 +37,7 @@ Test support (not runtime): `fixture_server.py`, `fixture_data.py`, `stream_fixt
 
 ## Running it
 
-Normally you do not run it by hand. The launcher `~/.hermes/cache/athena-srs-mvp-20261106/run/eye-up-r8.sh` starts Memory, this adapter and the gateway from a frozen release snapshot. See `project-athena/docs/runbooks/start-stop.md`.
+Normally you do not run it by hand. The launcher `~/.hermes/cache/athena-srs-mvp-20261106/run/eye-up-r8.sh` starts Memory, this adapter and the gateway from a frozen release snapshot. See [start-stop](https://github.com/pcorajr/project-athena/blob/dev/docs/runbooks/start-stop.md).
 
 Key options (flag, or environment variable):
 

@@ -2,9 +2,9 @@
 
 This is a fork of [`dharmab/skyeye`](https://github.com/dharmab/skyeye) (MIT), adapted into the **Athena Audio Gateway**, the radio half of Project Athena.
 
-**Documentation home: the `project-athena` repository** (`docs/architecture/README.md`, `docs/runbooks/`). This file keeps only what is specific to this fork: what changed from upstream, how upstream is tracked, how to build, and licensing. Also see `docs/PITFALLS.md` for traps this project hit.
+**Documentation home: the `project-athena` repository** ([architecture](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/README.md), [runbooks](https://github.com/pcorajr/project-athena/tree/dev/docs/runbooks)). This file keeps only what is specific to this fork: what changed from upstream, how upstream is tracked, how to build, and licensing. Also see `docs/PITFALLS.md` for traps this project hit.
 
-Governing decisions: ADR 0014 (server-side SRS audio gateway boundary) and the ADR 0016+ series, in `project-athena/docs/architecture/adr/`.
+Governing decisions: ADR 0014 (server-side SRS audio gateway boundary) and the ADR 0016+ series, in [project-athena](https://github.com/pcorajr/project-athena/tree/dev/docs/architecture/adr).
 
 ## What this fork is for
 
@@ -40,7 +40,7 @@ The adapter is Python, in `integrations/hermes_radio/` (Athena Eye, SimpleContro
 | `pkg/recognizer` | Whisper with a base prompt file and a live dynamic vocabulary file |
 | `internal/application/srs_mvp.go` | Starts the MVP runner and bypasses the upstream lanes |
 
-Some Athena settings (all in `~/.config/athena-gateway/mvp.yaml` or flags): `athena-srs-mvp`, `athena-pilot-name`, `athena-command-frequency`, `srs-frequencies`, `athena-hermes-endpoint` (loopback only), `athena-hermes-timeout`, `athena-response-max-age`, `athena-live-tx`, `mute`, `voice: feminine`. Flags win over the config file. The launcher (`project-athena/docs/runbooks/start-stop.md`) sets the live values.
+Some Athena settings (all in `~/.config/athena-gateway/mvp.yaml` or flags): `athena-srs-mvp`, `athena-pilot-name`, `athena-command-frequency`, `srs-frequencies`, `athena-hermes-endpoint` (loopback only), `athena-hermes-timeout`, `athena-response-max-age`, `athena-live-tx`, `mute`, `voice: feminine`. Flags win over the config file. The launcher ([start-stop](https://github.com/pcorajr/project-athena/blob/dev/docs/runbooks/start-stop.md)) sets the live values.
 
 ## Legacy, not on the live path
 
@@ -99,6 +99,17 @@ make test-athena-mvp   # focused offline SRS-MVP checks
 make lint vet fix format
 ```
 
+The live binary (`~/.local/opt/athena-gateway-mvp/bin/skyeye-radio-v11-3d5a990`) was built by hand with the same flags the Makefile uses (`BUILD_VARS`/`BUILD_FLAGS`), from the repo root (`G`):
+
+```sh
+CGO_ENABLED=1 GOARCH=amd64 GOFLAGS=-mod=mod GOPROXY=off GOTOOLCHAIN=local \
+  C_INCLUDE_PATH="$G/third_party/whisper.cpp/ggml/include:$G/third_party/whisper.cpp/include" \
+  LIBRARY_PATH="$G/third_party/whisper.cpp/build_go/src:$G/third_party/whisper.cpp/build_go/ggml/src" \
+  go build -tags nolibopusfile -o "$OUT" ./cmd/skyeye/
+```
+
+(Source: the launcher helper `~/.hermes/cache/athena-srs-mvp-20261106/run/anycoal.sh`, outside git. Plain `make` builds `skyeye` with the same tags.)
+
 Arch/CachyOS dependencies: `go cmake base-devel opus libsoxr`. Python adapter tests: see `integrations/hermes_radio/README.md`.
 
 ## Licensing
@@ -111,6 +122,6 @@ Live transmit is **on** in the Athena launcher (`--mute=false --athena-live-tx=t
 
 ## Deployment
 
-Runs on **athena** (`10.90.10.112`, Linux) alongside the adapter and Mission Memory, connecting over the LAN to the SRS server on **ATHENA-DCS** (`10.90.10.78`, Windows) at port 5002. Reads DCS only through the adapter. See `project-athena/docs/architecture/deployment.md` and `deploy/README.md`.
+Runs on **athena** (`10.90.10.112`, Linux) alongside the adapter and Mission Memory, connecting over the LAN to the SRS server on **ATHENA-DCS** (`10.90.10.78`, Windows) at port 5002. Reads DCS only through the adapter. See [deployment](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/deployment.md) and `deploy/README.md`.
 
 Do not host the gateway on a machine that also runs DCS: a flight client is busy rendering, and upstream does not support local CPU speech recognition alongside DCS.

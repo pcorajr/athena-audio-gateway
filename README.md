@@ -1,13 +1,13 @@
 # Athena fork
 
-This repository is the **Athena Audio Gateway**: a fork of [SkyEye](https://github.com/dharmab/skyeye) used as the radio half of **Project Athena**, a personal voice controller for DCS World. The pilot talks on SRS; Athena hears him, reads his live mission, and answers like a GCI/AWACS controller in about 1-2 s.
+This repository is the **Athena Audio Gateway**: a fork of [SkyEye](https://github.com/dharmab/skyeye) used as the radio half of **Project Athena**, a personal voice controller for DCS World. The pilot talks on SRS; Athena hears him, reads his live mission, and answers like a GCI/AWACS controller, typically in about 1 to 4 s (fixed replies are faster).
 
-**The documentation home is the `project-athena` repository**, not this one. On the Athena host it is the sibling checkout `../project-athena`. Start with:
+**The documentation home is the `project-athena` repository**, not this one. On the Athena host it is also the sibling checkout `../project-athena`. Start with:
 
-- `project-athena/README.md`: what Athena is, one-picture diagram, repo map
-- `project-athena/docs/architecture/README.md`: architecture
-- `project-athena/docs/runbooks/` : flying, start/stop, debriefs, client setup
-- `project-athena/docs/TROUBLESHOOTING.md`
+- [README](https://github.com/pcorajr/project-athena/blob/dev/README.md): what Athena is, one-picture diagram, repo map
+- [Architecture](https://github.com/pcorajr/project-athena/blob/dev/docs/architecture/README.md): architecture
+- [Runbooks](https://github.com/pcorajr/project-athena/tree/dev/docs/runbooks): flying, start/stop, debriefs, client setup
+- [Troubleshooting](https://github.com/pcorajr/project-athena/blob/dev/docs/TROUBLESHOOTING.md)
 
 What lives here:
 
@@ -20,7 +20,7 @@ What lives here:
 | `deploy/` | Deployment files. |
 | Other upstream code (GCI parser/controller/composer, personas, API-server bridge, radar) | **Legacy, not on the live path.** Kept; will be removed in a later cleanup. |
 
-Mission Memory (debriefs, Eye-vs-Memory audit) and the DCS client kit are in `project-athena`.
+Mission Memory (debriefs, Eye-vs-Memory audit) and the DCS client kit are in [project-athena](https://github.com/pcorajr/project-athena/tree/dev).
 
 Branch: `athena/main`. Build with `make`, never bare `go build` / `go test` (see `ATHENA.md`). Before running tests use `umask 077` and a private `TMPDIR`.
 

@@ -96,3 +96,7 @@ dev/
 .vscode/settings.json
 
 *.zip
+
+# Python bytecode (never commit)
+__pycache__/
+*.pyc

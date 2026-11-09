@@ -437,7 +437,10 @@ def attach(eye):
 
 def source_matches():
     """Startup reuse check: query only the local socket, never a DCS endpoint."""
-    from metis.state_service.memory_source import resolve_source
+    try:
+        from athena_memory.memory_source import resolve_source
+    except ImportError:  # older memory builds ship it under metis
+        from metis.state_service.memory_source import resolve_source
     try:
         source = resolve_source()
         health = request({"operation": "health"})

@@ -4,7 +4,7 @@ import unittest
 
 from integrations.hermes_radio.contract import ContractError, parse_request, speaker_matches
 from integrations.hermes_radio.eye import PLAYER, Eye, _is_pilot
-from integrations.hermes_radio.fixture_data import bridge_request
+from integrations.hermes_radio.tests.bridge import bridge_request
 from integrations.hermes_radio.simple_controller import PROMPT, SimpleController
 from integrations.hermes_radio.tests import eye_fixture as fx
 from integrations.hermes_radio.tests.test_eye import Clock, FakeTranscript, group, loaded, req

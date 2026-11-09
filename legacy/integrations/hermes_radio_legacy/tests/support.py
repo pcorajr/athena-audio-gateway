@@ -11,7 +11,7 @@ import threading
 from unittest.mock import patch
 
 from athena.state_service_client import load_client_config
-from integrations.hermes_radio.fixture_data import client_document, state_frame, wire
+from legacy.integrations.hermes_radio_legacy.fixture_data import client_document, state_frame, wire
 
 
 @contextmanager

@@ -13,16 +13,16 @@ from unittest.mock import Mock
 
 from athena.state_service_client import ClientQueryError
 
-from integrations.hermes_radio.controller import Controller, CORE_PROMPT
+from legacy.integrations.hermes_radio_legacy.controller import Controller, CORE_PROMPT
 from integrations.hermes_radio.contract import parse_request
-from integrations.hermes_radio.fixture_data import bridge_request, state_frame, wire
-from integrations.hermes_radio.openai_provider import OpenAIProvider, ProviderError
-from integrations.hermes_radio.tools import RadioTools, SnapshotCache, SCHEMAS, arguments, geometry
-from integrations.hermes_radio.tests.support import fake_state, fake_hermes
-from integrations.hermes_radio.tests.test_tactical import producer, unit
-from integrations.hermes_radio.tests.test_server import running
-from integrations.hermes_radio.tests.support import post
-from integrations.hermes_radio.text_smoke import smoke
+from legacy.integrations.hermes_radio_legacy.fixture_data import bridge_request, state_frame, wire
+from legacy.integrations.hermes_radio_legacy.openai_provider import OpenAIProvider, ProviderError
+from legacy.integrations.hermes_radio_legacy.tools import RadioTools, SnapshotCache, SCHEMAS, arguments, geometry
+from legacy.integrations.hermes_radio_legacy.tests.support import fake_state, fake_hermes
+from legacy.integrations.hermes_radio_legacy.tests.test_tactical import producer, unit
+from legacy.integrations.hermes_radio_legacy.tests.test_server import running
+from legacy.integrations.hermes_radio_legacy.tests.support import post
+from legacy.integrations.hermes_radio_legacy.text_smoke import smoke
 from integrations.hermes_radio.transcript import Transcript
 
 
@@ -296,7 +296,7 @@ class ProviderTests(unittest.TestCase):
             port = int(endpoint.split(":")[2].split("/")[0])
             provider = OpenAIProvider("synthetic-key", connection_factory=lambda *_a, **kw:
                                       http.client.HTTPConnection("127.0.0.1", port, **kw))
-            from integrations.hermes_radio.tools import TOOLS
+            from legacy.integrations.hermes_radio_legacy.tools import TOOLS
             result = list(provider.stream([], TOOLS, deadline=time.monotonic()+2))
             self.assertEqual(result[0][0], "calls")
             self.assertEqual(result[0][1][0]["id"], "call-1")

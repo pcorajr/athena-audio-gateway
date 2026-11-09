@@ -24,13 +24,13 @@ from metis.state_service.units_stream import UnitStreamSnapshot, _proto_to_unit_
 from metis.state_service.working_state import PublicationWindow
 
 from integrations.hermes_radio.contract import parse_request
-from integrations.hermes_radio.facts import Facts
-from integrations.hermes_radio.fixture_data import (
+from legacy.integrations.hermes_radio_legacy.facts import Facts
+from legacy.integrations.hermes_radio_legacy.fixture_data import (
     LIMITS, NOW, QUERY_LIMITS, RECENT_LIMITS, STAMP, bridge_request, issue, wire,
 )
-from integrations.hermes_radio.server import Adapter
-from integrations.hermes_radio.tests.support import fake_state
-from integrations.hermes_radio.tests.test_facts import exchange, put, read_frame
+from legacy.integrations.hermes_radio_legacy.adapter import Adapter
+from legacy.integrations.hermes_radio_legacy.tests.support import fake_state
+from legacy.integrations.hermes_radio_legacy.tests.test_facts import exchange, put, read_frame
 
 INTENTS = ("current_state", "recent_events")
 # Explicit test expectations, independent of the adapter's relevant-health set.

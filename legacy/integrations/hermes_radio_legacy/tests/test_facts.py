@@ -13,11 +13,11 @@ import athena.state_service_client as public_client
 from athena.state_service_client import ClientQueryError, StateServiceClient
 
 from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, parse_request
-from integrations.hermes_radio.facts import Facts, event_summary, render
-from integrations.hermes_radio.fixture_data import bridge_request, event_row, issue, state_frame, wire
-from integrations.hermes_radio.ownship import OwnshipReader
-from integrations.hermes_radio.server import Adapter
-from integrations.hermes_radio.tests.support import fake_state
+from legacy.integrations.hermes_radio_legacy.facts import Facts, event_summary, render
+from legacy.integrations.hermes_radio_legacy.fixture_data import bridge_request, event_row, issue, state_frame, wire
+from legacy.integrations.hermes_radio_legacy.ownship import OwnshipReader
+from legacy.integrations.hermes_radio_legacy.adapter import Adapter
+from legacy.integrations.hermes_radio_legacy.tests.support import fake_state
 
 
 def read_frame(transform=lambda value: value, *, intent="current_state", config_changes=None):
@@ -224,7 +224,7 @@ class OwnshipTests(unittest.TestCase):
                 reads.append(len(result))
                 return result
         with fake_state() as (config, calls, closed):
-            with patch("integrations.hermes_radio.ownship.socket.socket", PartialSocket):
+            with patch("legacy.integrations.hermes_radio_legacy.ownship.socket.socket", PartialSocket):
                 frame = OwnshipReader(config).query(request_id="partial-io")
                 self.assertTrue(frame.ok)
         self.assertGreater(len(writes), 1)
@@ -250,13 +250,13 @@ class OwnshipTests(unittest.TestCase):
         self.assertEqual(closed, [True])
 
     def test_cumulative_deadline_includes_validation(self):
-        from integrations.hermes_radio.ownship import validate_ownship
+        from legacy.integrations.hermes_radio_legacy.ownship import validate_ownship
         def slow_validation(*args, **kwargs):
             result = validate_ownship(*args, **kwargs)
             time.sleep(0.06)
             return result
         with fake_state(timeout_ms=30) as (config, calls, closed):
-            with patch("integrations.hermes_radio.ownship.validate_ownship", side_effect=slow_validation):
+            with patch("legacy.integrations.hermes_radio_legacy.ownship.validate_ownship", side_effect=slow_validation):
                 with self.assertRaises(ClientQueryError) as caught:
                     OwnshipReader(config).query(request_id="validation-budget")
             self.assertEqual(caught.exception.code, "query_timeout")

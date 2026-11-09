@@ -5,7 +5,7 @@ import unittest
 from integrations.hermes_radio.contract import (
     ContractError, MAX_BODY_BYTES, MAX_SPEECH_CHARS, encode_response, parse_request, response, strict_json,
 )
-from integrations.hermes_radio.fixture_data import bridge_request, wire
+from integrations.hermes_radio.tests.bridge import bridge_request, wire
 
 
 class ContractTests(unittest.TestCase):

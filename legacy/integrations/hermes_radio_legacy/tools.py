@@ -8,7 +8,7 @@ import uuid
 
 from athena.state_service_client import ClientQueryError, StateServiceClient, load_client_config
 from .context import RELEVANT_HEALTH, validate_factual_context
-from .contract import safe_text
+from integrations.hermes_radio.contract import safe_text
 from .failures import response_failure
 from .ownship import OwnshipReader, _plain, _invalid, _number, _exact, validate_projection
 from .projections import page

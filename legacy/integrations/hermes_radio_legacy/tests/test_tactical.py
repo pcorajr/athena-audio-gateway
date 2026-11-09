@@ -22,13 +22,13 @@ from metis.state_service.units_stream import UnitStreamSnapshot
 from metis.state_service.working_state import PublicationWindow
 
 from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, encode_response, parse_request
-from integrations.hermes_radio.facts import CAPABILITIES, Facts
-from integrations.hermes_radio.fixture_data import LIMITS, NOW, QUERY_LIMITS, STAMP, bridge_request, issue, wire
-from integrations.hermes_radio.hermes_client import HermesClassifier, classify
-from integrations.hermes_radio.server import Adapter
-from integrations.hermes_radio.tactical import bearing_range, category
-from integrations.hermes_radio.tests.support import fake_hermes, fake_state, model_reply
-from integrations.hermes_radio.tests.test_server import running, post
+from legacy.integrations.hermes_radio_legacy.facts import CAPABILITIES, Facts
+from legacy.integrations.hermes_radio_legacy.fixture_data import LIMITS, NOW, QUERY_LIMITS, STAMP, bridge_request, issue, wire
+from legacy.integrations.hermes_radio_legacy.hermes_client import HermesClassifier, classify
+from legacy.integrations.hermes_radio_legacy.adapter import Adapter
+from legacy.integrations.hermes_radio_legacy.tactical import bearing_range, category
+from legacy.integrations.hermes_radio_legacy.tests.support import fake_hermes, fake_state, model_reply
+from legacy.integrations.hermes_radio_legacy.tests.test_server import running, post
 
 
 def unit(identifier, unit_type="MiG-29S", *, coalition="red", lat: float = 0, lon: float = 1,
@@ -390,7 +390,7 @@ class TacticalTests(unittest.TestCase):
             self.assertEqual(result["state"], "unavailable")
 
     def test_prompt_hotwords_and_exact_type_vocabulary_safety(self):
-        text = (Path(__file__).resolve().parents[1] / "whisper-prompt.txt").read_text()
+        text = (Path(__file__).resolve().parents[4] / "integrations" / "hermes_radio" / "whisper-prompt.txt").read_text()
         for hotword in ("Athena", "ownship", "picture", "bogey dope", "BRAA", "bandit", "home plate", "SAM", "recent events"):
             self.assertIn(hotword, text)
         for name in (None, "unknown", "truck aircraft", "F-16C_50 launcher", "CVN_71", "SAM bait"):

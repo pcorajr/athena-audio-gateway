@@ -8,8 +8,8 @@ import time
 from urllib.parse import urlsplit
 import uuid
 
-from .contract import encode_response, parse_request, strict_json
-from .transcript import Transcript
+from integrations.hermes_radio.contract import encode_response, parse_request, strict_json
+from integrations.hermes_radio.transcript import Transcript
 
 
 def smoke(url, question, transcript):

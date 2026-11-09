@@ -9,10 +9,10 @@ import unittest
 from unittest.mock import patch
 from urllib.parse import urlsplit
 
-from integrations.hermes_radio.fixture_data import bridge_request, wire
-from integrations.hermes_radio.facts import CAPABILITIES
-from integrations.hermes_radio.fixture_server import FixtureFacts, SCENARIOS
-from integrations.hermes_radio.tests.support import post
+from legacy.integrations.hermes_radio_legacy.fixture_data import bridge_request, wire
+from legacy.integrations.hermes_radio_legacy.facts import CAPABILITIES
+from legacy.integrations.hermes_radio_legacy.fixture_server import FixtureFacts, SCENARIOS
+from legacy.integrations.hermes_radio_legacy.tests.support import post
 
 
 class FixtureLauncherTests(unittest.TestCase):
@@ -27,7 +27,7 @@ class FixtureLauncherTests(unittest.TestCase):
                 # Sentinel values must never be consulted by fixture mode.
                 env.update(ATHENA_RADIO_HERMES_ENDPOINT="http://invalid.invalid/v1/responses",
                            ATHENA_RADIO_HERMES_KEY="unused-synthetic-key")
-                process = subprocess.Popen([sys.executable, "-B", "-m", "integrations.hermes_radio.fixture_server",
+                process = subprocess.Popen([sys.executable, "-B", "-m", "legacy.integrations.hermes_radio_legacy.fixture_server",
                     "--port", "0", "--scenario", scenario], stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
                 try:
                     self.assertTrue(select.select([process.stdout], [], [], 8)[0], "fixture readiness timeout")
@@ -75,7 +75,7 @@ class FixtureLauncherTests(unittest.TestCase):
         with socket.socket() as occupied:
             occupied.bind(("127.0.0.1", 0))
             occupied.listen(1)
-            completed = subprocess.run([sys.executable, "-B", "-m", "integrations.hermes_radio.fixture_server",
+            completed = subprocess.run([sys.executable, "-B", "-m", "legacy.integrations.hermes_radio_legacy.fixture_server",
                 "--port", str(occupied.getsockname()[1]), "--scenario", "current_state"], capture_output=True, timeout=8)
         self.assertNotEqual(completed.returncode, 0)
         self.assertEqual(completed.stdout, b"")

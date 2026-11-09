@@ -7,7 +7,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from .contract import safe_text, strict_json
+from integrations.hermes_radio.contract import safe_text, strict_json
 
 
 class ProviderError(ValueError):

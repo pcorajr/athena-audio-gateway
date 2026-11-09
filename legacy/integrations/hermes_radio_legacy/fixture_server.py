@@ -14,7 +14,8 @@ from metis.state_service.socket_protocol import decode_server_frame
 from .fixture_data import LIMITS, QUERY_LIMITS, RECENT_LIMITS, state_frame, wire
 from .hermes_client import extract_intent
 from .ownship import validate_ownship
-from .server import Adapter, RadioServer, serve
+from integrations.hermes_radio.server import RadioServer, serve
+from .adapter import Adapter
 
 SCENARIOS = ("current_state", "recent_events", "unavailable", "stale", "ambiguous", "unrecognized")
 

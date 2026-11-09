@@ -35,7 +35,7 @@ func startTextFixtureWithAck(t *testing.T, scenario, ack string, transcriptRoot 
 			t.Fatalf("%s must be an explicitly approved absolute path", name)
 		}
 	}
-	cmd := exec.Command(python, "-B", "-m", "integrations.hermes_radio.fixture_server", "--port", "0", "--scenario", scenario)
+	cmd := exec.Command(python, "-B", "-m", "legacy.integrations.hermes_radio_legacy.fixture_server", "--port", "0", "--scenario", scenario)
 	cmd.Dir = root
 	// Do not inherit credentials, model routes or production configuration.
 	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + t.TempDir(), "TMPDIR=" + t.TempDir(), "PYTHONPATH=" + src + string(os.PathListSeparator) + root, "PYTHONDONTWRITEBYTECODE=1", "PYTHONUNBUFFERED=1"}

@@ -12,10 +12,10 @@ import tempfile
 import unittest
 
 from integrations.hermes_radio.transcript import Transcript
-from integrations.hermes_radio.controller import Controller
-from integrations.hermes_radio.text_smoke import smoke
-from integrations.hermes_radio.tests.test_v2 import FakeProvider, world
-from integrations.hermes_radio.tests.test_server import running
+from legacy.integrations.hermes_radio_legacy.controller import Controller
+from legacy.integrations.hermes_radio_legacy.text_smoke import smoke
+from legacy.integrations.hermes_radio_legacy.tests.test_v2 import FakeProvider, world
+from legacy.integrations.hermes_radio_legacy.tests.test_server import running
 
 
 class TranscriptTests(unittest.TestCase):

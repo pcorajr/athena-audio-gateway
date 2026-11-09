@@ -4,7 +4,7 @@ from pathlib import Path
 import time
 from .controller import Controller
 from .fixture_server import FixtureFacts
-from .transcript import Transcript
+from integrations.hermes_radio.transcript import Transcript
 from .tools import Evidence
 
 

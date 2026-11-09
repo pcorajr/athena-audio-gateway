@@ -8,7 +8,7 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-from .contract import ContractError, MAX_BODY_BYTES, safe_text, strict_json
+from integrations.hermes_radio.contract import ContractError, MAX_BODY_BYTES, safe_text, strict_json
 
 INTENTS = frozenset({"current_state", "recent_events", "picture", "bogey_dope", "threats",
                      "mission_status", "home_plate", "help", "unrecognized"})

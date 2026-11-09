@@ -4,7 +4,7 @@ from metis.state_service.models import GeoPosition
 from metis.state_service.serialization import STATE_API_VERSION
 from metis.state_service.socket_protocol import StateQueryResponse
 
-from .contract import safe_text
+from integrations.hermes_radio.contract import safe_text
 from .ownship import _exact, _number, _invalid, validate_projection
 
 

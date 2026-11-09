@@ -7,7 +7,7 @@ import uuid
 from athena.state_service_client import ClientQueryError, StateServiceClient, load_client_config
 
 from .context import RELEVANT_HEALTH, validate_factual_context
-from .contract import MAX_SPEECH_CHARS, response, safe_text
+from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, response, safe_text
 from .ownship import OwnshipReader
 from .tactical import TACTICAL_INTENTS, collect, describe
 

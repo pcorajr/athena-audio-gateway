@@ -1,3 +1,35 @@
+# Athena fork
+
+This repository is the **Athena Audio Gateway**: a fork of [SkyEye](https://github.com/dharmab/skyeye) used as the radio half of **Project Athena**, a personal voice controller for DCS World. The pilot talks on SRS; Athena hears him, reads his live mission, and answers like a GCI/AWACS controller in about 1-2 s.
+
+**The documentation home is the `project-athena` repository**, not this one. On the Athena host it is the sibling checkout `../project-athena`. Start with:
+
+- `project-athena/README.md`: what Athena is, one-picture diagram, repo map
+- `project-athena/docs/architecture/README.md`: architecture
+- `project-athena/docs/runbooks/` : flying, start/stop, debriefs, client setup
+- `project-athena/docs/TROUBLESHOOTING.md`
+
+What lives here:
+
+| Path | What |
+|---|---|
+| `cmd/skyeye`, `pkg/simpleradio`, `pkg/athena/{admission,bridge,mvp,transcript}`, `pkg/recognizer`, `pkg/synthesizer`, `internal/application` | The **Go gateway** (live path): joins SRS on 133.0 AM / 251.0 AM / 33.0 FM, admits only the pilot, Whisper speech-to-text, Piper female voice, replies on the channel you called on. |
+| `integrations/hermes_radio/` | The **Python adapter** (live path): Athena Eye (live DCS picture), SimpleController (one model call per transmission), cockpit feed, memory link, Codex client, debrief CLI. See its README. |
+| `ATHENA.md` | Fork notes: upstream tracking policy, audit log, build, licensing. |
+| `docs/PITFALLS.md` | Traps this project hit. |
+| `deploy/` | Deployment files. |
+| Other upstream code (GCI parser/controller/composer, personas, API-server bridge, radar) | **Legacy, not on the live path.** Kept; will be removed in a later cleanup. |
+
+Mission Memory (debriefs, Eye-vs-Memory audit) and the DCS client kit are in `project-athena`.
+
+Branch: `athena/main`. Build with `make`, never bare `go build` / `go test` (see `ATHENA.md`). Before running tests use `umask 077` and a private `TMPDIR`.
+
+---
+
+## Upstream SkyEye README
+
+Everything below is the upstream project README, kept for reference. It describes the original SkyEye GCI bot, not the Athena configuration.
+
 # SkyEye: AI Powered GCI Bot for DCS
 
 ![](https://repository-images.githubusercontent.com/712246301/691d4acd-5b70-41b2-b087-9ec27a7f6590)

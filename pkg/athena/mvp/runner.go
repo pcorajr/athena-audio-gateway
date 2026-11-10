@@ -92,10 +92,7 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 	r.lastTransmissionID = t.TraceID
 	timing := Timing{TransmissionID: t.TraceID, Received: 0, STTDone: -1, ReplyReceived: -1, TTSDone: -1, FirstSend: -1, LastSend: -1, Outcome: "bridge_no_response"}
 	defer func() {
-		route := "ignored"
-		if timing.ReplyReceived >= 0 {
-			route = "LLM"
-		}
+		route := exchangeRoute(timing)
 		r.record(t, "exchange_outcome", "", timing.Outcome, route, 0, map[string]int64{"stt_done": timing.STTDone, "reply_received": timing.ReplyReceived, "tts_done": timing.TTSDone, "first_send": timing.FirstSend, "last_send": timing.LastSend})
 		if r.Record != nil {
 			r.Record(timing)
@@ -193,6 +190,17 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 	r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", 1, map[string]int64{"first_send": timing.FirstSend, "last_send": timing.LastSend})
 }
 
+// exchangeRoute labels the exchange_outcome record. A spoken (or attempted)
+// "say again" / "too long" fallback is never "ignored": the pilot heard Athena.
+func exchangeRoute(t Timing) string {
+	switch {
+	case strings.HasPrefix(t.Outcome, "say_again_fallback"), strings.HasPrefix(t.Outcome, "too_long_fallback"):
+		return "fallback"
+	case t.ReplyReceived >= 0:
+		return "LLM"
+	}
+	return "ignored"
+}
 func deliveryOutcome(d simpleradio.Delivery) string {
 	if d.Reason != "" {
 		return d.Outcome + ":" + d.Reason

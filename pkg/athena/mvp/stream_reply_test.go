@@ -1,17 +1,21 @@
 package mvp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/dharmab/skyeye/pkg/athena/bridge"
+	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/simpleradio"
 )
 
@@ -189,5 +193,58 @@ func TestStreamReplyLongPartOneDoesNotKillPartTwo(t *testing.T) {
 	r.Process(t.Context(), tr)
 	if len(radio.sent) != 2 || (*timings)[0].Outcome != "sent" {
 		t.Fatalf("sent=%v timing=%+v", radio.sent, (*timings)[0])
+	}
+}
+
+// A fallback the pilot heard must be labelled "fallback" in exchange_outcome,
+// never "ignored" (bridge failure) or "LLM" (too long).
+func TestStreamReplyFallbackOutcomeRoute(t *testing.T) {
+	for _, stage := range []string{"bridge_error", "too_long"} {
+		t.Run(stage, func(t *testing.T) {
+			r, tr, _, _, _ := streamFixture(t)
+			r.Transcript = &transcript.Writer{Root: t.TempDir()}
+			want := "say_again_fallback_sent"
+			switch stage {
+			case "bridge_error":
+				r.Bridge = streamFunc(func(context.Context, bridge.Request, func(bridge.Response) error) error {
+					return errors.New("synthetic")
+				})
+			case "too_long":
+				want = "too_long_fallback_sent"
+				r.Bridge = replyParts("Prometheus, a very long debrief.")
+				r.Synthesize = func(_ context.Context, s string) (simpleradio.Audio, error) {
+					if s == TooLongLine {
+						return make(simpleradio.Audio, 3*16000), nil
+					}
+					return make(simpleradio.Audio, 40*16000), nil
+				}
+			}
+			r.Process(t.Context(), tr)
+			paths, _ := filepath.Glob(filepath.Join(r.Transcript.Root, "*.jsonl"))
+			if len(paths) != 1 {
+				t.Fatalf("transcripts=%v", paths)
+			}
+			raw, err := os.ReadFile(paths[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			decoder := json.NewDecoder(bytes.NewReader(raw))
+			for {
+				var rec transcript.Record
+				if decoder.Decode(&rec) != nil {
+					break
+				}
+				if rec.Kind == "exchange_outcome" {
+					found = true
+					if rec.Outcome != want || rec.Route != "fallback" {
+						t.Fatalf("exchange_outcome outcome=%q route=%q, want %q/fallback", rec.Outcome, rec.Route, want)
+					}
+				}
+			}
+			if !found {
+				t.Fatal("no exchange_outcome record")
+			}
+		})
 	}
 }

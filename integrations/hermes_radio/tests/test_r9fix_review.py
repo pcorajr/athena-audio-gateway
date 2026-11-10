@@ -7,8 +7,7 @@ from copy import deepcopy
 import unittest
 
 from integrations.hermes_radio import cockpit as cp
-from integrations.hermes_radio.contract import MAX_SPEECH_CHARS
-from integrations.hermes_radio.simple_controller import (PART_CHARS, call_class, debrief_summary, fit_reply,
+from integrations.hermes_radio.simple_controller import (MAX_REPLY_CHARS, call_class, debrief_summary, fit_reply,
                                                          impact_calls, loadout_calls)
 from integrations.hermes_radio.tests.test_eye_round5 import contact, make_eye
 from integrations.hermes_radio.tests.test_r9fix_radio import LIVE, controller, frames
@@ -175,12 +174,12 @@ class WeaponFamilies(unittest.TestCase):
 class FitReplyRunOn(unittest.TestCase):
     def test_single_overlong_sentence_is_cut_at_a_word(self):
         words_ = " ".join("word%d" % i for i in range(400))
-        text, trimmed = fit_reply("Prometheus, Athena, " + words_, PART_CHARS, MAX_SPEECH_CHARS)
+        text, trimmed = fit_reply("Prometheus, Athena, " + words_)
         self.assertTrue(trimmed)
         self.assertNotEqual(text, "Prometheus, Athena.")
         self.assertTrue(text.startswith("Prometheus, Athena, word0 word1"))
         self.assertTrue(text.endswith("."))
-        self.assertLessEqual(len(text), MAX_SPEECH_CHARS)
+        self.assertLessEqual(len(text), MAX_REPLY_CHARS)
         self.assertRegex(text[:-1].split()[-1], r"^word\d+$")
 
 

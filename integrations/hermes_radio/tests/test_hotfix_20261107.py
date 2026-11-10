@@ -85,9 +85,9 @@ class VerticalTests(unittest.TestCase):
 
 class PromptTests(unittest.TestCase):
     def test_braa_then_clock_and_basic_atc(self):
-        self.assertIn("BRAA first then clock", PROMPT)
-        air = PROMPT.index("bearing zero three eight, twelve miles, angels fifteen. At your ten o'clock, high.")
-        ground = PROMPT.index("three miles, ground target. Target is at your eleven o'clock.")
+        self.assertIn("BRA first then clock", PROMPT)
+        air = PROMPT.index("Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high.")
+        ground = PROMPT.index("bearing zero three eight, three miles, ground target, eleven o'clock.")
         self.assertLess(air, ground)
         self.assertIn("Basic ATC", PROMPT)
         self.assertIn("Don't invent runway numbers", PROMPT)

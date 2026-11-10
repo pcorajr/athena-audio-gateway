@@ -246,7 +246,7 @@ class EyeCockpitMergeTests(unittest.TestCase):
         self.assertEqual(lt["range_nm"], 20.0)
         self.assertEqual(lt["closure_kt"], 486)
         self.assertEqual(lt["clock"], "11 o'clock, ahead left")  # bearing 060, nose 090
-        self.assertTrue(lt["call"].startswith("Locked Su-27, bearing zero six zero, twenty miles, angels twenty five."),
+        self.assertTrue(lt["call"].startswith("Locked Su-27, zero six zero, twenty, angels twenty five, "),
                         lt["call"])
         self.assertIn("eleven o'clock", lt["call"])
 

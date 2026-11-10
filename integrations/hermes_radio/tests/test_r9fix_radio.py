@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import unittest
 from integrations.hermes_radio.contract import MAX_SPEECH_CHARS
-from integrations.hermes_radio.simple_controller import (PART_CHARS, SimpleController, call_class, debrief_summary,
+from integrations.hermes_radio.simple_controller import (DEBRIEF_CHARS, MAX_REPLY_CHARS, SimpleController, call_class, debrief_summary,
                                                          fit_reply, loadout_calls)
 from integrations.hermes_radio.tests.test_eye_round4 import FakeTranscript, req
 
@@ -82,28 +82,27 @@ class DebriefTests(unittest.TestCase):
             out = frames(c, text)
             self.assertEqual(len(out), 1, out)
             self.assertTrue(out[0].startswith("Prometheus, Athena, debrief written. Eight kills"), out[0])
-            self.assertLessEqual(len(out[0]), PART_CHARS)
-            self.assertLess(len(out[0]), 300)
+            self.assertLessEqual(len(out[0]), DEBRIEF_CHARS)
 
 
 class SafetyNetTests(unittest.TestCase):
     def test_fit_reply_trims_whole_sentences_from_the_end(self):
         sentences = ["Prometheus, Athena, bandit one two three."] + ["Group number %d, twelve o'clock, ten miles." % i
                                                                      for i in range(60)]
-        text, trimmed = fit_reply(" ".join(sentences), MAX_SPEECH_CHARS)
+        text, trimmed = fit_reply(" ".join(sentences))
         self.assertTrue(trimmed)
-        self.assertLessEqual(len(text), MAX_SPEECH_CHARS)
+        self.assertLessEqual(len(text), MAX_REPLY_CHARS)
         self.assertTrue(text.startswith("Prometheus, Athena, bandit one two three."))
         self.assertTrue(text.endswith("miles."))
-        self.assertEqual(fit_reply("Prometheus, Athena, copy.", PART_CHARS), ("Prometheus, Athena, copy.", False))
+        self.assertEqual(fit_reply("Prometheus, Athena, copy."), ("Prometheus, Athena, copy.", False))
 
     def test_llm_answer_over_budget_is_trimmed_and_logged(self):
         long = "Prometheus, Athena, " + " ".join("Contact %d is somewhere out there." % i for i in range(40))
         log = FakeTranscript()
         c = controller(LIVE["loadout_2035"], llm=lambda m: long, log=log)
         out = frames(c, "Athena, how is it looking out there?")
-        self.assertLessEqual(len(out), 2)
-        self.assertTrue(all(len(p) <= PART_CHARS for p in out), [len(p) for p in out])
+        self.assertEqual(len(out), 1)
+        self.assertLessEqual(len(out[0]), MAX_REPLY_CHARS)
 
     def ground_pic(self, n):
         rows = [{"call": "Enemy armor, %d contacts, bearing one zero two, %d miles, ground target." % (i + 1, 5 + i),
@@ -111,23 +110,28 @@ class SafetyNetTests(unittest.TestCase):
         return {"connected": True, "ownship": {"type": "A-10C_2", "coalition": "blue"},
                 "ground_targets_within_20nm": rows[::-1], "ground_empty_call": "none"}
 
-    def test_ground_picture_capped_at_three_closest_first_plus_n_more(self):
+    def test_ground_picture_closest_first_plus_n_more_within_budget(self):
         out = " ".join(frames(controller(self.ground_pic(7)), "Athena, ground picture"))
+        self.assertLessEqual(len(out), MAX_REPLY_CHARS)
         self.assertLess(out.index("1 contacts"), out.index("2 contacts"))
-        self.assertIn("3 contacts", out)
+        self.assertIn("3 contacts", out)  # 280-char budget: three short calls fit, the rest are counted
         self.assertNotIn("4 contacts", out)
         self.assertTrue(out.endswith("Plus four more."), out)
-        three = " ".join(frames(controller(self.ground_pic(3)), "Athena, ground picture"))
+        short = self.ground_pic(3)
+        for r in short["ground_targets_within_20nm"]:
+            r["call"] = r["call"].replace("Enemy armor, ", "Armor ").replace(", ground target", "")
+        three = " ".join(frames(controller(short), "Athena, ground picture"))
+        self.assertIn("3 contacts", three)  # at most three calls when they fit
         self.assertNotIn("Plus", three)
 
     def test_oversize_fixed_calls_drop_whole_contacts_and_log(self):
         pic = self.ground_pic(3)
         for r in pic["ground_targets_within_20nm"]:
-            r["call"] = "Enemy armor " + "heavy column " * 25 + "ground target."
+            r["call"] = "Enemy armor " + "heavy column " * 9 + "ground target."
         log = FakeTranscript()
         out = " ".join(frames(controller(pic, log=log), "Athena, ground picture"))
-        self.assertLessEqual(len(out), MAX_SPEECH_CHARS)
-        self.assertTrue(out.endswith("ground target."))
+        self.assertLessEqual(len(out), MAX_REPLY_CHARS)
+        self.assertTrue(out.endswith("ground target. Plus two more."), out)
         self.assertTrue(any(r.get("trimmed") for r in log.records))
 
 

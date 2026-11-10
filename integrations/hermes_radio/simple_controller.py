@@ -43,15 +43,16 @@ Facts that matter:
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
 - Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
-- Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (picture_top3 verbatim, both sentences of every call); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts.
+- Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (read the picture_top3 calls verbatim, every call whole, nothing added between them); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts. Never cut a call mid-way: if the answer must be shorter, leave out whole calls from the end.
 - Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
 - Never say "overhead" unless that contact has overhead_allowed true (within three nautical miles). Nineteen miles is NOT overhead.
 - A bearing or position request for a kind of target ("bearing to enemy armor", "where is the SAM") = the NEAREST matching group only, unless the pilot says "all" or "every".
 - Calm, natural, clear and short: usually one or two sentences. Summarise groups instead of listing everything.
 - Start with "Prometheus, Athena," (or just "Prometheus," for a quick follow-up).
-- Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRAA first then clock (bearing, range, altitude or ground target, then the clock). Use that call line VERBATIM; never give a range or a clock position without the bearing. Format for reference:
-  Air: "Bandit Su-27 two-ship, bearing zero three eight, twelve miles, angels fifteen. At your ten o'clock, high."
-  Ground: "Enemy armor, bearing zero three eight, three miles, ground target. Target is at your eleven o'clock."
+- Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRA first then clock (bearing, range, altitude or ground target, then the clock and high, low or level). Use that call line VERBATIM, as one sentence; never give a range or a clock position without the bearing. Hostile air calls in an air picture start with the aircraft type (plus two-ship, three-ship when more than one) and give the range without "miles" (under ten miles they keep "miles"). In traffic lists and close-bandit warnings a hostile call starts with "Bandit", a friendly one with "Friendly". Format for reference:
+  Air picture: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
+  Close bandit or traffic: "Bandit MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level."
+  Ground: "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock."
 - Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
 - If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" only when it says so).
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
@@ -66,7 +67,13 @@ How to talk:
 SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
 _UNSAFE = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp", "Zs"})
 _JUNK = re.compile(r"^[\W_]*$")
-PART_CHARS = 420
+# ONE reply budget (phase 0). Athena's Piper voice speaks 13.4 characters a second (median, 466 live parts;
+# slowest long reply 10.6) and the gateway refuses more than 30 s of audio ("say again, too long"):
+# 280 characters is ~21 s typical, <= 26.5 s at the slowest rate seen. Three compact air calls fit.
+# Every reply path (model, fixed, debrief, alerts, close bandits) fits this, sent as ONE frame.
+MAX_REPLY_CHARS = 280
+DEBRIEF_CHARS = 150  # the spoken debrief; the details are in the written report
+assert MAX_REPLY_CHARS <= MAX_SPEECH_CHARS
 FALLBACK = "Prometheus, Athena, say again, I had a problem on my end."
 
 # Question focus (round 3): a one-line hint telling the model which picture section answers the question.
@@ -107,9 +114,13 @@ DEV_NOTE = re.compile(r"\b(feature request|note for (the )?develop\w*|developmen
                       r"athena should (be able to|have|know|say|tell)|add (a |the |an )?feature|log (a |this as a )?bug)\b",
                       re.I)
 ACK = re.compile(r"\b(copy|copies|roger|wilco|egress\w*|going to investigate|investigating|eyes on|wheels up|"
-                 r"airborne|tally|visual|in hot|off target|rtb|returning to base|heading home|thanks|thank you|"
+                 r"airborne|visual|in hot|off target|rtb|returning to base|heading home|thanks|thank you|"
                  r"understood|good copy|switching (missions?|frequenc\w+|radios?)|stand ?by|checking in|rolling in|"
                  r"pushing|commencing|engaging|in the weeds|on my way|proceeding|acknowledged?)\b", re.I)
+# "Athena, tally." / "tally, kills" / "confirm tally" / "I ask for a tally" = the mission kill total (live 11-09);
+# "tally two trucks" (visual contact) and "two, tally" / "visual, tally" (brevity: target in sight) are not.
+TALLY_ASK = re.compile(r"(\b(kill )?tally,?\s+kills?\b|\b(confirm|give me|request|ask for|what('?s| is))\s+(a |the |my )?"
+                       r"(kill )?tally\b|\bkill tally\b|^\W*(athena\W*)?tally\W*$)", re.I)
 REQUEST = re.compile(r"(\?|\b(picture|bogey dope|bearing|vector|where|what|which|how|say|give|any|status|threats?|"
                      r"declare|request|fuel|left|range|braa|bra|check|are there|is there|tell me|need)\b)", re.I)
 PICTURE_ASK = re.compile(r"\b(picture|bogey dope|what do you see|what's out there|whats out there|threats? around)\b", re.I)
@@ -162,7 +173,6 @@ NON_WEAPON = re.compile(r"(ALQ|LITENING|AAQ|\bpod\b|TGP|fuel tank|\btank\b|smoke
 SCENERY_NAMES = ((re.compile(r"\bMOST\b|BRIDGE", re.I), "bridge"), (re.compile(r"HANGAR", re.I), "hangar"),
                  (re.compile(r"BUNKER", re.I), "bunker"), (re.compile(r"TOWER", re.I), "tower"))
 BEARING_ASK = re.compile(r"\b(bearing|vector|heading to|where('s| is| are)?|braa|bra|steer)\b", re.I)
-ALL_ASK = re.compile(r"\b(all|every|each|everything|list)\b", re.I)
 CLASS_HINTS = {
     "dev_note": "DEV NOTE: explicit development note. Reply \"Prometheus, Athena, copy, noted for development: "
                 "<one-line restatement>.\"",
@@ -171,8 +181,9 @@ CLASS_HINTS = {
     "ack": "ACK OR INTENT CALL: one short sentence. Acknowledge; add at most working_target.call when it helps. "
            "No picture, no other groups.",
     "long_picture": "LONG RANGE PICTURE: picture_long_range_top3 verbatim (bandits within 150 miles).",
-    "picture": "AIR PICTURE: picture_top3 verbatim, the three nearest hostile air groups within fifty miles. "
-               "Every bearing, range, angels, clock and high/low/level must survive. No extra-group counts.",
+    "picture": "AIR PICTURE: picture_top3 verbatim, the three nearest hostile air groups within fifty miles, "
+               "every call whole (one sentence each). Every bearing, range, angels, clock and high/low/level must "
+               "survive; if shorter, drop whole calls from the end, never cut one. No extra-group counts.",
     "ground_picture": "GROUND PICTURE: nearest requested ground groups, at most three, call lines verbatim.",
     "traffic": "TRAFFIC: aircraft only, including helos, from air_traffic. Blue means blue coalition. "
                "Do not substitute ground units. Read the nearest aircraft call lines verbatim.",
@@ -187,8 +198,6 @@ CLASS_HINTS = {
     "loadout": "LOADOUT: remaining weapons and gun rounds only; if the pilot also asks what they are flying, name the aircraft type first.",
     "launch": "MISSILE LAUNCH REPORT: read EVERY missile in threats.missiles_in_flight (spoken_name, clock, range; one row per missile id; missiles_inbound only if absent), not only the named type; "
               "none = no missile in the air that I can see.",
-    "bearing_one": "BEARING REQUEST: give ONLY the nearest matching group's call line (hostile_groups are nearest "
-                   "first), not every group.",
 }
 # Round 9: launch calls, aircraft questions, recent-release window
 THREAT_NAME = (r"(?:missiles?|sams?|stingers?|manpads?|igla|strela|sa-?\s?\d+|s-?(?:75|125|200)|patriot|rapier|roland|hawk|"
@@ -211,15 +220,19 @@ AIRCRAFT_ASK = re.compile(r"\b(what am i (flying|in|on)|what (air ?plane|plane|j
                           r"which (air ?plane|plane|jet|aircraft)|what (air ?plane|plane|jet|aircraft)|"
                           r"my (air ?plane|plane|jet|aircraft)|type of (air ?craft|plane)|am i flying|i('m| am) flying)\b", re.I)
 RELEASE_WINDOW_S = 90
-SPEECH_CAP = 360  # whole answer, characters (~25 s of speech); trimmed at a sentence boundary
-ACK_CAP = 220
 
+
+def _plain_call(call):
+    """The close-bandit warning is the compact call plus "Bandit "; the same call in a picture counts as said."""
+    return call[len("Bandit "):] if call.startswith("Bandit ") else call
 
 def call_class(text, pic=None):
-    """dev_note | kill_report | ack | picture | bearing_one | None for one pilot transmission."""
+    """dev_note | kill_report | ack | picture | kill_confirm | ... | None for one pilot transmission."""
     t = (text or "").strip()
     if DEV_NOTE.search(t):
         return "dev_note"
+    if TALLY_ASK.search(t):
+        return "kill_confirm"  # TOTAL_ASK (tally) makes it the mission total
     if KILL_REPORT.search(t) and not _QUESTION.search(t):
         return "kill_report"
     target_damage = re.search(r"\bdamag\w*\b", t, re.I) and (
@@ -248,8 +261,6 @@ def call_class(text, pic=None):
         return "long_picture"
     if PICTURE_ASK.search(t):
         return "ground_picture" if GROUND_ASK.search(t) else "picture"
-    if BEARING_ASK.search(t) and not ALL_ASK.search(t):
-        return "bearing_one"
     if ACK.search(t) and not REQUEST.search(t):
         return "ack"
     return None
@@ -260,6 +271,15 @@ def _splash_target(alert):
     t = re.sub(r"^\s*splash\s+(one|two|three|\w+)\s+", "", (alert or "").lower()).strip(" .!")
     t = re.sub(r"\s*\(?likely\)?$", "", t).strip(" .,")
     return t or "\x00no-target\x00"
+
+
+def _alert_needle(alert, field):
+    """What a model reply must contain for a splash / RWR call to count as said (it may reword the call):
+    'splash' + the target, else the threat designation (SA-6), else its clock position."""
+    if field == "splash_to_announce":
+        return ("splash", _splash_target(alert))
+    m = re.search(r"\b(SA-?\d+|[A-Z][\w/]*-\d[\w-]*)", alert or "") or re.search(r"\b\w+ o'clock\b", alert or "")
+    return m.group(0) if m else ("\x00no-needle\x00",)
 
 
 def spoken_target(name, category=None, dcs_type=False):
@@ -399,7 +419,7 @@ def debrief_summary(pic):
     gun_kills = sum(1 for k in kills if is_gun(k.get("weapon")))
     if gun_kills:
         parts.append("Guns: %s kill%s." % (words(gun_kills), "" if gun_kills == 1 else "s"))
-    return cap_speech(" ".join(parts), PART_CHARS - 80)
+    return fit_reply(" ".join(parts), DEBRIEF_CHARS)[0]
 
 
 def requested_calls(klass, text, pic):
@@ -418,11 +438,9 @@ def requested_calls(klass, text, pic):
                 return any(CATEGORY_ALIASES.get(c, c) in cats for c in found)
             rows = [r for r in rows if matches(r)]
         rows = sorted(rows, key=lambda r: r.get("range_nm", 1e9) if isinstance(r, dict) else 1e9)
-        calls = [r["call"] if isinstance(r, dict) else r for r in rows[:3]]
+        calls = [r["call"] if isinstance(r, dict) else r for r in rows]
         if calls:
-            if len(rows) > 3:
-                calls.append("Plus %s more." % words(len(rows) - 3))
-            return calls
+            return calls  # nearest first; _fit_calls shows at most three that fit, then "Plus N more."
         return ["No %s within twenty miles." % CATEGORY_WORDS.get(cats[0], "enemy " + str(cats[0]))] if cats else [
             pic["ground_empty_call"]]
     if klass == "picture" and "picture_top3" in pic:
@@ -462,54 +480,19 @@ def requested_calls(klass, text, pic):
     return None
 
 
-def cap_speech(answer, limit=SPEECH_CAP):
-    """Trim an over-long answer at the last sentence end within `limit` (never mid-sentence)."""
-    answer = (answer or "").strip()
-    if len(answer) <= limit:
-        return answer
-    cut = 0
-    for m in SENTENCE_END.finditer(answer):
-        if m.end() > limit:
-            break
-        cut = m.end()
-    if cut:
-        return answer[:cut].strip()
-    cut = answer.rfind(" ", 0, limit)
-    return answer[:cut if cut > 0 else limit].rstrip(" ,;:") + "."
-
-
-def _num(value):
-    return None if value is None else round(value)
-
-
 def clean(text):
     text = "".join(" " if unicodedata.category(c) in _UNSAFE else c for c in (text or "").replace("*", ""))
     return " ".join(text.split())
 
 
-def split_parts(answer, limit=PART_CHARS):
-    """First sentence alone (fast first audio), then the rest packed into parts of at most `limit` chars."""
-    sentences, start = [], 0
+def _sentences(answer):
+    out, start = [], 0
     for m in SENTENCE_END.finditer(answer):
-        sentences.append(answer[start:m.end()].strip())
+        out.append(answer[start:m.end()].strip())
         start = m.end()
     if answer[start:].strip():
-        sentences.append(answer[start:].strip())
-    parts = []
-    for sentence in sentences:
-        pieces = []
-        while len(sentence) > limit:  # pathological run-on sentence: break on a word boundary
-            cut = sentence.rfind(" ", 0, limit)
-            cut = cut if cut > 0 else limit
-            pieces.append(sentence[:cut].strip())
-            sentence = sentence[cut:].strip()
-        pieces.append(sentence)
-        for piece in pieces:
-            if len(parts) >= 2 and len(parts[-1]) + 1 + len(piece) <= limit:
-                parts[-1] = parts[-1] + " " + piece
-            elif piece:
-                parts.append(piece)
-    return parts
+        out.append(answer[start:].strip())
+    return out
 
 
 def _word_cut(sentence, cap):
@@ -521,35 +504,52 @@ def _word_cut(sentence, cap):
     if not sentence[cap - 1:cap - 0].isspace() and " " in cut:
         cut = cut[:cut.rindex(" ")]
     return cut.rstrip(" ,;:-.") + "."
-def fit_reply(answer, part_limit=PART_CHARS, limit=MAX_SPEECH_CHARS, word_trim=True):
-    """Safety net (round 9): the reply must fit the gateway cap and two frames. Trim whole sentences from the
-    end (the callsign/close-bandit sentence stays first). Returns (text, trimmed); text is None when
-    word_trim=False and not even the first sentence fits."""
+def fit_reply(answer, limit=MAX_REPLY_CHARS, word_trim=True):
+    """The one reply budget: trim whole sentences from the end (the callsign / close-bandit / alert sentences
+    stay first) until the reply fits `limit`. Returns (text, trimmed); text is None when word_trim=False
+    and not even the first sentence fits, else the first sentence is cut at a word boundary."""
     answer = (answer or "").strip()
-    def fits(t):
-        return len(t) <= limit and len(split_parts(t, part_limit)) <= 2
-    if fits(answer):
+    if len(answer) <= limit:
         return answer, False
-    sentences, start = [], 0
-    for m in SENTENCE_END.finditer(answer):
-        sentences.append(answer[start:m.end()].strip())
-        start = m.end()
-    if answer[start:].strip():
-        sentences.append(answer[start:].strip())
+    sentences = _sentences(answer)
     while len(sentences) > 1:
         sentences.pop()
         text = " ".join(sentences)
-        if fits(text):
+        if len(text) <= limit:
             return text, True
-    first = sentences[0] if sentences else answer
     if not word_trim:
         return None, True
-    cap = min(limit, part_limit * 2 - 20)
-    text = _word_cut(first, cap)
-    while not fits(text) and cap > 40:
-        cap -= 20
-        text = _word_cut(first, cap)
-    return text, True
+    return _word_cut(sentences[0] if sentences else answer, limit), True
+
+
+ASK_REST = "Ask again for the rest."
+LIST_CLASSES = {"picture": None, "long_picture": None, "traffic": None, "ground_picture": 3}
+
+
+def _fit_calls(klass, calls, room):
+    """Whole fixed lines within `room` characters, never a call clipped in half. Contact lists (nearest first)
+    keep the calls that fit and say how many were left out ("Plus two more."); other fixed replies drop
+    whole lines from the end. Returns (lines or None when not even one fits, trimmed)."""
+    def size(items):
+        return len(" ".join(items))
+    if klass in LIST_CLASSES:
+        total = len(calls)
+        cap = min(total, LIST_CLASSES[klass] or total)
+        for show in range(cap, 0, -1):
+            kept = calls[:show] + (["Plus %s more." % words(total - show)] if total > show else [])
+            if size(kept) <= room:
+                return kept, show < cap
+        return None, True
+    kept = list(calls)
+    while kept and size(kept) > room:
+        kept.pop()
+    if len(kept) < len(calls):  # never drop a requested line without a word
+        while kept and size(kept + [ASK_REST]) > room:
+            kept.pop()
+        kept += [ASK_REST] if kept else []
+    return kept or None, len(kept) < len(calls)
+
+
 def _named_missile(text):
     m = NAMED_MISSILE.search(text or "")
     if not m:
@@ -558,8 +558,6 @@ def _named_missile(text):
     if m.group(2):
         return "SA-%s" % m.group(2)
     return {"stinger": "Stinger", "sam": None, "manpad": "MANPADS", "manpads": "MANPADS"}.get(word, word.capitalize())
-def _missile_name_set(missiles):
-    return [_missile_name(m.get("type")) for m in missiles]
 def _missile_name(kind):
     kind = str(kind or "").strip()
     m = re.match(r"SA-?(\d+)", kind, re.I)
@@ -684,28 +682,21 @@ class SimpleController:
         return out
 
     @staticmethod
-    def _with_close_bandits(answer, close_bandits, announced, part_limit=PART_CHARS):
-        """Prepend each not-yet-called bandit inside 20 nm (current geometry) after the callsign prefix; only
-        calls actually present in the final text are acknowledged, the rest stay pending."""
+    def _with_close_bandits(answer, close_bandits, marks, limit=MAX_REPLY_CHARS):
+        """Put the first not-yet-called bandit inside 20 nm (current geometry) right after the callsign prefix,
+        if the result fits `limit` (pass a larger limit to give it priority and let fit_reply trim the tail).
+        Every call is recorded in `marks` as (key, call); only calls present in the FINAL text are marked said."""
         prefix = "Prometheus, Athena, "
-        added = 0
+        added = False
         for row in close_bandits or []:
             call = row["call"]
-            if call in answer:
-                announced.append(row["key"])
-                continue
-            # one new call per reply, and the whole reply must fit the first-sentence + one-part transport budget
-            # (two frames); anything not added stays pending for the next reply
-            if added:
-                continue
+            marks.append((row["key"], _plain_call(call)))
+            if _plain_call(call) in answer or added:
+                continue  # already in the reply, or one new call per reply (the rest stay pending)
             candidate = (prefix + call + " " + answer[len(prefix):]) if answer.startswith(prefix) else (
                 call + " " + answer)
-            # the same framing the reply is sent with: at most two frames and the whole-answer cap
-            if len(candidate) > MAX_SPEECH_CHARS or len(split_parts(candidate, part_limit)) > 2:
-                continue
-            added += 1
-            answer = candidate
-            announced.append(row["key"])
+            if len(candidate) <= limit:
+                added, answer = True, candidate
         return answer
 
     # ---------------------------------------------------------------- kill confirmation (round 6)
@@ -781,11 +772,17 @@ class SimpleController:
         del self._confirmed_kills[:-1000]
 
     @staticmethod
-    def _count_line(rows, label):
-        counts = Counter(r[1] for r in rows)
-        return "%s %s." % (label, ", ".join("%s %s" % (words(n), t) for t, n in counts.items()))
+    def _count_line(rows, label, grouped=False):
+        """'Confirmed: two T-55, one Ural-375.'; grouped=True ('two trucks, one SAM unit') when the itemised
+        list would not fit the reply budget."""
+        if not grouped:
+            counts = Counter(r[1] for r in rows)
+            return "%s %s." % (label, ", ".join("%s %s" % (words(n), t) for t, n in counts.items()))
+        counts = Counter(_kill_group({"category": r[2]}) for r in rows)
+        return "%s %s." % (label, ", ".join("%s %s" % (words(n), KILL_GROUP_WORDS[g][0 if n == 1 else 1])
+                                            for g, n in counts.most_common()))
 
-    def kill_confirm_calls(self, text, pic, pic_time=None, commit=True):
+    def kill_confirm_calls(self, text, pic, pic_time=None, commit=True, room=MAX_REPLY_CHARS - 20):
         """commit=False leaves the acknowledgement in self._pending_ack; the caller commits it only once the
         answer is actually transmitted (an overflowed answer must not mark kills as read back)."""
         wingman = bool(WINGMAN_ASK.search(text))
@@ -798,15 +795,17 @@ class SimpleController:
         if cats:
             rows = [r for r in rows if r[2] in cats]
         new, upgraded = self._split_new(rows, owner)
-        lines = []
-        if TOTAL_ASK.search(text):
-            for confidence, label in (("confirmed", "Mission total:"), ("likely", "Likely:")):
-                sel = [r for r in rows if r[4] == confidence]
-                if sel:
-                    lines.append(self._count_line(sel, label))
-            if not lines:
-                lines.append("No %skills yet." % prefix)
-        else:
+
+        def build(grouped):
+            lines = []
+            if TOTAL_ASK.search(text):
+                for confidence, label in (("confirmed", "Mission total:"), ("likely", "Likely:")):
+                    sel = [r for r in rows if r[4] == confidence]
+                    if sel:
+                        lines.append(self._count_line(sel, label, grouped))
+                if not lines:
+                    lines.append("No %skills yet." % prefix)
+                return lines
             confirmed = [r for r in new if r[4] == "confirmed"]
             likely = [r for r in new if r[4] != "confirmed"]
             if len(confirmed) == 1 and not likely:
@@ -814,24 +813,36 @@ class SimpleController:
                              % confirmed[0][1])
             else:
                 if confirmed:
-                    lines.append(self._count_line(confirmed, "Wingman confirmed:" if wingman else "Confirmed:"))
+                    lines.append(self._count_line(confirmed, "Wingman confirmed:" if wingman else "Confirmed:", grouped))
                 if likely:
-                    lines.append(self._count_line(likely, "Likely:"))
+                    lines.append(self._count_line(likely, "Likely:", grouped))
             if upgraded:
-                lines.append(self._count_line([r for r, _ in upgraded], "Now confirmed, earlier likely:"))
+                lines.append(self._count_line([r for r, _ in upgraded], "Now confirmed, earlier likely:", grouped))
             if not new and not upgraded and not wingman and self.recent_release(pic, cats):
                 lines.append("Not confirmed yet, checking.")
             elif not new and not upgraded:
                 lines.append("No new %skills since your last check." % prefix if rows
                              else "No %skills showing." % prefix)
-        lines = [" ".join(line.split()) for line in lines]
-        # remember only what this answer actually reported (category-filtered rows), upgrades in place
+            return lines
+
+        # "what remains" is part of the answer: it counts against the room, never silently dropped
+        rest = self.remaining_line(pic, cats) if REMAIN_ASK.search(text) else None
+
+        def size(items):
+            return len(" ".join(items + ([rest] if rest else [])))
+        lines = [" ".join(line.split()) for line in build(False)]
+        if size(lines) > room:  # one reply budget: name kill groups instead of every target type
+            lines = [" ".join(line.split()) for line in build(True)]
+        if rest and size(lines) > room:
+            rest = self.remaining_line(pic, cats, short=True)  # one count instead of every category
+        # remember only what this answer actually reported (category-filtered rows), upgrades in place;
+        # commit=False: the caller commits once these lines are in the final, fitted reply
         if commit:
             self._remember(owner, new, upgraded)
         else:
-            self._pending_ack = (owner, new, upgraded)
-        if REMAIN_ASK.search(text):
-            lines.append(self.remaining_line(pic, cats))
+            self._pending_ack = (owner, new, upgraded, list(lines))
+        if rest:
+            lines.append(rest)
         return lines
 
     @staticmethod
@@ -927,7 +938,7 @@ class SimpleController:
             lines.append("Plus %s more." % words(len(missiles) - 3))
         return lines
     @staticmethod
-    def remaining_line(pic, cats):
+    def remaining_line(pic, cats, short=False):
         own = (pic.get("ownship") or {}).get("coalition")
         totals = pic.get("alive_totals_by_coalition") or {}
         enemy = totals.get("red" if own == "blue" else "blue" if own == "red" else "red") or {}
@@ -938,6 +949,9 @@ class SimpleController:
         ground = [(k, v) for k, v in enemy.items() if v and k not in NOT_GROUND and domain(k) == "ground"]
         if not ground:
             return "No enemy ground units remaining."
+        if short:
+            n = sum(v for _, v in ground)
+            return "Remaining: %s enemy ground unit%s." % (words(n), "" if n == 1 else "s")
         parts = ["%s %s" % (words(v), CATEGORY_WORDS.get(k, "enemy " + str(k)))
                  for k, v in sorted(ground, key=lambda kv: -kv[1])]
         return "Remaining: %s." % ", ".join(parts)
@@ -961,7 +975,8 @@ class SimpleController:
     # ---------------------------------------------------------------- radio
     def _log(self, request, kind, **values):
         last = getattr(self._llm, "last", None)  # CodexLLM: which backend answered the latest call
-        if last is not None and "llm" not in values:
+        # only records of a model exchange carry the backend (fixed replies never called it)
+        if last is not None and "llm" not in values and values.get("route") == "llm":
             values["llm"] = dict(last)
         provider = "openai-codex" if getattr(self._llm, "label", "").startswith("openai-codex") else "openai-api"
         model = getattr(self._llm, "model", self.model) if provider == "openai-codex" else self.model
@@ -994,6 +1009,27 @@ class SimpleController:
             with self._waiting_lock:
                 self._waiting -= 1
 
+    def _say(self, request, answer, route, start, llm_ms=0, trimmed=False):
+        """Log and send the reply as ONE frame (it already fits MAX_REPLY_CHARS)."""
+        self._log(request, "reply_generated", text=answer, outcome="intended", part=1, route=route,
+                  **({"trimmed": True} if trimmed else {}),
+                  timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
+        return response(request, speech=answer, state="ok")
+
+    def _mark_said(self, marks, answer):
+        """Splash / threat / close-bandit keys are announced only when their call is in the final, fitted
+        reply (needle None = the model was asked to say it and answered)."""
+        if self.eye is None or not hasattr(self.eye, "mark_announced"):
+            return
+        flat = []
+        low = answer.lower()
+        for key, needle in marks:
+            needles = needle if isinstance(needle, tuple) else (needle,)
+            if all(n is None or n.lower() in low for n in needles):
+                flat.extend(key if isinstance(key, list) else [key])
+        if flat:
+            self.eye.mark_announced(flat)
+
     def _answer(self, request, text):
         start = time.monotonic()
         # memory6: owner's immediate acknowledgement; report I/O runs off-turn.
@@ -1008,19 +1044,19 @@ class SimpleController:
                 dpic, summary = {}, ""
             answer = ("Prometheus, Athena, debrief written. " + summary).strip() if queued else (
                 ("Prometheus, Athena, debrief unavailable. " + summary).strip())
-            said = []
-            answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), said)
-            answer, debrief_trimmed = fit_reply(answer, PART_CHARS, PART_CHARS)  # one frame
-            if debrief_trimmed:
+            answer, trimmed = fit_reply(answer, DEBRIEF_CHARS)
+            marks = []  # a close bandit still goes first; the debrief tail is trimmed to make room
+            answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), marks, MAX_SPEECH_CHARS)
+            answer, net_trimmed = fit_reply(answer)
+            trimmed = trimmed or net_trimmed
+            if trimmed:
                 self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
-                          trimmed=True)
-            if said and self.eye is not None and hasattr(self.eye, "mark_announced"):
-                self.eye.mark_announced(said)
-            self._log(request, "reply_generated", text=answer, outcome="intended", part=1)
+                          trimmed=True, route="debrief")
+            self._mark_said(marks, answer)
             if memory is not None:
                 memory.publish("radio_call", {"request": text, "reply": answer, "report_status": "queued" if queued else "unavailable"},
                                generation=generation)
-            yield response(request, speech=answer, state="ok")
+            yield self._say(request, answer, "debrief", start, trimmed=trimmed)
             return
         klass = call_class(text)
         report = None
@@ -1037,6 +1073,25 @@ class SimpleController:
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
         close_bandits = pic.pop("_close_bandits", None) if isinstance(pic, dict) else None
+        # Phase 0: the deterministic answer comes FIRST; the model is called only when there is none.
+        self._pending_ack = None
+        self._confirm_covers_own_splashes = False
+        self._confirm_is_own = False
+        prefix = "Prometheus, Athena, "
+        age = (pic.get("data_age_s") or {}).get("units")
+        stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
+        if age is not None and age > 60:
+            stale.append("Contact data is %s seconds old." % words(age))
+        if klass == "launch":
+            calls = self.launch_calls(text, pic) if pic.get("ownship") else None
+        elif klass == "kill_confirm" and pic.get("ownship") and "my_kills_this_mission" in pic:
+            # the real room: a close bandit call goes first and takes its share (grouped kill wording then)
+            first = [row["call"] for row in (close_bandits or [])[:1]]
+            room = MAX_REPLY_CHARS - len(prefix + " ".join(first + stale + [""]))
+            calls = self.kill_confirm_calls(text, pic, pic_time, commit=False, room=room)
+        else:
+            calls = requested_calls(klass, text, pic)
+        route = "fixed" if calls is not None else "llm"
         result = {"summary": self.picture_summary(pic), "picture": pic,
                   "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""}
         if klass:
@@ -1044,114 +1099,110 @@ class SimpleController:
         if report:
             result["pilot_report"] = report
         self._log(request, "tool", tool="picture", args={}, outcome="error" if error else "ok",
-                  result=result,
+                  result=result, route=route,
                   counts={"empty_transcripts": self.empty_transcripts, "transmissions": self.transmissions},
                   timings_ms={"tool": round((time.monotonic() - start) * 1000)})
-        messages = [{"role": "system", "content": PROMPT}]
-        for q, a in self.history:
-            messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
-        messages.append({"role": "system", "content": "PICTURE " + json.dumps(
-            pic, ensure_ascii=True, default=str, separators=(",", ":"))})
-        hint = focus_hint(text)
-        if hint:
-            messages.append({"role": "system", "content": hint})
-        if klass:
-            messages.append({"role": "system", "content": CLASS_HINTS[klass]})
-        messages.append({"role": "user", "content": text})
-        announced = (splash_keys or []) + (rwr_keys or [])
-        t_llm = time.monotonic()
-        answer = None
-        for attempt in (1, 2):
-            try:
-                answer = self._llm(messages)
-                break
-            except Exception as failure:  # noqa: BLE001 - one retry, then a spoken fallback
-                self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
-                          attempt=attempt, timings_ms={"total": round((time.monotonic() - start) * 1000)})
-        self._pending_ack = None
-        self._confirm_covers_own_splashes = False
-        self._confirm_is_own = False
+        marks = []  # (key, needle): announced only if the needle is in the final reply
         trimmed = False
-        if klass == "launch":
-            calls = self.launch_calls(text, pic) if pic.get("ownship") else None
-        else:
-            calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
-                     and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
+        llm_ms = 0
         if calls is not None:
-            age = (pic.get("data_age_s") or {}).get("units")
-            stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
-            if age is not None and age > 60:
-                stale.append("Contact data is %s seconds old." % words(age))
-            prefix = "Prometheus, Athena, "
-            if klass != "kill_confirm" and len(calls) > 1 and len(prefix + " ".join(stale + calls)) > MAX_SPEECH_CHARS:
-                kept = list(calls)  # round 9: drop whole contacts from the end, never clip one mid-call
-                while len(kept) > 1 and len(prefix + " ".join(stale + kept)) > MAX_SPEECH_CHARS:
-                    kept.pop()
-                calls, trimmed = kept, True
-            answer = prefix + " ".join(stale + calls)
-            alerts, announced = [], []
-            if len(answer) > MAX_SPEECH_CHARS:
-                # Never clip a requested call into a misleading partial group report.
-                self._log(request, "controller_error", outcome="fixed_response_overflow",
-                          counts={"speech_chars": len(answer)})
+            lead = []  # one not-yet-called bandit inside 20 nm goes first; the requested lines fill the rest
+            for row in close_bandits or []:
+                marks.append((row["key"], _plain_call(row["call"])))
+                if not lead and _plain_call(row["call"]) not in " ".join(calls):
+                    lead = [row["call"]]
+            stale = lead + stale
+            # round 9: drop whole contacts/lines from the end, never clip one mid-call
+            room = MAX_REPLY_CHARS - len(prefix + " ".join(stale + [""]))
+            # a pending RWR/threat alert outranks the 2nd and 3rd contact of a list: keep room for the first one
+            first_alert = ((pic.get("rwr_alert_to_announce") or [""])[0] or "").strip()
+            reserve = len(first_alert) + 2 if klass in LIST_CLASSES and first_alert else 0
+            fitted, trimmed = _fit_calls(klass, calls, room - reserve)
+            if fitted is None and reserve:
+                fitted, trimmed = _fit_calls(klass, calls, room)
+            if fitted is None and lead:
+                fitted, trimmed = ["Ask again for the rest."], True  # nothing requested was said: all stays pending
+            if fitted is None:
+                self._log(request, "controller_error", outcome="fixed_response_overflow", route=route,
+                          counts={"speech_chars": len(prefix + " ".join(stale + calls))})
                 answer = prefix + "requested calls are too long for one transmission. Ask for one group at a time."
                 self._pending_ack = None  # nothing was read back: keep the previous acknowledgement state
+                calls = []
             else:
-                if self._pending_ack:
-                    self._remember(*self._pending_ack)
-                    self._pending_ack = None
-                remaining = MAX_SPEECH_CHARS - len(answer)
+                calls = fitted
+                answer = prefix + " ".join(stale + calls)
+                alerts = []
+                remaining = MAX_REPLY_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                     for i, alert in enumerate(pic.get(field) or []):
-                        if field == "splash_to_announce" and klass == "kill_confirm" and (
-                                getattr(self, "_confirm_covers_own_splashes", False)
-                                or (getattr(self, "_confirm_is_own", False)
-                                    and _splash_target(alert) in " ".join(calls).lower())):
-                            # the confirmation itself reads the kill; mark the splash as said, don't repeat it
-                            if keys and i < len(keys):
-                                announced.append(keys[i])
+                        key = keys[i] if keys and i < len(keys) else None
+                        if field == "splash_to_announce" and klass == "kill_confirm" and self._pending_ack and (
+                                self._confirm_covers_own_splashes
+                                or (self._confirm_is_own and _splash_target(alert) in " ".join(calls).lower())):
+                            # the confirmation itself reads the kill: said when its lines are in the reply
+                            if key is not None:
+                                marks.append((key, self._pending_ack[3][0] if self._pending_ack[3] else None))
                             continue
                         alert = alert.strip()
                         if alert and alert[-1] not in ".!?":
                             alert += "."
-                        if alert in alerts or alert in " ".join(calls):
-                            if keys and i < len(keys):
-                                announced.append(keys[i])  # already said in this reply
+                        if not alert:
                             continue
+                        if key is not None:
+                            marks.append((key, alert))
+                        if alert in alerts or alert in " ".join(calls):
+                            continue  # already said in this reply
                         if len(alert) + 1 > remaining:
-                            continue  # duplicate, or keep this alert pending for a later transmission
+                            continue  # keep this alert pending for a later transmission
                         remaining -= len(alert) + 1
                         alerts.append(alert)
-                        if keys and i < len(keys):
-                            announced.append(keys[i])
                 answer = prefix + " ".join(stale + alerts + calls)
         else:
-            answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
-        answer = self._with_close_bandits(answer, close_bandits, announced,
-                                          MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
-        answer, net_trimmed = fit_reply(answer, MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
+            messages = [{"role": "system", "content": PROMPT}]
+            for q, a in self.history:
+                messages += [{"role": "user", "content": q}, {"role": "assistant", "content": a}]
+            messages.append({"role": "system", "content": "PICTURE " + json.dumps(
+                pic, ensure_ascii=True, default=str, separators=(",", ":"))})
+            hint = focus_hint(text)
+            if hint:
+                messages.append({"role": "system", "content": hint})
+            if klass:
+                messages.append({"role": "system", "content": CLASS_HINTS[klass]})
+            messages.append({"role": "user", "content": text})
+            t_llm = time.monotonic()
+            answer = None
+            for attempt in (1, 2):
+                try:
+                    answer = self._llm(messages)
+                    break
+                except Exception as failure:  # noqa: BLE001 - one retry, then a spoken fallback
+                    self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
+                              attempt=attempt, route=route,
+                              timings_ms={"total": round((time.monotonic() - start) * 1000)})
+            llm_ms = round((time.monotonic() - t_llm) * 1000)
+            answer = clean(answer)
+            if answer:  # the model was given the splash / RWR calls to say first: marked only if it said them
+                for field, keys in (("splash_to_announce", splash_keys), ("rwr_alert_to_announce", rwr_keys)):
+                    for alert, key in zip(pic.get(field) or [], keys or []):
+                        marks.append((key, _alert_needle(alert, field)))
+            else:
+                answer = FALLBACK
+            # a close bandit goes first; fit_reply trims the model's tail to make room
+            answer = self._with_close_bandits(answer, close_bandits, marks, MAX_SPEECH_CHARS)
+        answer, net_trimmed = fit_reply(answer)
         trimmed = trimmed or net_trimmed
         if trimmed:
             self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
-                      trimmed=True)
-        if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
-            flat = []
-            for key in announced:
-                flat.extend(key if isinstance(key, list) else [key])
-            self.eye.mark_announced(flat)
-        llm_ms = round((time.monotonic() - t_llm) * 1000)
+                      trimmed=True, route=route)
+        if self._pending_ack and all(line in answer for line in self._pending_ack[3]):
+            self._remember(*self._pending_ack[:3])  # kills read back only when every kill line was said
+        self._pending_ack = None
+        self._mark_said(marks, answer)
         self.history.append((text, answer))
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
             memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"},
                            generation=pic.get("_memory_generation") if isinstance(pic, dict) else None)
-        # Fixed replies are budgeted above: first sentence, then all remaining calls
-        # in the second frame. The gateway allows two frames, not 420-char chunks.
-        parts = split_parts(answer, MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
-        for index, part in enumerate(parts, 1):
-            self._log(request, "reply_generated", text=part, outcome="intended", part=index,
-                      **({"trimmed": True} if trimmed else {}),
-                      timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
-            yield response(request, speech=part, state="ok")
+        yield self._say(request, answer, route, start, llm_ms=llm_ms, trimmed=trimmed)
 
     def exchange(self, request):
         parts = list(self.stream(request))

@@ -23,8 +23,8 @@ from integrations.hermes_radio import cockpit as cp
 from integrations.hermes_radio.contract import Request
 from integrations.hermes_radio.eye import (BREVITY_PROMPT, CONTACT_RADIUS_NM, M_TO_FT, Eye, GrpcFeeder,
                                            bearing_range, domain, norm_unit, sam_profile)
-from integrations.hermes_radio.simple_controller import (ACK_CAP, CLASS_HINTS, PROMPT, SPEECH_CAP, SimpleController,
-                                                         call_class, cap_speech)
+from integrations.hermes_radio.simple_controller import (CLASS_HINTS, MAX_REPLY_CHARS, PROMPT, SimpleController,
+                                                         call_class, fit_reply)
 from integrations.hermes_radio.tests import eye_fixture as fx
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -453,20 +453,20 @@ class CallClassTests(unittest.TestCase):
             "Athena, feature request: call my bingo fuel": "dev_note",
             "Note for development, the picture is too long": "dev_note",
             "Athena should be able to read my fuel": "dev_note", "bug report, fuel says zero": "dev_note",
-            "Athena, what's the picture?": "picture", "Athena, bearing to enemy armor": "bearing_one",
+            "Athena, what's the picture?": "picture", "Athena, bearing to enemy armor": None,
             "bearing to all enemy armor": None, "Athena, fuel state": None, "copy, what's my fuel?": None,
         }
         for text, want in cases.items():
             self.assertEqual(call_class(text), want, text)
 
-    def test_cap_speech_cuts_at_sentence_boundary(self):
+    def test_fit_reply_cuts_at_sentence_boundary(self):
         s = "Prometheus, Athena, picture. " + " ".join("Group %d is far away to the north." % i for i in range(20))
-        out = cap_speech(s)
-        self.assertLessEqual(len(out), SPEECH_CAP)
+        out = fit_reply(s)[0]
+        self.assertLessEqual(len(out), MAX_REPLY_CHARS)
         self.assertTrue(out.endswith("."))
         self.assertIn(out, s)
-        self.assertEqual(cap_speech("Short."), "Short.")
-        self.assertTrue(cap_speech("word " * 200).endswith("."))
+        self.assertEqual(fit_reply("Short.")[0], "Short.")
+        self.assertTrue(fit_reply("word " * 200)[0].endswith("."))
 
     def test_ack_gets_hint_and_short_answer(self):
         eye, clock = a10_eye()
@@ -482,7 +482,7 @@ class CallClassTests(unittest.TestCase):
         system = [m["content"] for m in seen[0] if m["role"] == "system"]
         self.assertIn(CLASS_HINTS["ack"], system)
         spoken = " ".join(p["speech"] for p in parts)
-        self.assertLessEqual(len(spoken), ACK_CAP)
+        self.assertLessEqual(len(spoken), MAX_REPLY_CHARS)
         self.assertTrue(spoken.endswith("."))
 
     def test_dev_note_hint_only_on_explicit_phrasing(self):
@@ -509,7 +509,7 @@ class CallClassTests(unittest.TestCase):
         self.assertTrue(pic["working_target"]["call"].startswith("T-55, bearing zero nine zero"))
         top = pic["picture_top3"]
         self.assertEqual(len(top), 1)  # round 5: air only within 50 nm, never pad with SAMs
-        self.assertTrue(top[0].startswith("Bandit Su-27 one-ship"))
+        self.assertTrue(top[0].startswith("Su-27, ") and "single" not in top[0])
         self.assertNotIn("picture_more_groups", pic)
         self.assertIn("picture_top3", PROMPT)
         self.assertIn("NEAREST matching group only", PROMPT)

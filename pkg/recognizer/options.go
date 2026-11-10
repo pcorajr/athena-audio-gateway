@@ -10,6 +10,8 @@ type recognizerOptions struct {
 	promptOverride string
 	// dynamic, when set, appends live vocabulary written by the adapter.
 	dynamic *dynamicPrompt
+	// threads is the whisper.cpp CPU thread count; 0 keeps the library default (4).
+	threads uint
 }
 
 // Option configures a recognizer.
@@ -19,6 +21,13 @@ type Option func(*recognizerOptions)
 func WithLocations(locations []string) Option {
 	return func(o *recognizerOptions) {
 		o.locations = locations
+	}
+}
+
+// WithThreads sets the whisper.cpp CPU thread count. 0 keeps the default.
+func WithThreads(n uint) Option {
+	return func(o *recognizerOptions) {
+		o.threads = n
 	}
 }
 

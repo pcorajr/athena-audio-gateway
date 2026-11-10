@@ -99,16 +99,7 @@ make test-athena-mvp   # focused offline SRS-MVP checks
 make lint vet fix format
 ```
 
-The live binary (`~/.local/opt/athena-gateway-mvp/bin/skyeye-radio-v11-3d5a990`) was built by hand with the same flags the Makefile uses (`BUILD_VARS`/`BUILD_FLAGS`), from the repo root (`G`):
-
-```sh
-CGO_ENABLED=1 GOARCH=amd64 GOFLAGS=-mod=mod GOPROXY=off GOTOOLCHAIN=local \
-  C_INCLUDE_PATH="$G/third_party/whisper.cpp/ggml/include:$G/third_party/whisper.cpp/include" \
-  LIBRARY_PATH="$G/third_party/whisper.cpp/build_go/src:$G/third_party/whisper.cpp/build_go/ggml/src" \
-  go build -tags nolibopusfile -o "$OUT" ./cmd/skyeye/
-```
-
-(Source: the launcher helper `~/.hermes/cache/athena-srs-mvp-20261106/run/anycoal.sh`, outside git. Plain `make` builds `skyeye` with the same tags.)
+Deployable binaries are built only by `deploy/build-athena-gateway.sh <label>` (for example `v12`), from a clean checkout. It uses the same flags as the Makefile (`CGO_ENABLED=1`, `-tags nolibopusfile`, whisper.cpp paths from the main gateway repo's `third_party/` build), writes `~/.local/opt/athena-gateway-mvp/bin/skyeye-radio-<label>-<shortsha>`, never overwrites, and embeds `<label>-<shortsha>` as the logged `version`. Deploying (pinning that file in the launcher) is a separate manual step. `--whisper-threads` (default 8) sets the local whisper.cpp CPU threads.
 
 Arch/CachyOS dependencies: `go cmake base-devel opus libsoxr`. Python adapter tests: see `integrations/hermes_radio/README.md`.
 

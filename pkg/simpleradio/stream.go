@@ -6,6 +6,11 @@ import (
 	"time"
 )
 
+// MaxMVPReplySamples bounds the synthesized audio of one reply (all parts):
+// 30 s at 16 kHz. Callers check it before speaking so they can say a short
+// fallback line instead of going silent.
+const MaxMVPReplySamples = 30 * 16000
+
 // BeginMVPReply consumes the reception token ONCE. The returned private sender
 // has a two-part lifetime and permanently closes on error. No new route token
 // is minted and no transmitted part can be replayed via TransmitMVP.
@@ -22,7 +27,7 @@ func (c *Client) BeginMVPReply(t Transmission) func(context.Context, Audio, time
 		parts++
 		samples += len(audio)
 		// Bound actual synthesized duration as well as text. Never truncate audio.
-		if samples > 30*16000 {
+		if samples > MaxMVPReplySamples {
 			closed = true
 			return Delivery{Outcome: "speech_duration_exceeded"}
 		}

@@ -157,7 +157,7 @@ CATEGORY_WORDS = {"armor": "enemy armor", "AAA": "triple A", "SAM": "SAM", "infa
                   "artillery": "enemy artillery", "train": "trains", "ship": "ships"}
 # Map objects are never "ground units" for a generic "what remains"; air/sea comes from eye.domain().
 NOT_GROUND = {"scenery", "static", "unknown"}
-NON_WEAPON = re.compile(r"(ALQ|LITENING|AAQ|\bpod\b|TGP|fuel tank|\btank\b|smoke)", re.I)
+NON_WEAPON = re.compile(r"(ALQ|LITENING|AAQ|\bpod\b|TGP|fuel tank|\btank\b|smoke|HB-ALE|HB-ORD|pave-?spike)", re.I)
 SCENERY_NAMES = ((re.compile(r"\bMOST\b|BRIDGE", re.I), "bridge"), (re.compile(r"HANGAR", re.I), "hangar"),
                  (re.compile(r"BUNKER", re.I), "bunker"), (re.compile(r"TOWER", re.I), "tower"))
 BEARING_ASK = re.compile(r"\b(bearing|vector|heading to|where('s| is| are)?|braa|bra|steer)\b", re.I)
@@ -183,10 +183,23 @@ CLASS_HINTS = {
                     "and my_shots_last_15_min. No air picture. Do not upgrade likely kills merely on a question.",
     "intent": "INTENT CALL: short acknowledgement only.",
     "impact": "IMPACT / RESULT CHECK: report the latest weapon's result only.",
-    "loadout": "LOADOUT: remaining weapons and gun rounds only.",
+    "loadout": "LOADOUT: remaining weapons and gun rounds only; if the pilot also asks what they are flying, name the aircraft type first.",
+    "launch": "MISSILE LAUNCH REPORT: read EVERY missile in threats.missiles_inbound (type, clock, range), not only the named type; "
+              "none = no missile in the air that I can see.",
     "bearing_one": "BEARING REQUEST: give ONLY the nearest matching group's call line (hostile_groups are nearest "
                    "first), not every group.",
 }
+# Round 9: launch calls, aircraft questions, recent-release window
+LAUNCH_ASK = re.compile(r"(\blaunch(ed|es)?\b|\b(another|second|new|other|incoming|inbound)\s+(missile|sam|stinger|manpads?)s?\b|"
+                        r"\b(missile|stinger|manpads?)s?\s+(in the air|inbound|incoming|coming|up)\b|"
+                        r"\bsee (the |that |a )?(missile|stinger)s?\b)", re.I)
+OWN_LAUNCH = re.compile(r"\b(i|we)(\s+(am|have|had|just)|'m|'ve)?\s+(just\s+)?(launch\w*|fired|shot)\b", re.I)
+LAUNCH_FOLLOWUP = re.compile(r"\b(do you (still )?see (it|that|the missile)|see it|still (there|in the air|tracking))\b", re.I)
+ANOTHER_ASK = re.compile(r"\b(another|second|other|again|same)\b", re.I)
+NAMED_MISSILE = re.compile(r"\b(stinger|manpads?|igla|strela|sa-?\s?(\d+)|sam)\b", re.I)
+AIRCRAFT_ASK = re.compile(r"\b(what am i flying|what (plane|jet|aircraft)|my (plane|jet|aircraft)|what aircraft|"
+                          r"type of aircraft|am i flying|i('m| am) flying)\b", re.I)
+RELEASE_WINDOW_S = 90
 SPEECH_CAP = 360  # whole answer, characters (~25 s of speech); trimmed at a sentence boundary
 ACK_CAP = 220
 
@@ -210,6 +223,8 @@ def call_class(text, pic=None):
         return "kill_confirm"
     if "loadout" in focus_of(t) and not KILL_ASK.search(t):
         return "loadout"
+    if LAUNCH_ASK.search(t) and not OWN_LAUNCH.search(t):
+        return "launch"
     if ATC_ASK.search(t):
         return "atc"
     if TRAFFIC_ASK.search(t) and not GROUND_ASK.search(t):
@@ -247,17 +262,27 @@ def spoken_target(name, category=None):
     return name
 
 
-def loadout_calls(own):
-    """Compact remaining-stores call that fits one transmission (pods and tanks are not weapons)."""
-    lo = (own or {}).get("loadout") or {}
+def spoken_aircraft(type_name):
+    """'F-4E-45MC' -> 'F-4E', 'A-10C_2' -> 'A-10C' (the module variant is not radio talk)."""
+    t = re.sub(r"-\d+MC$", "", str(type_name or "").split("_")[0]).strip()
+    return t or None
+def loadout_calls(own, text=""):
+    """Compact remaining-stores call that fits one transmission (pods and tanks are not weapons).
+    Round 9: 'what am I flying and what's my loadout' answers both."""
+    own = own or {}
+    lo = own.get("loadout") or {}
+    lead = ""
+    craft = spoken_aircraft(own.get("type"))
+    if craft and AIRCRAFT_ASK.search(text or ""):
+        lead = "You're flying %s %s. " % ("an" if craft[0].upper() in "AEFHILMNORSX" else "a", craft)
     if not lo.get("available"):
-        return None
+        return [lead.strip()] if lead else None
     items = ["%s %s" % (w.get("weapon"), words(w["count"])) for w in lo.get("weapons", [])
              if w.get("count") and w.get("weapon") and not NON_WEAPON.search(w["weapon"])]
     rounds = lo.get("gun_rounds")
     if rounds:
         items.append("gun %s rounds" % words(rounds))
-    return ["You have " + ", ".join(items) + "."] if items else ["Winchester, no weapons left."]
+    return [lead + ("You have " + ", ".join(items) + "." if items else "Winchester, no weapons left.")]
 
 
 def intent_ack(text):
@@ -291,35 +316,56 @@ def impact_calls(pic):
     return ["Copy, no result yet."]
 
 
+GUN_SHELL = re.compile(r"(-(APT|HEI?|API|AP|TP)\b|-(RED|BLUE)$|^M\d{2}[A-Z]?\d*-|^F\d{3}_|_\d+_\d+_)", re.I)  # M53-APT-RED, F100_M39_20_HEI
+KILL_GROUP_WORDS = {"vehicles": ("truck", "trucks"), "armor": ("armor", "armor"), "SAM": ("SAM unit", "SAM units"),
+                    "AAA": ("triple-A", "triple-A"), "aircraft": ("aircraft", "aircraft"),
+                    "infantry": ("infantry", "infantry"), "other": ("other target", "other targets")}
+def _kill_group(kill):
+    cat = CATEGORY_ALIASES.get(kill.get("category"), kill.get("category"))
+    if cat == "ground vehicle":
+        return "vehicles"
+    if cat in ("armor", "SAM", "AAA", "infantry"):
+        return cat
+    if cat and domain(cat) == "air":
+        return "aircraft"
+    return "other"
+def _spoken_weapon(name, n):
+    if re.match(r"AGM-65", name or "", re.I):
+        return "%s %s" % (words(n), "Maverick" if n == 1 else "Mavericks")
+    return "%s %s" % (words(n), name)
+def _join_and(items):
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 def debrief_summary(pic):
-    """Short spoken mission summary from the Eye picture: kills by type and weapon, weapons fired."""
+    """ONE short radio summary (round 9): kills grouped by broad category, real weapons released, gun kills.
+    Gun rounds in the picture are rounds REMAINING/used counters, never 'fired' weapons."""
+    from .eye import weapon_kind
+    def is_gun(name):
+        return bool(name) and (str(name).lower().startswith("gun") or weapon_kind(name) == "gun"
+                               or bool(GUN_SHELL.search(str(name))))
     kills = [k for k in (pic.get("my_kills_this_mission") or []) if k.get("confidence", "confirmed") == "confirmed"]
     parts = []
     if kills:
-        by_target = Counter(k.get("target") or "target" for k in kills)
-        weapons = Counter(k.get("weapon") for k in kills if k.get("weapon"))
-        what = ", ".join("%s %s" % (words(n), t) for t, n in by_target.most_common())
-        how = (" with " + ", ".join(w for w, _ in weapons.most_common(3))) if weapons else ""
-        parts.append("%s kill%s: %s%s." % (words(len(kills)).capitalize(), "" if len(kills) == 1 else "s", what, how))
+        groups = Counter(_kill_group(k) for k in kills)
+        order = list(KILL_GROUP_WORDS)
+        ranked = sorted(groups.items(), key=lambda kv: (-kv[1], order.index(kv[0])))
+        shown, rest = ranked[:4], sum(n for _, n in ranked[4:])
+        phrases = ["%s %s" % (words(n), KILL_GROUP_WORDS[g][0 if n == 1 else 1]) for g, n in shown]
+        if rest:
+            phrases.append("%s more" % words(rest))
+        parts.append("%s kill%s: %s." % (words(len(kills)).capitalize(), "" if len(kills) == 1 else "s", _join_and(phrases)))
     else:
         parts.append("No confirmed kills.")
     used = ((pic.get("my_weapons_used_this_mission") or {}).get("by_weapon")) or {}
-    if used:
-        from .eye import weapon_kind
-
-        def is_gun(name):
-            return bool(name) and (str(name).lower().startswith("gun") or weapon_kind(name) == "gun")
-        killed = Counter(k.get("weapon") for k in kills)
-        gun_kills = sum(n for w, n in killed.items() if is_gun(w))
-        for w in used:
-            if is_gun(w):
-                killed[w] = gun_kills  # 'gun rounds' / 'gun burst' usage vs GAU-8 / M61 kill names
-        shots = ["%s %s fired, %s" % (w, words(n), ("%s kill%s" % (words(killed[w]), "" if killed[w] == 1 else "s"))
-                                      if killed.get(w) else "no kills")
-                 for w, n in sorted(used.items(), key=lambda kv: -kv[1])[:4]]
-        parts.append("; ".join(shots) + ".")
-    text = " ".join(parts)
-    return cap_speech(text, 300)
+    real = []
+    for w, n in sorted(used.items(), key=lambda kv: -(kv[1] if isinstance(kv[1], (int, float)) else 0)):
+        if isinstance(n, (int, float)) and n > 0 and not is_gun(w) and not NON_WEAPON.search(str(w)):
+            real.append(_spoken_weapon(w, int(n)))
+    if real:
+        parts.append(_join_and(real[:3])[:1].upper() + _join_and(real[:3])[1:] + " fired.")
+    gun_kills = sum(1 for k in kills if is_gun(k.get("weapon")))
+    if gun_kills:
+        parts.append("Guns: %s kill%s." % (words(gun_kills), "" if gun_kills == 1 else "s"))
+    return cap_speech(" ".join(parts), PART_CHARS - 80)
 
 
 def requested_calls(klass, text, pic):
@@ -337,8 +383,11 @@ def requested_calls(klass, text, pic):
                 found = [r.get("category")] + list(r.get("member_categories") or [])
                 return any(CATEGORY_ALIASES.get(c, c) in cats for c in found)
             rows = [r for r in rows if matches(r)]
+        rows = sorted(rows, key=lambda r: r.get("range_nm", 1e9) if isinstance(r, dict) else 1e9)
         calls = [r["call"] if isinstance(r, dict) else r for r in rows[:3]]
         if calls:
+            if len(rows) > 3:
+                calls.append("Plus %s more." % words(len(rows) - 3))
             return calls
         return ["No %s within twenty miles." % CATEGORY_WORDS.get(cats[0], "enemy " + str(cats[0]))] if cats else [
             pic["ground_empty_call"]]
@@ -358,7 +407,7 @@ def requested_calls(klass, text, pic):
     if klass == "impact":
         return impact_calls(pic)
     if klass == "loadout":
-        return loadout_calls(pic["ownship"])
+        return loadout_calls(pic["ownship"], text)
     if klass == "damage":
         damage = pic["ownship"].get("damage") or {}
         recent = [r for r in damage.get("events", []) if r["age_s"] < 300]
@@ -429,6 +478,49 @@ def split_parts(answer, limit=PART_CHARS):
     return parts
 
 
+def fit_reply(answer, part_limit=PART_CHARS, limit=MAX_SPEECH_CHARS, word_trim=True):
+    """Safety net (round 9): the reply must fit the gateway cap and two frames. Trim whole sentences from the
+    end (the callsign/close-bandit sentence stays first). Returns (text, trimmed); text is None when
+    word_trim=False and not even the first sentence fits."""
+    answer = (answer or "").strip()
+    def fits(t):
+        return len(t) <= limit and len(split_parts(t, part_limit)) <= 2
+    if fits(answer):
+        return answer, False
+    sentences, start = [], 0
+    for m in SENTENCE_END.finditer(answer):
+        sentences.append(answer[start:m.end()].strip())
+        start = m.end()
+    if answer[start:].strip():
+        sentences.append(answer[start:].strip())
+    while len(sentences) > 1:
+        sentences.pop()
+        text = " ".join(sentences)
+        if fits(text):
+            return text, True
+    first = sentences[0] if sentences else answer
+    if not word_trim:
+        return None, True
+    cap = min(limit, part_limit * 2 - 20)
+    text = cap_speech(first, cap)
+    while not fits(text) and cap > 40:
+        cap -= 20
+        text = cap_speech(first, cap)
+    return text, True
+def _named_missile(text):
+    m = NAMED_MISSILE.search(text or "")
+    if not m:
+        return None
+    word = m.group(1).lower()
+    if m.group(2):
+        return "SA-%s" % m.group(2)
+    return {"stinger": "Stinger", "sam": None, "manpad": "MANPADS", "manpads": "MANPADS"}.get(word, word.capitalize())
+def _missile_name_set(missiles):
+    return [_missile_name(m.get("type")) for m in missiles]
+def _missile_name(kind):
+    kind = str(kind or "").strip()
+    m = re.match(r"SA-?(\d+)", kind, re.I)
+    return "SA-%s" % m.group(1) if m else (kind or "missile")
 class SimpleController:
     # RadioServer: hold concurrent transmissions for this controller (answered in turn) instead of 503.
     queues = True
@@ -449,6 +541,8 @@ class SimpleController:
         self.empty_transcripts = 0  # whisper returned nothing usable (suppressed, counted)
         self._confirmed_kills = []
         self._pending_ack = None  # round 6: (abs_time, target) already read back to the pilot
+        self._reported_missiles = {}  # round 9: missile key -> (range_nm, time) already called to the pilot
+        self._last_launch_reply = 0.0
         self.transmissions = 0
         # Duck-typed for server code that may consult a provider attribute.
         self.provider = self
@@ -681,7 +775,9 @@ class SimpleController:
                     lines.append(self._count_line(likely, "Likely:"))
             if upgraded:
                 lines.append(self._count_line([r for r, _ in upgraded], "Now confirmed, earlier likely:"))
-            if not new and not upgraded:
+            if not new and not upgraded and not wingman and self.recent_release(pic, cats):
+                lines.append("Not confirmed yet, checking.")
+            elif not new and not upgraded:
                 lines.append("No new %skills since your last check." % prefix if rows
                              else "No %skills showing." % prefix)
         lines = [" ".join(line.split()) for line in lines]
@@ -694,6 +790,76 @@ class SimpleController:
             lines.append(self.remaining_line(pic, cats))
         return lines
 
+    @staticmethod
+    def recent_release(pic, cats=None):
+        """True when the pilot released a weapon (or scored a hit) within ~90 s on a target not yet confirmed
+        dead: the kill event may simply lag the shot."""
+        shots = (pic.get("my_shots_last_15_min") or {}).get("shots") or []
+        if shots:
+            for s in shots:
+                age = s.get("age_s")
+                result = str(s.get("result") or "pending")
+                if age is None or not 0 <= age <= RELEASE_WINDOW_S or result in ("kill", "miss") or result.startswith("likely"):
+                    continue
+                if cats:
+                    cat = CATEGORY_ALIASES.get((s.get("hit") or {}).get("category") or (s.get("intended_target") or {}).get("category"),
+                                               (s.get("hit") or {}).get("category") or (s.get("intended_target") or {}).get("category"))
+                    if cat not in cats:
+                        continue
+                return True
+            return False
+        age = pic.get("last_attack_age_s")
+        return age is not None and 0 <= age <= RELEASE_WINDOW_S and not cats
+    def launch_calls(self, text, pic):
+        """Every missile in flight near the pilot (not only the named type); 'same missile' on a repeat ask."""
+        threats = pic.get("threats")
+        if not isinstance(threats, dict) or "missiles_inbound" not in threats:
+            return None
+        now = time.time()
+        self._reported_missiles = {k: v for k, v in self._reported_missiles.items() if now - v[1] <= 180}
+        missiles = sorted((m for m in threats.get("missiles_inbound") or [] if isinstance(m, dict)),
+                          key=lambda m: m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else 1e9)
+        self._last_launch_reply = now
+        if not missiles:
+            return ["No missile in the air that I can see."]
+        def key(m):
+            ident = m.get("id", m.get("missile_id", m.get("weapon_id")))
+            return ("id", ident) if ident is not None else (m.get("type"), m.get("launcher"))
+        def where(m):
+            bits = []
+            if m.get("clock") is not None:
+                bits.append("your %s o'clock" % words(m["clock"]))
+            if isinstance(m.get("range_nm"), (int, float)):
+                n = max(1, round(m["range_nm"]))
+                bits.append("%s mile%s" % (words(n), "" if n == 1 else "s"))
+            return ", ".join(bits)
+        def seen(m):
+            old = self._reported_missiles.get(key(m))
+            r = m.get("range_nm")
+            return old is not None and (key(m)[0] == "id" or not isinstance(r, (int, float)) or old[0] is None
+                                        or r <= old[0] + 2)
+        shown = missiles[:3]
+        same = len(missiles) == 1 and ANOTHER_ASK.search(text or "") and seen(missiles[0])
+        for m in shown:
+            self._reported_missiles[key(m)] = (m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else None, now)
+        names = [_missile_name(m.get("type")) for m in shown]
+        named = _named_missile(text)
+        lines = []
+        if same:
+            lines.append("Same missile, %s in the air, %s." % (names[0], where(shown[0])))
+            return lines
+        lead = ""
+        if named and not any(named.lower() in n.lower() for n in _missile_name_set(missiles)):
+            lead = "Negative %s; " % named
+        for i, (m, name) in enumerate(zip(shown, names)):
+            span = where(m)
+            if i == 0:
+                lines.append("%s%s in the air%s." % (lead, name, (", " + span) if span else ""))
+            else:
+                lines.append("Also %s%s." % (name, (", " + span) if span else ""))
+        if len(missiles) > 3:
+            lines.append("Plus %s more." % words(len(missiles) - 3))
+        return lines
     @staticmethod
     def remaining_line(pic, cats):
         own = (pic.get("ownship") or {}).get("coalition")
@@ -778,6 +944,10 @@ class SimpleController:
                 ("Prometheus, Athena, debrief unavailable. " + summary).strip())
             said = []
             answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), said)
+            answer, debrief_trimmed = fit_reply(answer, PART_CHARS, PART_CHARS)  # one frame
+            if debrief_trimmed:
+                self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
+                          trimmed=True)
             if said and self.eye is not None and hasattr(self.eye, "mark_announced"):
                 self.eye.mark_announced(said)
             self._log(request, "reply_generated", text=answer, outcome="intended", part=1)
@@ -796,6 +966,8 @@ class SimpleController:
         pic, error = self._picture_with_retry()
         pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
         klass = call_class(text, pic)
+        if klass is None and time.time() - self._last_launch_reply <= 90 and LAUNCH_FOLLOWUP.search(text):
+            klass = "launch"  # "do you see it?" right after a launch call
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
         close_bandits = pic.pop("_close_bandits", None) if isinstance(pic, dict) else None
@@ -833,14 +1005,23 @@ class SimpleController:
         self._pending_ack = None
         self._confirm_covers_own_splashes = False
         self._confirm_is_own = False
-        calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
-                 and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
+        trimmed = False
+        if klass == "launch":
+            calls = self.launch_calls(text, pic) if pic.get("ownship") else None
+        else:
+            calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
+                     and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
         if calls is not None:
             age = (pic.get("data_age_s") or {}).get("units")
             stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
             if age is not None and age > 60:
                 stale.append("Contact data is %s seconds old." % words(age))
             prefix = "Prometheus, Athena, "
+            if klass != "kill_confirm" and len(calls) > 1 and len(prefix + " ".join(stale + calls)) > MAX_SPEECH_CHARS:
+                kept = list(calls)  # round 9: drop whole contacts from the end, never clip one mid-call
+                while len(kept) > 1 and len(prefix + " ".join(stale + kept)) > MAX_SPEECH_CHARS:
+                    kept.pop()
+                calls, trimmed = kept, True
             answer = prefix + " ".join(stale + calls)
             alerts, announced = [], []
             if len(answer) > MAX_SPEECH_CHARS:
@@ -882,6 +1063,11 @@ class SimpleController:
             answer = cap_speech(clean(answer) or FALLBACK, ACK_CAP if klass in ("ack", "kill_report") else SPEECH_CAP)
         answer = self._with_close_bandits(answer, close_bandits, announced,
                                           MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
+        answer, net_trimmed = fit_reply(answer, MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
+        trimmed = trimmed or net_trimmed
+        if trimmed:
+            self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
+                      trimmed=True)
         if announced and self.eye is not None and hasattr(self.eye, "mark_announced"):
             flat = []
             for key in announced:
@@ -897,6 +1083,7 @@ class SimpleController:
         parts = split_parts(answer, MAX_SPEECH_CHARS if calls is not None else PART_CHARS)
         for index, part in enumerate(parts, 1):
             self._log(request, "reply_generated", text=part, outcome="intended", part=index,
+                      **({"trimmed": True} if trimmed else {}),
                       timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
             yield response(request, speech=part, state="ok")
 

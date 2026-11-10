@@ -56,9 +56,8 @@ class DebriefSummaryTests(unittest.TestCase):
         pic = {"my_kills_this_mission": [{"target": "F-5E-3", "weapon": "AIM-9", "confidence": "confirmed"}] * 3,
                "my_weapons_used_this_mission": {"by_weapon": {"AIM-9": 4, "AIM-54C-Mk47": 2}}}
         text = debrief_summary(pic)
-        self.assertIn("Three kills: three F-5E-3 with AIM-9.", text)
-        self.assertIn("AIM-9 four fired, three kills", text)
-        self.assertIn("AIM-54C-Mk47 two fired, no kills", text)
+        self.assertIn("Three kills: three other targets.", text)  # round 9: broad categories, one short summary
+        self.assertIn("Four AIM-9 and two AIM-54C-Mk47 fired.", text)
         self.assertEqual(debrief_summary({}), "No confirmed kills.")
 
 
@@ -106,8 +105,8 @@ class Final8ReviewTests(unittest.TestCase):
         pic = {"my_kills_this_mission": [{"target": "T-72B", "weapon": "GAU-8", "confidence": "confirmed"}],
                "my_weapons_used_this_mission": {"by_weapon": {"gun rounds": 150}}}
         text = debrief_summary(pic)
-        self.assertIn("gun rounds one hundred fifty fired, one kill", text)
-        self.assertNotIn("no kills", text)
+        self.assertIn("Guns: one kill.", text)  # round 9: gun rounds are never 'fired' weapons
+        self.assertNotIn("fired", text)
 
     def test_failed_stream_falls_back_even_with_done_text(self):
         import json

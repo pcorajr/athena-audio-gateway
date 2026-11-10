@@ -42,11 +42,69 @@ def _known_type(value):
         and not str(value).strip().isdigit()
 
 
+# Round 9: plain controller names. Key = DCS type with everything but letters/digits removed, lower case.
+# The raw DCS type stays in the picture (types, type, raw_type) for the debrief; spoken names ride alongside.
+SPOKEN_NAMES = {
+    # SA-2 / S-75 family (missile SA2V755, launcher S_75M_Volhov, Fan Song SNR_75V)
+    "sa2v755": "SA-2", "s75mvolhov": "SA-2", "s75volhov": "SA-2", "volhov": "SA-2",
+    "snr75v": "SA-2 radar", "snr75": "SA-2 radar", "sa2": "SA-2",
+    # SA-3 / S-125 family
+    "p19s125sr": "P-19 radar", "p19": "P-19 radar", "snrs125tr": "SA-3 radar", "snrs125": "SA-3 radar",
+    "5v27": "SA-3", "s125pechora": "SA-3", "s125": "SA-3", "s125m": "SA-3",
+    # guns and trucks
+    "zu23emplacementclosed": "ZU-23", "zu23emplacement": "ZU-23", "zu23closed": "ZU-23", "zu23": "ZU-23",
+    "container40ft": "container", "container20ft": "container",
+    "ural4320apa5d": "Ural power truck", "ural4320t": "Ural truck", "ural4320": "Ural truck",
+    "zil131kung": "ZIL-131 truck", "zil131": "ZIL truck", "lazbus": "bus", "atmz5": "fuel truck",
+    "invisiblefarp": "FARP", "sa18iglacomm": "SA-18 command post", "sa18iglas": "SA-18",
+    "unit": "unit",
+    # aircraft
+    "f4e45mc": "F-4E", "fa18chornet": "F/A-18C", "a10c2": "A-10C", "f14b": "F-14B",
+    # loadouts and pods
+    "mk4ffarmk5heat": "Mk 5 rockets", "ffarmk5heat": "Mk 5 rockets", "ffarmk1hex": "Mk 1 rockets",
+    "hbale403060": "chaff/flare pod", "hbordpavespikefast": "Pave Spike pod", "hbordpavespike": "Pave Spike pod",
+    "agm65a": "Maverick", "m39f100": "M-39 cannon", "m61a1": "M-61 cannon",
+    "m53apt": "armor piercing rounds", "m53aptred": "armor piercing rounds", "m56a3hered": "high explosive rounds",
+    "supplyshells1": "shells", "supplyshells4": "shells",
+}
+_PLAIN_KEY = re.compile(r"[^a-z0-9]+")
+
+
+def spoken_key(name):
+    return _PLAIN_KEY.sub("", str(name or "").lower())
+
+
+def spoken_name(name, fallback="contact"):
+    """Plain controller name for any DCS type string: table first, then a generic DCS-suffix strip."""
+    raw = str(name or "").strip()
+    if not raw:
+        return fallback
+    raw = re.sub(r"^weapons\.[^.]+\.", "", raw)
+    hit = SPOKEN_NAMES.get(spoken_key(raw))
+    if hit:
+        return hit
+    t = re.sub(r"^static[ _-]+", "", raw, flags=re.I)
+    t = re.sub(r"[ _-]*copy[ _-]*\d+$", "", t, flags=re.I)  # mission-editor clone suffix
+    m = re.match(r"^(.*[A-Za-z]{2,})-\d{1,2}-\d{1,2}$", t)  # mission-editor group suffix, never a designation
+    if m and not re.search(r"(?:^|[\s_-])[A-Z]{1,4}$", m.group(1)):  # ZSU-23-4: short all-caps prefix = designation
+        t = m.group(1)
+    t = re.sub(r"_\d+$", "", t)
+    t = re.sub(r"[ _-]+(?:emplacement|closed|open|hard|shelter)$", "", t, flags=re.I)
+    hit = SPOKEN_NAMES.get(spoken_key(t))
+    if hit:
+        return hit
+    t = t.replace("_", " ").strip()
+    return t or fallback
+
+
 def weapon_name(name):
     """Shared Eye/cockpit display label; retain raw DCS types in state for correlation."""
     if not _known_type(name):
         return "unknown weapon"
     name = re.sub(r"^weapons\.[^.]+\.", "", str(name))
+    hit = SPOKEN_NAMES.get(spoken_key(name))
+    if hit and spoken_key(name) != "agm65a":  # keep the AGM-65A designation in weapon labels
+        return hit
     gun = re.match(r"(GAU[-_]?8|GAU[-_]?12|M61|GSH[-_]?23|GSH[-_]?30)(?:[-_]|$)", name, re.I)
     if gun:
         return re.sub(r"^(GAU|GSH)[-_]?", r"\1-", gun[1].upper())
@@ -106,6 +164,11 @@ MAX_INTERNAL_FUEL_LB = {
     "A-10A": 11087, "A-10C": 11087, "A-10C_2": 11087, "F-4E-45MC": 12057, "F-16C_50": 7162,
     "FA-18C_hornet": 10803, "F-15ESE": 13123, "F-15E": 13123, "AV8BNA": 7759, "M-2000C": 6978,
     "Mirage-F1CE": 7400, "Mirage-F1EE": 7400, "Mirage-F1M-EE": 7400, "Su-25T": 8355, "Su-25": 6614,
+    # F-100D: 1,189 US gal internal (fuselage + wing) x 6.5 lb/gal JP-4 = 7,729 lb ~ 7,730. Source:
+    # https://www.supersabre.com/f-100specs.htm (F-100D "Internal Fuel quantities 1,189 gall"). Not read from DCS.
+    "F-100D": 7730,
+    # F-14B: 16,200 lb internal (Grumman F-14 data, e.g. detailandscale.com F-14 Tomcat data sheet).
+    "F-14B": 16200, "F-14A-135-GR": 16200,
 }
 FRACTION_MAX = 1.5  # LoGetEngineInfo fuel values at or below this are a fraction of capacity, above it kilograms
 
@@ -121,6 +184,8 @@ def fuel_lb_from_fraction(fraction, aircraft, source="DCS-gRPC Unit:getFuel()"):
         out["total_lb"] = int(round(f * max_lb, -1))
         out["internal_lb"] = out["total_lb"]
         out["source"] = "%s fraction x %s max internal (approximate)" % (source, aircraft)
+        out["estimated"] = True  # table value, not a DCS reading: say "about N pounds"
+        out["spoken"] = "about %s pounds" % format(out["total_lb"], ",")
     else:
         out["source"] = "%s fraction (pounds unknown for this airframe: give percent)" % source
     return out

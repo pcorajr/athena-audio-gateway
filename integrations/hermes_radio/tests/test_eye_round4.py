@@ -583,6 +583,9 @@ def naive_clusters(eye, own, units):
                 continue
             if bearing_range(u["lat"], u["lon"], v["lat"], v["lon"])[1] > radius:
                 continue
+            if dom == "ground" and u["category"] != v["category"] and (
+                    {u["category"], v["category"]} & {"SAM", "AAA"}):
+                continue  # round 9 review: air defence never joins other categories
             if dom == "air" and abs((v["alt_m"] or 0) - (u["alt_m"] or 0)) * M_TO_FT > 5000:
                 continue
             used.add(v["id"])

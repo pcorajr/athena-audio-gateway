@@ -39,7 +39,8 @@ import sys
 import threading
 import time
 
-from .cockpit import CockpitListener, CockpitState, _f, _known_type, clean_name, fuel_lb_from_fraction, weapon_name
+from .cockpit import (CockpitListener, CockpitState, _f, _known_type, clean_name, fuel_lb_from_fraction, spoken_name,
+                      weapon_name)
 
 PLAYER = "Prometheus,Player,Client"
 M_TO_FT = 3.28084
@@ -229,6 +230,8 @@ SAM_RANGES = (
     (re.compile(r"1l13|55g6|ewr|fps-117|dog ear|9s80|rls_19j6|st-68", re.I), 80.0, "EWR"),
 )
 SAM_DEFAULT_NM = 2.5  # unknown SAM-category unit (MANPADS, IR SAM): close range only
+MISSILE_PICTURE_NM = 20.0  # missiles_in_flight lists every hostile missile this close, aimed at Prometheus or not
+MISSILE_SHOT_KEEP_S = 60.0
 MISSILE_ALERT_NM = 25.0  # a hostile missile shot (event) within this range of Prometheus and closing -> launch alert
 THREAT_ANNOUNCE_S = 90.0
 
@@ -343,8 +346,8 @@ def altitude_words(alt_ft):
 
 
 def spoken_type(type_name):
-    t = re.sub(r"_\d+$", "", type_name or "")
-    return t.replace("_", " ").strip() or "contact"
+    """Plain controller name (round 9): table + generic DCS-suffix strip; the raw type stays in the picture."""
+    return spoken_name(type_name, "contact")
 
 
 def call_line(label, bearing3, range_nm, clock_hour, dom, alt_ft=None, vertical=None):
@@ -362,6 +365,60 @@ def call_line(label, bearing3, range_nm, clock_hour, dom, alt_ft=None, vertical=
     return "%s, %s. Target is at your %s o'clock." % (head, what, words(clock_hour))
 
 
+GROUND_MERGE_DEG, GROUND_MERGE_NM = 10.0, 2.0
+AIR_DEFENCE = ("SAM", "AAA")
+AIR_DEFENCE_WORDS = {"SAM": "SAM site", "AAA": "triple-A site"}
+def _bearing_of(g):
+    try:
+        return int(g.get("bearing_mag") or g.get("bearing_true"))
+    except (TypeError, ValueError):
+        return None
+def _air_defence(row):
+    """True when any member of the row is a SAM/AAA/radar air-defence group (never merged with other kinds)."""
+    cats = [row.get("category")] + list(row.get("member_categories") or [])
+    return any(c in AIR_DEFENCE for c in cats)
+def _can_merge(a_row, b_row):
+    if _air_defence(a_row) or _air_defence(b_row):
+        return (_air_defence(a_row) and _air_defence(b_row) and a_row.get("category") == b_row.get("category")
+                and a_row.get("category") in AIR_DEFENCE
+                and set(a_row.get("member_categories") or []) <= set(AIR_DEFENCE)
+                and set(b_row.get("member_categories") or []) <= set(AIR_DEFENCE))
+    return True
+def _merge_ground_rows(rows):
+    """Round 9: ground groups at the same clock position, within ~10 deg of bearing and ~2 nm of range of the
+    closest one are ONE call ('Enemy vehicles, six contacts, ...'). Closest first; each row keeps `merged_groups`."""
+    out, used = [], [False] * len(rows)
+    for i, row in enumerate(rows):
+        if used[i]:
+            continue
+        used[i] = True
+        a = row["_g"]
+        a_hour, a_brg = int(a["clock"].split()[0]), _bearing_of(a)
+        mates = [row]
+        for j in range(i + 1, len(rows)):
+            if used[j] or a_brg is None:
+                continue
+            b = rows[j]["_g"]
+            b_brg = _bearing_of(b)
+            if b_brg is None or not _can_merge(row, rows[j]):
+                continue
+            if int(b["clock"].split()[0]) == a_hour and abs((b_brg - a_brg + 180) % 360 - 180) <= GROUND_MERGE_DEG \
+                    and abs(b["range_nm"] - a["range_nm"]) <= GROUND_MERGE_NM:
+                used[j] = True
+                mates.append(rows[j])
+        if len(mates) == 1:
+            out.append({k: v for k, v in row.items() if k != "_g"})
+            continue
+        cats = sorted({c for m in mates for c in m["member_categories"]})
+        count = sum(m["_g"]["count"] for m in mates)
+        same = len({m["category"] for m in mates}) == 1
+        air_def = same and row.get("category") in AIR_DEFENCE
+        label = AIR_DEFENCE_WORDS[row["category"]] if air_def else a["label"] if same else "enemy vehicles"
+        label += ", %s contacts" % words(count)
+        call = call_line(label, a.get("bearing_mag") or a.get("bearing_true"), a["range_nm"], a_hour, "ground")
+        out.append({"call": call, "category": a["category"] if same else "ground vehicle", "member_categories": cats,
+                    "merged_groups": len(mates), "contacts": count})
+    return out
 # ----------------------------------------------------------------------------- normalization
 def descriptor_type(d):
     for source in (d, d.get("descriptor") or {}, d.get("desc") or {}):
@@ -546,6 +603,8 @@ class Eye:
             # Round 4: threats from DCS-gRPC when the cockpit has no RWR (missiles in flight via Eval, shot events).
             self.weapons_in_flight = {}  # weapon id -> row (Eval world.searchObjects around ownship)
             self.weapons_at = None
+            self.missiles_near = {}  # weapon id -> row: every hostile missile within MISSILE_PICTURE_NM or aimed at me
+            self.missile_shots = {}  # weapon id -> row from the shot event (kept MISSILE_SHOT_KEEP_S)
             self.threat_alerts = deque(maxlen=50)
             self._sam_alerted = {}  # SAM group -> t first called in range
             self.units_at = None
@@ -737,6 +796,7 @@ class Eye:
                 self.life = None
                 self.damage_events.clear()
                 self.weapons_in_flight = {}
+                self.missiles_near, self.missile_shots = {}, {}
                 self.threat_alerts.clear()
                 self._sam_alerted = {}
                 if self.on_mission_start is not None:
@@ -1232,18 +1292,25 @@ class Eye:
         res = self._where(own, src["lat"], src["lon"])
         if res is None:
             return None
-        _, brg, rng = res
+        where, brg, rng = res
         if rng > MISSILE_ALERT_NM:
             return None
+        hour = clock_of(brg - (own.get("heading") or 0.0))
+        wtype = weapon_name(ev["weapon"] or "missile")
+        wid = str(ev["weapon_id"]) if ev.get("weapon_id") else None
+        call = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
+        if wid and rng <= MISSILE_PICTURE_NM:  # stable id, even when the missile is not aimed at Prometheus
+            self.missile_shots[wid] = {"id": wid, "type": wtype, "raw_type": ev["weapon"], "spoken_name": wtype,
+                                       "bearing": where.get("bearing_mag") or where.get("bearing_true"),
+                                       "range_nm": round(rng, 1), "clock": hour, "call": call,
+                                       "launcher": spoken_type(ini.get("type")), "first_seen": ev["t"],
+                                       "from": "shot event"}
         hdg = (ev.get("weapon_pos") or {}).get("heading")
         if hdg is not None and abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) > 45.0:
             return None  # flying away from Prometheus
-        hour = clock_of(brg - (own.get("heading") or 0.0))
-        wtype = weapon_name(ev["weapon"] or "missile")
-        call = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
         return self._threat_alert("launch-%s" % (ev["weapon_id"] or ev["seq"]), call, "missile launch", ev["t"],
                                   source="shot event", type=wtype, launcher=spoken_type(ini.get("type")),
-                                  range_nm=round(rng, 1), clock=hour)
+                                  range_nm=round(rng, 1), clock=hour, id=wid, raw_type=ev["weapon"])
 
     def on_weapons(self, rows):
         """Missiles in flight near Prometheus (Eval world.searchObjects): rows {id, type, lat, lon, alt, vn, ve,
@@ -1251,9 +1318,10 @@ class Eye:
         now = self.clock()
         with self.lock:
             own = self._own_locked()
-            current = {}
+            current, near = {}, {}
             if own is None or own.get("lat") is None:
                 self.weapons_in_flight, self.weapons_at = {}, now
+                self.missiles_near = {}
                 return []
             new = []
             for r in rows or []:
@@ -1271,21 +1339,26 @@ class Eye:
                 res = self._where(own, r["lat"], r["lon"], r.get("alt"))
                 if res is None:
                     continue
-                _, brg, rng = res
+                where, brg, rng = res
                 vn, ve = r.get("vn") or 0.0, r.get("ve") or 0.0
                 speed = math.hypot(vn, ve)
                 hdg = (math.degrees(math.atan2(ve, vn)) + 360.0) % 360.0
                 closing = speed > 50 and abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) <= 30.0
                 at_me = bool(r.get("target")) and r.get("target") == own.get("name")
-                if not (at_me or (closing and rng <= MISSILE_ALERT_NM)):
-                    continue
                 hour = clock_of(brg - (own.get("heading") or 0.0))
                 wid = str(r.get("id") or "%s-%s" % (r.get("type"), r.get("launcher")))
                 wtype = weapon_name(r.get("type") or "missile")
-                row = {"type": wtype, "range_nm": round(rng, 1), "clock": hour, "targeting_me": at_me,
+                row = {"id": wid, "type": wtype, "raw_type": r.get("type"), "spoken_name": wtype,
+                       "bearing": where.get("bearing_mag") or where.get("bearing_true"),
+                       "range_nm": round(rng, 1), "clock": hour, "targeting_me": at_me,
                        "closing": closing, "launcher": spoken_type(r.get("launcher_type")) if r.get("launcher_type")
                        else None, "speed_kt": int(round(speed * MS_TO_KT))}
                 row["call"] = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
+                if at_me or rng <= MISSILE_PICTURE_NM:
+                    prior = self.missiles_near.get(wid) or self.missile_shots.get(wid)
+                    near[wid] = dict(row, first_seen=(prior or {}).get("first_seen", now))
+                if not (at_me or (closing and rng <= MISSILE_ALERT_NM)):
+                    continue
                 current[wid] = row
                 if wid not in self.weapons_in_flight:
                     a = self._threat_alert("missile-%s" % wid, row["call"], "missile launch", now,
@@ -1294,6 +1367,7 @@ class Eye:
                     if a:
                         new.append(a)
             self.weapons_in_flight, self.weapons_at = current, now
+            self.missiles_near = near
             return new
 
     def _sam_threats(self, own, now):
@@ -1370,14 +1444,30 @@ class Eye:
             if a["kind"] == "missile launch" and a.get("source") == "shot event" and now - a["t"] <= 60:
                 missiles.append({"type": a.get("type"), "range_nm": a.get("range_nm"), "clock": a.get("clock"),
                                  "launcher": a.get("launcher"), "age_s": int(now - a["t"]), "call": a["call"],
-                                 "from": "shot event"})
+                                 "from": "shot event", "id": a.get("id"), "spoken_name": a.get("type"),
+                                 "raw_type": a.get("raw_type")})
         missiles.sort(key=lambda m: m.get("range_nm") or 0)
         out["missiles_inbound"] = missiles[:PICTURE_TOP]
+        out["missiles_in_flight"] = self._missiles_in_flight(now, fresh_weapons)
         if source != "cockpit":
             out["note"] = ("no RWR feed from this aircraft: these are inferred from DCS-gRPC (SAM ranges, missiles in "
                            "flight); say 'could be' for SAMs")
         return out
 
+    def _missiles_in_flight(self, now, fresh_weapons):
+        """Round 9: one row per missile with a stable DCS weapon id, so the controller can tell 'same missile' from
+        'new launch'. Includes SAM missiles not aimed at Prometheus within MISSILE_PICTURE_NM."""
+        rows = {}
+        for wid, a in list(self.missile_shots.items()):
+            if now - a["first_seen"] > MISSILE_SHOT_KEEP_S:
+                del self.missile_shots[wid]
+            else:
+                rows[wid] = dict(a, age_s=int(now - a["first_seen"]))
+        if fresh_weapons:
+            for wid, a in self.missiles_near.items():
+                rows[wid] = dict(a, age_s=int(now - a["first_seen"]))  # live Eval position beats the shot position
+        out = sorted(rows.values(), key=lambda m: (not m.get("targeting_me"), m.get("range_nm") or 0))
+        return out[:PICTURE_TOP + 2]
     def _pending_threat_alerts(self, now):
         cockpit_launch = any(a["signal"] == "launch" and now - a["t"] <= 15 for a in self.cockpit.alerts)
         out = []
@@ -1666,6 +1756,9 @@ class Eye:
                         _, d = bearing_range(u["lat"], u["lon"], v["lat"], v["lon"])
                         if d > radius:
                             continue
+                        if dom == "ground" and (u["category"] in AIR_DEFENCE or v["category"] in AIR_DEFENCE) \
+                                and u["category"] != v["category"]:
+                            continue  # round 9 review: SAM/AAA never fold into vehicle/armor groups
                         if dom == "air" and abs((v["alt_m"] or 0) - (u["alt_m"] or 0)) * M_TO_FT > 5000:
                             continue
                         used[j] = True
@@ -1684,7 +1777,8 @@ class Eye:
         cat = cats.most_common(1)[0][0]
         rel = brg - (own.get("heading") or 0.0)
         g = {"side": side, "coalition": coal, "domain": dom, "category": cat, "count": len(members),
-             "types": dict(types), "range_nm": round(rng, 1), "clock": clock_phrase(rel)}
+             "types": dict(types), "spoken_types": dict(Counter(spoken_type(t) for t in types.elements())),
+             "range_nm": round(rng, 1), "clock": clock_phrase(rel)}
         if self.declination is not None:
             g["bearing_mag"] = _three(brg - self.declination)
         else:
@@ -1766,7 +1860,8 @@ class Eye:
             if it["kind"] == "gun":
                 gun += it["count"]
                 continue
-            weapons.append({"weapon": weapon_name(it["name"]), "type": weapon_name(t),
+            weapons.append({"weapon": weapon_name(it["name"]), "type": weapon_name(t), "raw_weapon": it["name"],
+                            "raw_type": t, "spoken_name": weapon_name(it["name"]),
                             "kind": it["kind"], "count": it["count"]})
         out = {"available": True, "age_s": round(now - snap["t"], 1), "weapons": weapons, "gun_rounds": gun}
         out["source"] = {"cockpit": "cockpit (Export.lua payload)", "eval": "DCS-gRPC Eval getAmmo"}.get(
@@ -1927,8 +2022,9 @@ class Eye:
         for i in ground:  # every hostile ground group inside 20 nm, nearest first; the request filters, then caps
             g = self._group_json(own, *hostile_raw[i])
             rows.append({"call": g["call"], "category": g.get("category"),
-                         "member_categories": sorted({m[2]["category"] for m in hostile_raw[i][1]})})
-        pic["ground_targets_within_20nm"] = rows
+                         "member_categories": sorted({m[2]["category"] for m in hostile_raw[i][1]}),
+                         "_g": g})
+        pic["ground_targets_within_20nm"] = _merge_ground_rows(rows)
         pic["ground_empty_call"] = "No ground targets within twenty miles."
         close = []
         for i in air:

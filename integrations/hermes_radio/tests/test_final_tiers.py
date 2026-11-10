@@ -81,7 +81,7 @@ class Final8ReviewTests(unittest.TestCase):
         eye.on_unit(contact(1, "MiG-29S", distance=5))
         said = self.controller(eye).exchange(req("Athena, radio check"))["speech"]
         self.assertIn("MiG-29S", said)
-        self.assertIn("zero nine zero, five, angels", said)  # BRA brevity: range without "miles"
+        self.assertIn("Bandit MiG-29S, zero nine zero, five miles, angels", said)  # warning says Bandit; miles < 10
         self.assertNotIn("MiG-29S", self.controller(eye).exchange(req("Athena, radio check"))["speech"])
 
     def test_close_bandit_on_model_reply_and_on_model_failure(self):
@@ -178,7 +178,7 @@ class Final8cReviewTests(unittest.TestCase):
         said = " ".join(f["speech"] for f in frames)
         self.assertEqual(len(frames), 1)
         self.assertLessEqual(len(said), MAX_REPLY_CHARS)
-        self.assertTrue(said.startswith("Prometheus, Athena, MiG-29S, three zero zero"), said)
+        self.assertTrue(said.startswith("Prometheus, Athena, Bandit MiG-29S, three zero zero"), said)
         self.assertIn("ground target", said)  # phase 0: the nearest ground call fits behind it
         self.assertTrue(said.endswith("more."), said)
         again = " ".join(f["speech"] for f in c.stream(req("Athena, ground picture")))

@@ -13,7 +13,8 @@ from integrations.hermes_radio.simple_controller import (DEBRIEF_CHARS, FALLBACK
 from integrations.hermes_radio.tests.test_eye_round4 import FakeTranscript, req
 
 LIVE = json.loads((Path(__file__).parent / "fixtures" / "r9_live_20261109.json").read_text())
-BANDIT = {"key": "close-bandit-7", "call": "MiG-29S, two seven zero, eight, angels twelve, nine o'clock level."}
+BANDIT = {"key": "close-bandit-7",
+          "call": "Bandit MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level."}
 
 
 class Memory:
@@ -217,7 +218,7 @@ class CloseBanditKillConfirmTests(unittest.TestCase):
         self.assertIn("No new kills", again)
 
     def test_remaining_is_counted_when_the_list_does_not_fit(self):
-        long_bandit = dict(BANDIT, call="MiG-29S and Su-27 and MiG-21Bis and Su-25T four-ship, two seven zero, eight, "
+        long_bandit = dict(BANDIT, call="Bandit MiG-29S and Su-27 and MiG-21Bis and Su-25T four-ship, two seven zero, eight miles, "
                                         "angels twelve, nine o'clock level, closing fast from the west.")
         frames, _, _, _ = run(dict(LIVE["tally_2057"], _close_bandits=[long_bandit]), "Athena, confirm kills, what remains")
         self.assertIn("Confirmed: five trucks", frames[0])  # grouped kill wording
@@ -281,6 +282,47 @@ class MinorFixTests(unittest.TestCase):
         _, _, _, eye = run(pic, "Athena, how is it looking", "Prometheus, Athena, spike, SA-2 behind you.")
         self.assertEqual(eye.announced, ["k-rwr"])
 
+
+
+class BanditWordingTests(unittest.TestCase):
+    """Review P0b MAJOR: a hostile call outside a hostile-only picture says "Bandit"; under 10 nm keeps "miles"."""
+    def _eye(self):
+        from integrations.hermes_radio.tests.test_final_tiers import contact, make_eye
+        return make_eye(contact(9, "MiG-29S", distance=8, bearing=270), contact(5, "A-10C", "blue", distance=12),
+                        contact(6, "MiG-29S", distance=30, bearing=10), contact(7, "Su-27", distance=40, bearing=20))[0]
+
+    def test_close_bandit_warning_says_bandit_and_type(self):
+        eye = self._eye()
+        close = eye.picture()["_close_bandits"]
+        self.assertTrue(close and close[0]["call"].startswith("Bandit MiG-29S, "), close)
+        self.assertIn(" eight miles, ", close[0]["call"])
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda m: "Prometheus, Athena, loud and clear.")
+        said = " ".join(f["speech"] for f in c.stream(req("Athena, radio check")))
+        self.assertTrue(said.startswith("Prometheus, Athena, Bandit MiG-29S, "), said)
+
+    def test_traffic_list_hostile_row_says_bandit_friendly_says_friendly(self):
+        traffic = self._eye().picture()["air_traffic"]
+        self.assertTrue(all(g["call"].startswith("Bandit ") for g in traffic["red"]), traffic["red"])
+        self.assertTrue(all(g["call"].startswith("Friendly ") for g in traffic["blue"]), traffic["blue"])
+
+    def test_air_picture_stays_compact(self):
+        pic = self._eye().picture()
+        self.assertTrue(pic["picture_top3"] and not any(c.startswith("Bandit") for c in pic["picture_top3"]))
+
+    def test_close_bandit_in_the_picture_reply_is_not_repeated(self):
+        eye = self._eye()
+        c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,
+                             llm=lambda m: "Prometheus, Athena, LLM.")
+        said = " ".join(f["speech"] for f in c.stream(req("Athena, picture")))
+        self.assertEqual(said.count(" eight miles, "), 1, said)
+        self.assertTrue(any(k.startswith("close-bandit-") for k in eye.announced), eye.announced)
+
+    def test_under_ten_miles_keeps_miles(self):
+        self.assertEqual(call_line("MiG-29S", "270", 8, 9, "air", 12000, "level"),
+                         "MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level.")
+        self.assertIn(", nine miles, ", call_line("Su-27", "100", 9.4, 2, "air", 4000, "low"))
+        self.assertIn(", ten, ", call_line("Su-27", "100", 9.6, 2, "air", 4000, "low"))
 
 if __name__ == "__main__":
     unittest.main()

@@ -345,6 +345,10 @@ def altitude_words(alt_ft):
     return "angels %s" % words(round(alt_ft / 1000.0))
 
 
+def bandit_call(g):
+    """A hostile air call outside a hostile-only picture (traffic lists, the unprompted close-bandit warning)
+    starts with "Bandit " so it is heard as hostile; air pictures keep the compact call (three fit 280)."""
+    return "Bandit " + g["call"] if g.get("side") == "hostile" and g.get("domain") == "air" else g["call"]
 def spoken_type(type_name):
     """Plain controller name (round 9): table + generic DCS-suffix strip; the raw type stays in the picture."""
     return spoken_name(type_name, "contact")
@@ -356,13 +360,16 @@ def call_line(label, bearing3, range_nm, clock_hour, dom, alt_ft=None, vertical=
     sentences never cuts a call in half.
 
     air:    "<label>, zero three eight, twelve, angels fifteen, ten o'clock high."  (BRA brevity: no "bearing",
-            no "miles"; on 103 real calls 97% of three-bandit pictures fit, 17% with "bearing"/"miles"/"single")
+            no "miles"; on 103 real calls 97% of three-bandit pictures fit, 17% with "bearing"/"miles"/"single").
+            Under 10 nm the range keeps "miles" ("two seven zero, eight miles"), so it is not heard as a bearing.
     ground: "<label>, bearing zero three eight, three miles, ground target, eleven o'clock."
     """
     label = (label or "Contact")[:1].upper() + (label or "Contact")[1:]
     if dom == "air":
         altitude = "altitude unknown" if alt_ft is None else "angels %s" % words(max(0, round(alt_ft / 1000)))
-        rng = re.sub(r" miles$", "", range_words(range_nm))  # "one mile" / "less than one mile" stay
+        rng = range_words(range_nm)  # "one mile" / "less than one mile" / "eight miles" stay
+        if int(round(range_nm or 0)) >= 10:
+            rng = re.sub(r" miles$", "", rng)
         return "%s, %s, %s, %s, %s o'clock %s." % (label, digit_words(bearing3), rng, altitude,
                                                   words(clock_hour), vertical or "level")
     what = "surface target" if dom == "sea" else "ground target"
@@ -2001,7 +2008,9 @@ class Eye:
                 continue
             rows = pic["air_traffic"].setdefault(members[0][2]["coalition"], [])
             if len(rows) < FRIENDLY_GROUPS_MAX:
-                rows.append(self._group_json(own, dom, members))
+                g = self._group_json(own, dom, members)
+                g["call"] = bandit_call(g)  # a mixed list: hostiles say "Bandit", friendlies "Friendly"
+                rows.append(g)
         pic["hostile_air_groups"] = len(air)
         pic["hostile_groups_total"] = len(hostile_raw)
         if len(hostile_raw) > len(hostile):
@@ -2039,7 +2048,7 @@ class Eye:
                 continue
             key = "close-bandit-%s" % hostile_raw[i][1][0][2].get("id")
             if key not in self.announced:  # once per group lead; geometry is current on every picture
-                close.append({"key": key, "call": self._group_json(own, *hostile_raw[i])["call"]})
+                close.append({"key": key, "call": bandit_call(self._group_json(own, *hostile_raw[i]))})
         pic["_close_bandits"] = close
 
     @staticmethod

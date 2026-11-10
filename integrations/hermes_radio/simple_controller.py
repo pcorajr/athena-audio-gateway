@@ -49,8 +49,9 @@ How to talk:
 - A bearing or position request for a kind of target ("bearing to enemy armor", "where is the SAM") = the NEAREST matching group only, unless the pilot says "all" or "every".
 - Calm, natural, clear and short: usually one or two sentences. Summarise groups instead of listing everything.
 - Start with "Prometheus, Athena," (or just "Prometheus," for a quick follow-up).
-- Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRA first then clock (bearing, range, altitude or ground target, then the clock and high, low or level). Use that call line VERBATIM, as one sentence; never give a range or a clock position without the bearing. Hostile air calls start with the aircraft type (plus two-ship, three-ship when more than one) and give the range without "miles". Format for reference:
-  Air: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
+- Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRA first then clock (bearing, range, altitude or ground target, then the clock and high, low or level). Use that call line VERBATIM, as one sentence; never give a range or a clock position without the bearing. Hostile air calls in an air picture start with the aircraft type (plus two-ship, three-ship when more than one) and give the range without "miles" (under ten miles they keep "miles"). In traffic lists and close-bandit warnings a hostile call starts with "Bandit", a friendly one with "Friendly". Format for reference:
+  Air picture: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
+  Close bandit or traffic: "Bandit MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level."
   Ground: "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock."
 - Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
 - If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" only when it says so).
@@ -220,6 +221,10 @@ AIRCRAFT_ASK = re.compile(r"\b(what am i (flying|in|on)|what (air ?plane|plane|j
                           r"my (air ?plane|plane|jet|aircraft)|type of (air ?craft|plane)|am i flying|i('m| am) flying)\b", re.I)
 RELEASE_WINDOW_S = 90
 
+
+def _plain_call(call):
+    """The close-bandit warning is the compact call plus "Bandit "; the same call in a picture counts as said."""
+    return call[len("Bandit "):] if call.startswith("Bandit ") else call
 
 def call_class(text, pic=None):
     """dev_note | kill_report | ack | picture | kill_confirm | ... | None for one pilot transmission."""
@@ -685,8 +690,8 @@ class SimpleController:
         added = False
         for row in close_bandits or []:
             call = row["call"]
-            marks.append((row["key"], call))
-            if call in answer or added:
+            marks.append((row["key"], _plain_call(call)))
+            if _plain_call(call) in answer or added:
                 continue  # already in the reply, or one new call per reply (the rest stay pending)
             candidate = (prefix + call + " " + answer[len(prefix):]) if answer.startswith(prefix) else (
                 call + " " + answer)
@@ -1103,8 +1108,8 @@ class SimpleController:
         if calls is not None:
             lead = []  # one not-yet-called bandit inside 20 nm goes first; the requested lines fill the rest
             for row in close_bandits or []:
-                marks.append((row["key"], row["call"]))
-                if not lead and row["call"] not in " ".join(calls):
+                marks.append((row["key"], _plain_call(row["call"])))
+                if not lead and _plain_call(row["call"]) not in " ".join(calls):
                     lead = [row["call"]]
             stale = lead + stale
             # round 9: drop whole contacts/lines from the end, never clip one mid-call

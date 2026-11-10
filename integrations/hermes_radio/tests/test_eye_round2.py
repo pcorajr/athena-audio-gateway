@@ -77,7 +77,7 @@ class SpokenCallTests(unittest.TestCase):
         self.assertEqual(armor["call"], "Enemy armor, two contacts, bearing zero nine zero, three miles, ground "
                                         "target, twelve o'clock.")
         wing = [g for g in pic["friendly_groups"] if "A-10C_2" in g["types"]][0]
-        self.assertTrue(wing["call"].startswith("Friendly A-10C, two seven zero, two, angels ten, "))
+        self.assertTrue(wing["call"].startswith("Friendly A-10C, two seven zero, two miles, angels ten, "))
         ab = pic["airbases"]["nearest"][0]
         self.assertTrue(ab["call"].startswith("Kutaisi, bearing zero nine zero, one mile, at your twelve o'clock"))
         for g in pic["hostile_groups"] + pic["friendly_groups"]:

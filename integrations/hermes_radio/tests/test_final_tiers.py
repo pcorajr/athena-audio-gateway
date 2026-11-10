@@ -57,7 +57,7 @@ class DebriefSummaryTests(unittest.TestCase):
                "my_weapons_used_this_mission": {"by_weapon": {"AIM-9": 4, "AIM-54C-Mk47": 2}}}
         text = debrief_summary(pic)
         self.assertIn("Three kills: three other targets.", text)  # round 9: broad categories, one short summary
-        self.assertIn("Four AIM-9 and two AIM-54C-Mk47 fired.", text)
+        self.assertIn("Four Sidewinders and two Phoenixes fired.", text)
         self.assertEqual(debrief_summary({}), "No confirmed kills.")
 
 

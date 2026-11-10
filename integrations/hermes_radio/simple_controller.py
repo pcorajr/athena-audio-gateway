@@ -14,6 +14,7 @@ import time
 import unicodedata
 
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
+from .cockpit import spoken_name
 from .eye import KILL_REPORT, _QUESTION, domain, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
@@ -190,15 +191,25 @@ CLASS_HINTS = {
                    "first), not every group.",
 }
 # Round 9: launch calls, aircraft questions, recent-release window
-LAUNCH_ASK = re.compile(r"(\blaunch(ed|es)?\b|\b(another|second|new|other|incoming|inbound)\s+(missile|sam|stinger|manpads?)s?\b|"
+THREAT_NAME = (r"(?:missiles?|sams?|stingers?|manpads?|igla|strela|sa-?\s?\d+|s-?(?:75|125|200)|patriot|rapier|roland|hawk|"
+               r"buk|kub|osa|tor|aaa)")
+# Round 9 review: only a threat/incoming launch goes to the launch route; the pilot's own releases
+# ("Maverick launched", "ready to launch", "cleared for launch") never do.
+LAUNCH_ASK = re.compile(r"(\b%s[\s,.-]+launch(ed|es|ing)?\b|\blaunch(es)?,?\s+launch\b|"
+                        r"\b(any|was that a?|see a|that a|another|new|second)\s+launch(es)?\b|"
+                        r"\blaunch(ed|es)?\s+(at|toward|towards)\s+(me|us)\b|\blaunch(ed)?\s+(detected|warning|alert)\b|"
+                        r"\b(shot|shooting|fired)\s+at\b|\bbeing\s+(shot|fired)\b|"
+                        r"\b(another|second|new|other|incoming|inbound)\s+(missile|sam|stinger|manpads?)s?\b|"
                         r"\b(missile|stinger|manpads?)s?\s+(in the air|inbound|incoming|coming|up)\b|"
-                        r"\bsee (the |that |a )?(missile|stinger)s?\b)", re.I)
-OWN_LAUNCH = re.compile(r"\b(i|we)(\s+(am|have|had|just)|'m|'ve)?\s+(just\s+)?(launch\w*|fired|shot)\b", re.I)
+                        r"\bsee (the |that |a )?(missile|stinger)s?\b)" % THREAT_NAME, re.I)
+OWN_LAUNCH = re.compile(r"(\b(i|we)(\s+(am|have|had|just)|'m|'ve)?\s+(just\s+)?(launch\w*|fired|shot)\b|"
+                        r"\b(ready|cleared|clear|permission|requesting|about|going|preparing)\s+(to|for)\s+(\w+\s+)?launch)", re.I)
 LAUNCH_FOLLOWUP = re.compile(r"\b(do you (still )?see (it|that|the missile)|see it|still (there|in the air|tracking))\b", re.I)
 ANOTHER_ASK = re.compile(r"\b(another|second|other|again|same)\b", re.I)
 NAMED_MISSILE = re.compile(r"\b(stinger|manpads?|igla|strela|sa-?\s?(\d+)|sam)\b", re.I)
-AIRCRAFT_ASK = re.compile(r"\b(what am i flying|what (plane|jet|aircraft)|my (plane|jet|aircraft)|what aircraft|"
-                          r"type of aircraft|am i flying|i('m| am) flying)\b", re.I)
+AIRCRAFT_ASK = re.compile(r"\b(what am i (flying|in|on)|what (air ?plane|plane|jet|aircraft|bird)\b.{0,12}\b(am i|i am|i'm)|"
+                          r"which (air ?plane|plane|jet|aircraft)|what (air ?plane|plane|jet|aircraft)|"
+                          r"my (air ?plane|plane|jet|aircraft)|type of (air ?craft|plane)|am i flying|i('m| am) flying)\b", re.I)
 RELEASE_WINDOW_S = 90
 SPEECH_CAP = 360  # whole answer, characters (~25 s of speech); trimmed at a sentence boundary
 ACK_CAP = 220
@@ -251,21 +262,27 @@ def _splash_target(alert):
     return t or "\x00no-target\x00"
 
 
-def spoken_target(name, category=None):
-    """Radio-safe target name: scenery codes become words, unknowns become 'target'."""
+def spoken_target(name, category=None, dcs_type=False):
+    """Radio-safe target name: scenery codes become words, unknowns become 'target'.
+    dcs_type=True: the name is a raw DCS type string (shot rows) -> plain controller name (SA-2, Ural truck)."""
     name = (name or "").strip().lstrip("- ").strip()
     for pattern, word in SCENERY_NAMES:
         if pattern.search(name):
             return word
     if not name or name.lower() == "unknown" or (category == "scenery" and re.search(r"[()_]", name)):
         return "structure" if category in ("scenery", "static") else "target"
-    return name
+    return spoken_name(name, "target") if dcs_type else name
 
 
 def spoken_aircraft(type_name):
     """'F-4E-45MC' -> 'F-4E', 'A-10C_2' -> 'A-10C' (the module variant is not radio talk)."""
     t = re.sub(r"-\d+MC$", "", str(type_name or "").split("_")[0]).strip()
     return t or None
+def _article(craft):
+    """a/an by sound: designations (F-4E, A-10C) are read letter by letter; words (Mirage, Hercules) by vowel."""
+    if re.match(r"[A-Za-z]{1,2}[-/ ]?\d", craft) or re.match(r"[A-Z]/[A-Z]-?\d", craft):
+        return "an" if craft[0].upper() in "AEFHILMNORSX" else "a"
+    return "an" if craft[0].upper() in "AEIOU" else "a"
 def loadout_calls(own, text=""):
     """Compact remaining-stores call that fits one transmission (pods and tanks are not weapons).
     Round 9: 'what am I flying and what's my loadout' answers both."""
@@ -274,11 +291,12 @@ def loadout_calls(own, text=""):
     lead = ""
     craft = spoken_aircraft(own.get("type"))
     if craft and AIRCRAFT_ASK.search(text or ""):
-        lead = "You're flying %s %s. " % ("an" if craft[0].upper() in "AEFHILMNORSX" else "a", craft)
+        lead = "You're flying %s %s. " % (_article(craft), craft)
     if not lo.get("available"):
         return [lead.strip()] if lead else None
     def label(w):
-        return w.get("spoken_name") or w.get("weapon")
+        raw = w.get("spoken_name") or w.get("weapon")
+        return family_name(raw, w.get("count") if isinstance(w.get("count"), int) else 2) or raw
     items = ["%s %s" % (label(w), words(w["count"])) for w in lo.get("weapons", [])
              if w.get("count") and label(w) and not NON_WEAPON.search(str(label(w)))]
     pods = []  # pods are carried stores, never weapons: listed after the weapons, never counted as fired
@@ -309,7 +327,7 @@ def impact_calls(pic):
     hit = shot.get("hit") or {}
     gone = shot.get("no_longer_showing") or []
     target = spoken_target(gone[0] if gone else hit.get("type") or (shot.get("intended_target") or {}).get("type"),
-                           hit.get("category"))
+                           hit.get("category"), dcs_type=True)
     result = shot.get("result") or "pending"
     if result == "kill":
         return ["Good hit, splash one %s." % target]
@@ -337,10 +355,18 @@ def _kill_group(kill):
     if cat and domain(cat) == "air":
         return "aircraft"
     return "other"
+WEAPON_FAMILIES = ((re.compile(r"^AGM[- _]?65", re.I), "Maverick", "Mavericks"),
+                   (re.compile(r"^AIM[- _]?9", re.I), "Sidewinder", "Sidewinders"),
+                   (re.compile(r"^AIM[- _]?7", re.I), "Sparrow", "Sparrows"),
+                   (re.compile(r"^AIM[- _]?54", re.I), "Phoenix", "Phoenixes"))
+def family_name(name, n=1):
+    """Common missile families by their service name (AGM-65A -> Maverick); other weapons keep their designation."""
+    for pattern, one, many in WEAPON_FAMILIES:
+        if pattern.match(str(name or "").strip()):
+            return one if n == 1 else many
+    return None
 def _spoken_weapon(name, n):
-    if re.match(r"AGM-65", name or "", re.I):
-        return "%s %s" % (words(n), "Maverick" if n == 1 else "Mavericks")
-    return "%s %s" % (words(n), name)
+    return "%s %s" % (words(n), family_name(name, n) or name)
 def _join_and(items):
     return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " and " + items[-1]
 def debrief_summary(pic):
@@ -486,6 +512,15 @@ def split_parts(answer, limit=PART_CHARS):
     return parts
 
 
+def _word_cut(sentence, cap):
+    """One long sentence: cut at the last word boundary within cap and end with a period (never mid-word)."""
+    sentence = (sentence or "").strip()
+    if len(sentence) <= cap:
+        return sentence
+    cut = sentence[:cap - 1]
+    if not sentence[cap - 1:cap - 0].isspace() and " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    return cut.rstrip(" ,;:-.") + "."
 def fit_reply(answer, part_limit=PART_CHARS, limit=MAX_SPEECH_CHARS, word_trim=True):
     """Safety net (round 9): the reply must fit the gateway cap and two frames. Trim whole sentences from the
     end (the callsign/close-bandit sentence stays first). Returns (text, trimmed); text is None when
@@ -510,10 +545,10 @@ def fit_reply(answer, part_limit=PART_CHARS, limit=MAX_SPEECH_CHARS, word_trim=T
     if not word_trim:
         return None, True
     cap = min(limit, part_limit * 2 - 20)
-    text = cap_speech(first, cap)
+    text = _word_cut(first, cap)
     while not fits(text) and cap > 40:
         cap -= 20
-        text = cap_speech(first, cap)
+        text = _word_cut(first, cap)
     return text, True
 def _named_missile(text):
     m = NAMED_MISSILE.search(text or "")

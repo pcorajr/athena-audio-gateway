@@ -85,7 +85,9 @@ def spoken_name(name, fallback="contact"):
         return hit
     t = re.sub(r"^static[ _-]+", "", raw, flags=re.I)
     t = re.sub(r"[ _-]*copy[ _-]*\d+$", "", t, flags=re.I)  # mission-editor clone suffix
-    t = re.sub(r"-\d+-\d+$", "", t)  # mission-editor group suffix
+    m = re.match(r"^(.*[A-Za-z]{2,})-\d{1,2}-\d{1,2}$", t)  # mission-editor group suffix, never a designation
+    if m and not re.search(r"(?:^|[\s_-])[A-Z]{1,4}$", m.group(1)):  # ZSU-23-4: short all-caps prefix = designation
+        t = m.group(1)
     t = re.sub(r"_\d+$", "", t)
     t = re.sub(r"[ _-]+(?:emplacement|closed|open|hard|shelter)$", "", t, flags=re.I)
     hit = SPOKEN_NAMES.get(spoken_key(t))

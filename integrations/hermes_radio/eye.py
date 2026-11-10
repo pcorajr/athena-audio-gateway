@@ -366,6 +366,24 @@ def call_line(label, bearing3, range_nm, clock_hour, dom, alt_ft=None, vertical=
 
 
 GROUND_MERGE_DEG, GROUND_MERGE_NM = 10.0, 2.0
+AIR_DEFENCE = ("SAM", "AAA")
+AIR_DEFENCE_WORDS = {"SAM": "SAM site", "AAA": "triple-A site"}
+def _bearing_of(g):
+    try:
+        return int(g.get("bearing_mag") or g.get("bearing_true"))
+    except (TypeError, ValueError):
+        return None
+def _air_defence(row):
+    """True when any member of the row is a SAM/AAA/radar air-defence group (never merged with other kinds)."""
+    cats = [row.get("category")] + list(row.get("member_categories") or [])
+    return any(c in AIR_DEFENCE for c in cats)
+def _can_merge(a_row, b_row):
+    if _air_defence(a_row) or _air_defence(b_row):
+        return (_air_defence(a_row) and _air_defence(b_row) and a_row.get("category") == b_row.get("category")
+                and a_row.get("category") in AIR_DEFENCE
+                and set(a_row.get("member_categories") or []) <= set(AIR_DEFENCE)
+                and set(b_row.get("member_categories") or []) <= set(AIR_DEFENCE))
+    return True
 def _merge_ground_rows(rows):
     """Round 9: ground groups at the same clock position, within ~10 deg of bearing and ~2 nm of range of the
     closest one are ONE call ('Enemy vehicles, six contacts, ...'). Closest first; each row keeps `merged_groups`."""
@@ -375,13 +393,15 @@ def _merge_ground_rows(rows):
             continue
         used[i] = True
         a = row["_g"]
-        a_hour, a_brg = int(a["clock"].split()[0]), int(a.get("bearing_mag") or a.get("bearing_true"))
+        a_hour, a_brg = int(a["clock"].split()[0]), _bearing_of(a)
         mates = [row]
         for j in range(i + 1, len(rows)):
-            if used[j]:
+            if used[j] or a_brg is None:
                 continue
             b = rows[j]["_g"]
-            b_brg = int(b.get("bearing_mag") or b.get("bearing_true"))
+            b_brg = _bearing_of(b)
+            if b_brg is None or not _can_merge(row, rows[j]):
+                continue
             if int(b["clock"].split()[0]) == a_hour and abs((b_brg - a_brg + 180) % 360 - 180) <= GROUND_MERGE_DEG \
                     and abs(b["range_nm"] - a["range_nm"]) <= GROUND_MERGE_NM:
                 used[j] = True
@@ -392,7 +412,8 @@ def _merge_ground_rows(rows):
         cats = sorted({c for m in mates for c in m["member_categories"]})
         count = sum(m["_g"]["count"] for m in mates)
         same = len({m["category"] for m in mates}) == 1
-        label = a["label"] if same else "enemy vehicles"
+        air_def = same and row.get("category") in AIR_DEFENCE
+        label = AIR_DEFENCE_WORDS[row["category"]] if air_def else a["label"] if same else "enemy vehicles"
         label += ", %s contacts" % words(count)
         call = call_line(label, a.get("bearing_mag") or a.get("bearing_true"), a["range_nm"], a_hour, "ground")
         out.append({"call": call, "category": a["category"] if same else "ground vehicle", "member_categories": cats,
@@ -1735,6 +1756,9 @@ class Eye:
                         _, d = bearing_range(u["lat"], u["lon"], v["lat"], v["lon"])
                         if d > radius:
                             continue
+                        if dom == "ground" and (u["category"] in AIR_DEFENCE or v["category"] in AIR_DEFENCE) \
+                                and u["category"] != v["category"]:
+                            continue  # round 9 review: SAM/AAA never fold into vehicle/armor groups
                         if dom == "air" and abs((v["alt_m"] or 0) - (u["alt_m"] or 0)) * M_TO_FT > 5000:
                             continue
                         used[j] = True

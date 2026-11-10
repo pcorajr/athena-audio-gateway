@@ -222,7 +222,7 @@ class AircraftLoadoutTests(unittest.TestCase):
     def test_flying_and_loadout_answers_both(self):
         own = LIVE["loadout_2035"]["ownship"]
         line = loadout_calls(own, "what am I flying and what's my loadout?")[0]
-        self.assertTrue(line.startswith("You're flying an F-4E. You have AGM-65A four"), line)
+        self.assertTrue(line.startswith("You're flying an F-4E. You have Mavericks four"), line)
         self.assertNotIn("HB-", line)
         self.assertIn("gun six hundred thirty nine rounds", line)
         self.assertNotIn("flying", loadout_calls(own, "what's my loadout?")[0])

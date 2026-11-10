@@ -1,6 +1,7 @@
 """Offline regressions for the Syria session: traffic, air calls, damage and attack follow-ups."""
 from copy import deepcopy
 import json
+import re
 import subprocess
 import tempfile
 import unittest
@@ -56,10 +57,10 @@ class TrafficTests(unittest.TestCase):
         self.assertEqual([list(g["types"])[0] for g in pic["air_traffic"]["blue"]], ["F-16C_50", "UH-1H"])
         for text in ("any blue traffic near me", "confirm only blue traffic", "blue only"):
             speech, _, _ = exchange(eye, text)
-            self.assertIn("F-16C", speech)  # phase 0 budget: the nearest call whole, the rest counted
-            self.assertIn("Plus one more.", speech)
+            self.assertIn("F-16C", speech)  # phase 0 budget: compact calls, both aircraft whole
+            self.assertIn("UH-1H", speech)
             self.assertNotIn("armor", speech)
-            self.assertEqual(speech.count("bearing"), 1)
+            self.assertEqual(speech.count("o'clock"), 2)
             self.assertLessEqual(len(speech), MAX_REPLY_CHARS)
 
     def test_ground_traffic_is_explicit_exception(self):
@@ -88,7 +89,8 @@ class TrafficTests(unittest.TestCase):
         field = eye.picture()["airbases"]["nearest"][0]
         self.assertEqual(field["traffic"]["count"], 4)
         self.assertEqual(sum(r["on_field"] for r in field["traffic"]["aircraft"]), 3)
-        self.assertTrue(all("bearing" in r["call"] for r in field["traffic"]["aircraft"]))
+        self.assertTrue(all(re.search(r"^Friendly [\w-]+, \w+ \w+ \w+, .*angels .*o'clock", r["call"])
+                            for r in field["traffic"]["aircraft"]))
         _, messages, log = exchange(eye, "request take off at Ramat David", "Traffic at Ramat David.")
         self.assertIn(CLASS_HINTS["atc"], [m["content"] for m in messages])
         tool = next(r for r in log.records if r["kind"] == "tool")
@@ -125,10 +127,13 @@ class AirPictureTests(unittest.TestCase):
                     encode_response(frame)
                 speech = frames[0]["speech"]
                 self.assertLessEqual(len(speech), MAX_REPLY_CHARS)
-                self.assertIn(base["picture_top3"][0], speech)  # nearest group whole, never clipped
-                for call in base["picture_top3"][1:]:
-                    self.assertNotIn(call.split(".")[0], speech)  # dropped whole, not half
-                self.assertIn("Plus two more.", speech)
+                kept = [call for call in base["picture_top3"] if call in speech]
+                self.assertEqual(kept, base["picture_top3"][:len(kept)])  # nearest first, whole calls
+                self.assertGreaterEqual(len(kept), 1)
+                for call in base["picture_top3"][len(kept):]:
+                    self.assertNotIn(call.split(", angels")[0], speech)  # dropped whole, not half
+                if len(kept) < 3:
+                    self.assertIn("Plus %s more." % ("two" if len(kept) == 1 else "one"), speech)
                 rwr_said = [k for i, k in enumerate(rwr_keys) if "contact number %d." % i in speech]
                 splash_said = [k for i, k in enumerate(splash_keys) if "target number %d." % i in speech]
                 marked = [k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')]
@@ -166,9 +171,10 @@ class AirPictureTests(unittest.TestCase):
             kept = [line for line in pic["picture_top3"] if line in speech]
             self.assertEqual(kept, pic["picture_top3"][:len(kept)])  # nearest first, whole calls only
             self.assertGreaterEqual(len(kept), 1)
-            for word in ("Bandit Su-27 one-ship", "bearing", "angels", "At your"):
+            self.assertEqual(len(kept), 3)  # phase 0: three compact calls fit one transmission
+            for word in ("Su-27, ", "angels", "o'clock"):
                 self.assertEqual(speech.count(word), len(kept), word)
-            self.assertIn("Plus %s more." % ("two" if len(kept) == 1 else "one"), speech)
+            self.assertNotIn("Plus", speech)
             self.assertNotIn("overhead", speech)
             self.assertNotIn("more groups", speech)
             self.assertNotIn("fifty one", speech)
@@ -198,8 +204,8 @@ class AirPictureTests(unittest.TestCase):
     def test_two_ship_type_and_low_altitude_format(self):
         eye, _ = make_eye(contact(1, alt=100), contact(2, distance=19.2, alt=100))
         line = eye.picture()["picture_top3"][0]
-        self.assertTrue(line.startswith("Bandit Su-27 two-ship, bearing"))
-        self.assertIn("angels zero. At your twelve o'clock, low.", line)
+        self.assertTrue(line.startswith("Su-27 two-ship, zero nine zero, "), line)
+        self.assertIn("angels zero, twelve o'clock low.", line)
 
     def test_ground_picture_still_routes_to_ground(self):
         self.assertEqual(call_class("give me the ground picture"), "ground_picture")
@@ -212,7 +218,7 @@ class AirPictureTests(unittest.TestCase):
         speech, _, _ = exchange(eye, "picture")
         self.assertIn("Tracking disconnected", speech)
         self.assertIn("eighty seconds old", speech)
-        self.assertIn("Bandit Su-27", speech)
+        self.assertIn("Su-27, zero nine zero", speech)
 
 
 class DamageTests(unittest.TestCase):

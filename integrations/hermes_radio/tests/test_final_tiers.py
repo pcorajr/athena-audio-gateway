@@ -19,7 +19,7 @@ class TierTests(unittest.TestCase):
         pic = eye.picture()
         self.assertEqual(pic["picture_top3"], [])
         self.assertTrue(pic["air_picture_empty_call"].startswith("Nothing inside fifty miles."))
-        self.assertIn("F-5E-3", pic["air_picture_empty_call"])
+        self.assertIn("F-5E, ", pic["air_picture_empty_call"])
         said = speech(eye, "Athena, bogey dope")
         self.assertIn("Nothing inside fifty miles", said)
         self.assertIn("sixty", said)
@@ -32,8 +32,8 @@ class TierTests(unittest.TestCase):
         eye, _ = make_eye(*(contact(i, "F-5E-3", distance=d) for i, d in enumerate((30, 90, 140, 160), 1)))
         self.assertEqual(call_class("Athena, long range picture"), "long_picture")
         said = speech(eye, "Athena, long range picture")
-        self.assertIn("Bandit F-5E-3 one-ship, bearing zero nine zero, thirty miles", said)  # nearest first
-        self.assertIn("Plus two more.", said, said)  # phase 0 budget: the rest are counted, not read
+        self.assertTrue(said.startswith("Prometheus, Athena, F-5E, zero nine zero, thirty, angels"), said)
+        self.assertIn("one hundred forty", said)  # phase 0: three compact calls fit (the 160 nm one is out)
         self.assertLessEqual(len(said), MAX_REPLY_CHARS)
         self.assertNotIn("one hundred sixty", said)
 
@@ -81,7 +81,7 @@ class Final8ReviewTests(unittest.TestCase):
         eye.on_unit(contact(1, "MiG-29S", distance=5))
         said = self.controller(eye).exchange(req("Athena, radio check"))["speech"]
         self.assertIn("MiG-29S", said)
-        self.assertIn("five miles", said)
+        self.assertIn("zero nine zero, five, angels", said)  # BRA brevity: range without "miles"
         self.assertNotIn("MiG-29S", self.controller(eye).exchange(req("Athena, radio check"))["speech"])
 
     def test_close_bandit_on_model_reply_and_on_model_failure(self):
@@ -178,12 +178,13 @@ class Final8cReviewTests(unittest.TestCase):
         said = " ".join(f["speech"] for f in frames)
         self.assertEqual(len(frames), 1)
         self.assertLessEqual(len(said), MAX_REPLY_CHARS)
-        self.assertTrue(said.startswith("Prometheus, Athena, Bandit MiG-29S"), said)
-        self.assertTrue(said.endswith("Ask again for the rest."), said)  # no ground call fits behind it
+        self.assertTrue(said.startswith("Prometheus, Athena, MiG-29S, three zero zero"), said)
+        self.assertIn("ground target", said)  # phase 0: the nearest ground call fits behind it
+        self.assertTrue(said.endswith("more."), said)
         again = " ".join(f["speech"] for f in c.stream(req("Athena, ground picture")))
         self.assertNotIn("MiG-29S", again)  # the bandit was said once
         self.assertIn("ground target", again)
-        self.assertIn("Plus two more.", again)
+        self.assertNotIn("Plus", again)  # all three ground calls fit the 280-char budget
 
 
 if __name__ == "__main__":

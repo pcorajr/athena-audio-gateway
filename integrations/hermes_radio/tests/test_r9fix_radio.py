@@ -114,8 +114,9 @@ class SafetyNetTests(unittest.TestCase):
         out = " ".join(frames(controller(self.ground_pic(7)), "Athena, ground picture"))
         self.assertLessEqual(len(out), MAX_REPLY_CHARS)
         self.assertLess(out.index("1 contacts"), out.index("2 contacts"))
-        self.assertNotIn("3 contacts", out)  # phase 0 budget: two short calls fit, the rest are counted
-        self.assertTrue(out.endswith("Plus five more."), out)
+        self.assertIn("3 contacts", out)  # 280-char budget: three short calls fit, the rest are counted
+        self.assertNotIn("4 contacts", out)
+        self.assertTrue(out.endswith("Plus four more."), out)
         short = self.ground_pic(3)
         for r in short["ground_targets_within_20nm"]:
             r["call"] = r["call"].replace("Enemy armor, ", "Armor ").replace(", ground target", "")
@@ -126,7 +127,7 @@ class SafetyNetTests(unittest.TestCase):
     def test_oversize_fixed_calls_drop_whole_contacts_and_log(self):
         pic = self.ground_pic(3)
         for r in pic["ground_targets_within_20nm"]:
-            r["call"] = "Enemy armor " + "heavy column " * 7 + "ground target."
+            r["call"] = "Enemy armor " + "heavy column " * 9 + "ground target."
         log = FakeTranscript()
         out = " ".join(frames(controller(pic, log=log), "Athena, ground picture"))
         self.assertLessEqual(len(out), MAX_REPLY_CHARS)

@@ -63,11 +63,10 @@ class SpokenCallTests(unittest.TestCase):
 
     def test_required_order_air_and_ground(self):
         self.assertEqual(call_line("bandit", "038", 12.2, 10, "air", 15200, "high"),
-                         "Bandit, bearing zero three eight, twelve miles, angels fifteen. "
-                         "At your ten o'clock, high.")
+                         "Bandit, zero three eight, twelve, angels fifteen, ten o'clock high.")
+        self.assertIn(", one mile, ", call_line("bandit", "100", 1.2, 2, "air", 4000, "low"))
         self.assertEqual(call_line("enemy armor", "038", 3.0, 11, "ground"),
-                         "Enemy armor, bearing zero three eight, three miles, ground target. "
-                         "Target is at your eleven o'clock.")
+                         "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock.")
         self.assertIn("surface target", call_line("enemy ship", "100", 20, 2, "sea"))
         self.assertIn("angels zero", call_line("bandit", "100", 5, 2, "air", 400, "low"))
 
@@ -76,13 +75,13 @@ class SpokenCallTests(unittest.TestCase):
         pic = eye.picture()
         armor = [g for g in pic["hostile_groups"] if "T-72B" in g["types"]][0]
         self.assertEqual(armor["call"], "Enemy armor, two contacts, bearing zero nine zero, three miles, ground "
-                                        "target. Target is at your twelve o'clock.")
+                                        "target, twelve o'clock.")
         wing = [g for g in pic["friendly_groups"] if "A-10C_2" in g["types"]][0]
-        self.assertTrue(wing["call"].startswith("Friendly A-10C, bearing two seven zero, two miles, angels ten."))
+        self.assertTrue(wing["call"].startswith("Friendly A-10C, two seven zero, two, angels ten, "))
         ab = pic["airbases"]["nearest"][0]
         self.assertTrue(ab["call"].startswith("Kutaisi, bearing zero nine zero, one mile, at your twelve o'clock"))
         for g in pic["hostile_groups"] + pic["friendly_groups"]:
-            self.assertRegex(g["call"], r"bearing [a-z ]+, .*o'clock")
+            self.assertRegex(g["call"], r"(bearing )?[a-z]+ [a-z]+ [a-z]+, .*o'clock")  # air calls: no 'bearing'
 
 
 class SinglePlayerAttributionTests(unittest.TestCase):
@@ -435,7 +434,7 @@ class ControllerRound2Tests(unittest.TestCase):
 
         def llm(messages):
             seen.append(json.loads([m for m in messages if m["content"].startswith("PICTURE ")][0]["content"][8:]))
-            return "Prometheus, Athena, copy."
+            return "Prometheus, Athena, copy, splash one T-72B."  # marked said only when the model says it
         c = SimpleController(None, FakeTranscript(), model="test", api_key="x", eye=eye, llm=llm)
         list(c.stream(req("Athena, acknowledge my last transmission.")))
         list(c.stream(req("-")))

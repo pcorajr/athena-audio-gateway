@@ -351,18 +351,23 @@ def spoken_type(type_name):
 
 
 def call_line(label, bearing3, range_nm, clock_hour, dom, alt_ft=None, vertical=None):
-    """The user's required order: BRAA first, then the clock position (2026-11-07).
+    """The user's required order: BRA first, then the clock position (2026-11-07). ONE sentence per call
+    (phase 0, 280-char reply budget): three air calls fit one transmission and a reply trimmed by whole
+    sentences never cuts a call in half.
 
-    air:    "<label>, bearing zero three eight, twelve miles, angels fifteen. At your ten o'clock, high."
-    ground: "<label>, bearing zero three eight, three miles, ground target. Target is at your eleven o'clock."
+    air:    "<label>, zero three eight, twelve, angels fifteen, ten o'clock high."  (BRA brevity: no "bearing",
+            no "miles"; on 103 real calls 97% of three-bandit pictures fit, 17% with "bearing"/"miles"/"single")
+    ground: "<label>, bearing zero three eight, three miles, ground target, eleven o'clock."
     """
     label = (label or "Contact")[:1].upper() + (label or "Contact")[1:]
-    head = "%s, bearing %s, %s" % (label, digit_words(bearing3), range_words(range_nm))
     if dom == "air":
         altitude = "altitude unknown" if alt_ft is None else "angels %s" % words(max(0, round(alt_ft / 1000)))
-        return "%s, %s. At your %s o'clock, %s." % (head, altitude, words(clock_hour), vertical or "level")
+        rng = re.sub(r" miles$", "", range_words(range_nm))  # "one mile" / "less than one mile" stay
+        return "%s, %s, %s, %s, %s o'clock %s." % (label, digit_words(bearing3), rng, altitude,
+                                                  words(clock_hour), vertical or "level")
     what = "surface target" if dom == "sea" else "ground target"
-    return "%s, %s. Target is at your %s o'clock." % (head, what, words(clock_hour))
+    return "%s, bearing %s, %s, %s, %s o'clock." % (label, digit_words(bearing3), range_words(range_nm), what,
+                                                   words(clock_hour))
 
 
 GROUND_MERGE_DEG, GROUND_MERGE_NM = 10.0, 2.0
@@ -1810,7 +1815,9 @@ class Eye:
         else:
             label = "neutral " + cat
         if side == "hostile" and dom == "air":
-            label = "bandit %s %s-ship" % (" and ".join(spoken_type(t) for t in types), words(len(members)))
+            label = " and ".join(spoken_type(t) for t in types)  # a single says no count (budget)
+            if len(members) > 1:
+                label += " %s-ship" % words(len(members))
         elif len(members) > 1:
             label += ", %s contacts" % words(len(members))
         g["call"] = call_line(label, g.get("bearing_mag") or g.get("bearing_true"), rng, clock_of(rel), dom,

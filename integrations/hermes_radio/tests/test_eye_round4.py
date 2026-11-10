@@ -509,7 +509,7 @@ class CallClassTests(unittest.TestCase):
         self.assertTrue(pic["working_target"]["call"].startswith("T-55, bearing zero nine zero"))
         top = pic["picture_top3"]
         self.assertEqual(len(top), 1)  # round 5: air only within 50 nm, never pad with SAMs
-        self.assertTrue(top[0].startswith("Bandit Su-27 one-ship"))
+        self.assertTrue(top[0].startswith("Su-27, ") and "single" not in top[0])
         self.assertNotIn("picture_more_groups", pic)
         self.assertIn("picture_top3", PROMPT)
         self.assertIn("NEAREST matching group only", PROMPT)

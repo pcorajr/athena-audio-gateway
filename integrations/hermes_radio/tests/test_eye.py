@@ -116,8 +116,8 @@ class PictureTests(unittest.TestCase):
         self.assertEqual(flankers["count"], 2)
         self.assertEqual(flankers["label"], "bandit")
         # Round 2: ready call line, BRAA first then clock (user's required order).
-        self.assertEqual(flankers["call"], "Bandit Su-27 two-ship, bearing zero six zero, twenty miles, angels "
-                                           "twenty five. At your eleven o'clock, high.")
+        self.assertEqual(flankers["call"], "Su-27 two-ship, zero six zero, twenty, angels twenty five, "
+                                           "eleven o'clock high.")  # phase 0: one compact BRA sentence
         self.assertEqual(flankers["bearing_true"], "060")
         self.assertAlmostEqual(flankers["range_nm"], 20, delta=0.3)
         self.assertEqual(flankers["clock"], "11 o'clock, ahead left")
@@ -140,8 +140,8 @@ class PictureTests(unittest.TestCase):
         armor = group(pic, "T-72B")
         self.assertEqual(armor["clock"], "6 o'clock, behind")
         self.assertEqual(armor["label"], "enemy armor")
-        self.assertEqual(armor["call"], "Enemy armor, bearing two seven zero, five miles, ground target. "
-                                        "Target is at your six o'clock.")
+        self.assertEqual(armor["call"], "Enemy armor, bearing two seven zero, five miles, ground target, "
+                                        "six o'clock.")
 
         tanker = group(pic, "KC-135", "friendly_groups")
         self.assertEqual(tanker["clock"], "9 o'clock, left")

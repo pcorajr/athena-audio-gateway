@@ -59,7 +59,7 @@ SPOKEN_NAMES = {
     "invisiblefarp": "FARP", "sa18iglacomm": "SA-18 command post", "sa18iglas": "SA-18",
     "unit": "unit",
     # aircraft
-    "f4e45mc": "F-4E", "fa18chornet": "F/A-18C", "a10c2": "A-10C", "f14b": "F-14B",
+    "f4e45mc": "F-4E", "f5e3": "F-5E", "fa18chornet": "F/A-18C", "a10c2": "A-10C", "f14b": "F-14B",
     # loadouts and pods
     "mk4ffarmk5heat": "Mk 5 rockets", "ffarmk5heat": "Mk 5 rockets", "ffarmk1hex": "Mk 1 rockets",
     "hbale403060": "chaff/flare pod", "hbordpavespikefast": "Pave Spike pod", "hbordpavespike": "Pave Spike pod",

@@ -43,15 +43,15 @@ Facts that matter:
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
 - Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
-- Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (picture_top3 verbatim, both sentences of every call); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts.
+- Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (read the picture_top3 calls verbatim, every call whole, nothing added between them); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts. Never cut a call mid-way: if the answer must be shorter, leave out whole calls from the end.
 - Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
 - Never say "overhead" unless that contact has overhead_allowed true (within three nautical miles). Nineteen miles is NOT overhead.
 - A bearing or position request for a kind of target ("bearing to enemy armor", "where is the SAM") = the NEAREST matching group only, unless the pilot says "all" or "every".
 - Calm, natural, clear and short: usually one or two sentences. Summarise groups instead of listing everything.
 - Start with "Prometheus, Athena," (or just "Prometheus," for a quick follow-up).
-- Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRAA first then clock (bearing, range, altitude or ground target, then the clock). Use that call line VERBATIM; never give a range or a clock position without the bearing. Format for reference:
-  Air: "Bandit Su-27 two-ship, bearing zero three eight, twelve miles, angels fifteen. At your ten o'clock, high."
-  Ground: "Enemy armor, bearing zero three eight, three miles, ground target. Target is at your eleven o'clock."
+- Positional calls: every group and airbase in the picture has a ready "call" line in the required order, BRA first then clock (bearing, range, altitude or ground target, then the clock and high, low or level). Use that call line VERBATIM, as one sentence; never give a range or a clock position without the bearing. Hostile air calls start with the aircraft type (plus two-ship, three-ship when more than one) and give the range without "miles". Format for reference:
+  Air: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
+  Ground: "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock."
 - Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
 - If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" only when it says so).
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
@@ -66,10 +66,11 @@ How to talk:
 SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
 _UNSAFE = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp", "Zs"})
 _JUNK = re.compile(r"^[\W_]*$")
-# ONE reply budget (phase 0). Athena's Piper voice speaks about 13 characters a second and the radio cuts a
-# reply at about 30 s of audio; live 2026-11-06..09 nothing over ~250 characters ever arrived complete.
+# ONE reply budget (phase 0). Athena's Piper voice speaks 13.4 characters a second (median, 466 live parts;
+# slowest long reply 10.6) and the gateway refuses more than 30 s of audio ("say again, too long"):
+# 280 characters is ~21 s typical, <= 26.5 s at the slowest rate seen. Three compact air calls fit.
 # Every reply path (model, fixed, debrief, alerts, close bandits) fits this, sent as ONE frame.
-MAX_REPLY_CHARS = 230
+MAX_REPLY_CHARS = 280
 DEBRIEF_CHARS = 150  # the spoken debrief; the details are in the written report
 assert MAX_REPLY_CHARS <= MAX_SPEECH_CHARS
 FALLBACK = "Prometheus, Athena, say again, I had a problem on my end."
@@ -116,9 +117,9 @@ ACK = re.compile(r"\b(copy|copies|roger|wilco|egress\w*|going to investigate|inv
                  r"understood|good copy|switching (missions?|frequenc\w+|radios?)|stand ?by|checking in|rolling in|"
                  r"pushing|commencing|engaging|in the weeds|on my way|proceeding|acknowledged?)\b", re.I)
 # "Athena, tally." / "tally, kills" / "confirm tally" / "I ask for a tally" = the mission kill total (live 11-09);
-# "tally two trucks" (visual contact) is left to the model.
+# "tally two trucks" (visual contact) and "two, tally" / "visual, tally" (brevity: target in sight) are not.
 TALLY_ASK = re.compile(r"(\b(kill )?tally,?\s+kills?\b|\b(confirm|give me|request|ask for|what('?s| is))\s+(a |the |my )?"
-                       r"(kill )?tally\b|\bkill tally\b|\btally\W*$)", re.I)
+                       r"(kill )?tally\b|\bkill tally\b|^\W*(athena\W*)?tally\W*$)", re.I)
 REQUEST = re.compile(r"(\?|\b(picture|bogey dope|bearing|vector|where|what|which|how|say|give|any|status|threats?|"
                      r"declare|request|fuel|left|range|braa|bra|check|are there|is there|tell me|need)\b)", re.I)
 PICTURE_ASK = re.compile(r"\b(picture|bogey dope|what do you see|what's out there|whats out there|threats? around)\b", re.I)
@@ -179,8 +180,9 @@ CLASS_HINTS = {
     "ack": "ACK OR INTENT CALL: one short sentence. Acknowledge; add at most working_target.call when it helps. "
            "No picture, no other groups.",
     "long_picture": "LONG RANGE PICTURE: picture_long_range_top3 verbatim (bandits within 150 miles).",
-    "picture": "AIR PICTURE: picture_top3 verbatim, the three nearest hostile air groups within fifty miles. "
-               "Every bearing, range, angels, clock and high/low/level must survive. No extra-group counts.",
+    "picture": "AIR PICTURE: picture_top3 verbatim, the three nearest hostile air groups within fifty miles, "
+               "every call whole (one sentence each). Every bearing, range, angels, clock and high/low/level must "
+               "survive; if shorter, drop whole calls from the end, never cut one. No extra-group counts.",
     "ground_picture": "GROUND PICTURE: nearest requested ground groups, at most three, call lines verbatim.",
     "traffic": "TRAFFIC: aircraft only, including helos, from air_traffic. Blue means blue coalition. "
                "Do not substitute ground units. Read the nearest aircraft call lines verbatim.",
@@ -264,6 +266,15 @@ def _splash_target(alert):
     t = re.sub(r"^\s*splash\s+(one|two|three|\w+)\s+", "", (alert or "").lower()).strip(" .!")
     t = re.sub(r"\s*\(?likely\)?$", "", t).strip(" .,")
     return t or "\x00no-target\x00"
+
+
+def _alert_needle(alert, field):
+    """What a model reply must contain for a splash / RWR call to count as said (it may reword the call):
+    'splash' + the target, else the threat designation (SA-6), else its clock position."""
+    if field == "splash_to_announce":
+        return ("splash", _splash_target(alert))
+    m = re.search(r"\b(SA-?\d+|[A-Z][\w/]*-\d[\w-]*)", alert or "") or re.search(r"\b\w+ o'clock\b", alert or "")
+    return m.group(0) if m else ("\x00no-needle\x00",)
 
 
 def spoken_target(name, category=None, dcs_type=False):
@@ -506,6 +517,7 @@ def fit_reply(answer, limit=MAX_REPLY_CHARS, word_trim=True):
     return _word_cut(sentences[0] if sentences else answer, limit), True
 
 
+ASK_REST = "Ask again for the rest."
 LIST_CLASSES = {"picture": None, "long_picture": None, "traffic": None, "ground_picture": 3}
 
 
@@ -526,6 +538,10 @@ def _fit_calls(klass, calls, room):
     kept = list(calls)
     while kept and size(kept) > room:
         kept.pop()
+    if len(kept) < len(calls):  # never drop a requested line without a word
+        while kept and size(kept + [ASK_REST]) > room:
+            kept.pop()
+        kept += [ASK_REST] if kept else []
     return kept or None, len(kept) < len(calls)
 
 
@@ -804,17 +820,24 @@ class SimpleController:
                              else "No %skills showing." % prefix)
             return lines
 
+        # "what remains" is part of the answer: it counts against the room, never silently dropped
+        rest = self.remaining_line(pic, cats) if REMAIN_ASK.search(text) else None
+
+        def size(items):
+            return len(" ".join(items + ([rest] if rest else [])))
         lines = [" ".join(line.split()) for line in build(False)]
-        if len(" ".join(lines)) > room:  # one reply budget: name kill groups instead of every target type
+        if size(lines) > room:  # one reply budget: name kill groups instead of every target type
             lines = [" ".join(line.split()) for line in build(True)]
+        if rest and size(lines) > room:
+            rest = self.remaining_line(pic, cats, short=True)  # one count instead of every category
         # remember only what this answer actually reported (category-filtered rows), upgrades in place;
         # commit=False: the caller commits once these lines are in the final, fitted reply
         if commit:
             self._remember(owner, new, upgraded)
         else:
             self._pending_ack = (owner, new, upgraded, list(lines))
-        if REMAIN_ASK.search(text):
-            lines.append(self.remaining_line(pic, cats))
+        if rest:
+            lines.append(rest)
         return lines
 
     @staticmethod
@@ -910,7 +933,7 @@ class SimpleController:
             lines.append("Plus %s more." % words(len(missiles) - 3))
         return lines
     @staticmethod
-    def remaining_line(pic, cats):
+    def remaining_line(pic, cats, short=False):
         own = (pic.get("ownship") or {}).get("coalition")
         totals = pic.get("alive_totals_by_coalition") or {}
         enemy = totals.get("red" if own == "blue" else "blue" if own == "red" else "red") or {}
@@ -921,6 +944,9 @@ class SimpleController:
         ground = [(k, v) for k, v in enemy.items() if v and k not in NOT_GROUND and domain(k) == "ground"]
         if not ground:
             return "No enemy ground units remaining."
+        if short:
+            n = sum(v for _, v in ground)
+            return "Remaining: %s enemy ground unit%s." % (words(n), "" if n == 1 else "s")
         parts = ["%s %s" % (words(v), CATEGORY_WORDS.get(k, "enemy " + str(k)))
                  for k, v in sorted(ground, key=lambda kv: -kv[1])]
         return "Remaining: %s." % ", ".join(parts)
@@ -991,8 +1017,10 @@ class SimpleController:
         if self.eye is None or not hasattr(self.eye, "mark_announced"):
             return
         flat = []
+        low = answer.lower()
         for key, needle in marks:
-            if needle is None or needle in answer:
+            needles = needle if isinstance(needle, tuple) else (needle,)
+            if all(n is None or n.lower() in low for n in needles):
                 flat.extend(key if isinstance(key, list) else [key])
         if flat:
             self.eye.mark_announced(flat)
@@ -1044,11 +1072,20 @@ class SimpleController:
         self._pending_ack = None
         self._confirm_covers_own_splashes = False
         self._confirm_is_own = False
+        prefix = "Prometheus, Athena, "
+        age = (pic.get("data_age_s") or {}).get("units")
+        stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
+        if age is not None and age > 60:
+            stale.append("Contact data is %s seconds old." % words(age))
         if klass == "launch":
             calls = self.launch_calls(text, pic) if pic.get("ownship") else None
+        elif klass == "kill_confirm" and pic.get("ownship") and "my_kills_this_mission" in pic:
+            # the real room: a close bandit call goes first and takes its share (grouped kill wording then)
+            first = [row["call"] for row in (close_bandits or [])[:1]]
+            room = MAX_REPLY_CHARS - len(prefix + " ".join(first + stale + [""]))
+            calls = self.kill_confirm_calls(text, pic, pic_time, commit=False, room=room)
         else:
-            calls = (self.kill_confirm_calls(text, pic, pic_time, commit=False) if klass == "kill_confirm" and pic.get("ownship")
-                     and "my_kills_this_mission" in pic else requested_calls(klass, text, pic))
+            calls = requested_calls(klass, text, pic)
         route = "fixed" if calls is not None else "llm"
         result = {"summary": self.picture_summary(pic), "picture": pic,
                   "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""}
@@ -1063,12 +1100,7 @@ class SimpleController:
         marks = []  # (key, needle): announced only if the needle is in the final reply
         trimmed = False
         llm_ms = 0
-        prefix = "Prometheus, Athena, "
         if calls is not None:
-            age = (pic.get("data_age_s") or {}).get("units")
-            stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
-            if age is not None and age > 60:
-                stale.append("Contact data is %s seconds old." % words(age))
             lead = []  # one not-yet-called bandit inside 20 nm goes first; the requested lines fill the rest
             for row in close_bandits or []:
                 marks.append((row["key"], row["call"]))
@@ -1076,7 +1108,13 @@ class SimpleController:
                     lead = [row["call"]]
             stale = lead + stale
             # round 9: drop whole contacts/lines from the end, never clip one mid-call
-            fitted, trimmed = _fit_calls(klass, calls, MAX_REPLY_CHARS - len(prefix + " ".join(stale + [""])))
+            room = MAX_REPLY_CHARS - len(prefix + " ".join(stale + [""]))
+            # a pending RWR/threat alert outranks the 2nd and 3rd contact of a list: keep room for the first one
+            first_alert = ((pic.get("rwr_alert_to_announce") or [""])[0] or "").strip()
+            reserve = len(first_alert) + 2 if klass in LIST_CLASSES and first_alert else 0
+            fitted, trimmed = _fit_calls(klass, calls, room - reserve)
+            if fitted is None and reserve:
+                fitted, trimmed = _fit_calls(klass, calls, room)
             if fitted is None and lead:
                 fitted, trimmed = ["Ask again for the rest."], True  # nothing requested was said: all stays pending
             if fitted is None:
@@ -1138,8 +1176,10 @@ class SimpleController:
                               timings_ms={"total": round((time.monotonic() - start) * 1000)})
             llm_ms = round((time.monotonic() - t_llm) * 1000)
             answer = clean(answer)
-            if answer:  # the model was given the splash / RWR calls to say first; a fallback said nothing
-                marks += [(k, None) for k in (splash_keys or []) + (rwr_keys or [])]
+            if answer:  # the model was given the splash / RWR calls to say first: marked only if it said them
+                for field, keys in (("splash_to_announce", splash_keys), ("rwr_alert_to_announce", rwr_keys)):
+                    for alert, key in zip(pic.get(field) or [], keys or []):
+                        marks.append((key, _alert_needle(alert, field)))
             else:
                 answer = FALLBACK
             # a close bandit goes first; fit_reply trims the model's tail to make room

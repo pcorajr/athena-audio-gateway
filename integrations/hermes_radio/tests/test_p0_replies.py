@@ -7,13 +7,13 @@ from pathlib import Path
 import unittest
 
 from integrations.hermes_radio.contract import MAX_SPEECH_CHARS
+from integrations.hermes_radio.eye import call_line
 from integrations.hermes_radio.simple_controller import (DEBRIEF_CHARS, FALLBACK, MAX_REPLY_CHARS, SimpleController,
                                                          call_class)
 from integrations.hermes_radio.tests.test_eye_round4 import FakeTranscript, req
 
 LIVE = json.loads((Path(__file__).parent / "fixtures" / "r9_live_20261109.json").read_text())
-BANDIT = {"key": "close-bandit-7", "call": "Bandit MiG-29S one-ship, bearing two seven zero, eight miles, "
-                                           "angels twelve. At your nine o'clock, level."}
+BANDIT = {"key": "close-bandit-7", "call": "MiG-29S, two seven zero, eight, angels twelve, nine o'clock level."}
 
 
 class Memory:
@@ -63,7 +63,7 @@ def run(pic, text, answer="Prometheus, Athena, copy."):
 
 class BudgetTests(unittest.TestCase):
     def test_one_budget(self):
-        self.assertEqual(MAX_REPLY_CHARS, 230)  # ~13 chars/s Piper, radio cut at ~30 s; nothing >250 ever arrived
+        self.assertEqual(MAX_REPLY_CHARS, 280)  # 13.4 chars/s Piper median (10.6 slowest long reply), 30 s Go cap
         self.assertEqual(DEBRIEF_CHARS, 150)
         self.assertLessEqual(MAX_REPLY_CHARS, MAX_SPEECH_CHARS)
 
@@ -187,6 +187,99 @@ class SaidOnlyWhenSpokenTests(unittest.TestCase):
         pic = dict(LIVE["loadout_2035"], _close_bandits=[BANDIT, other])
         _, _, _, eye = run(pic, "Athena, how is it looking")
         self.assertEqual(eye.announced, [BANDIT["key"]])  # one new bandit per reply; the other stays pending
+
+
+class CloseBanditKillConfirmTests(unittest.TestCase):
+    """Review MAJOR-1/2: a close bandit never wipes out the kill confirmation, "what remains" is never dropped."""
+
+    def test_bandit_first_then_kills_within_budget(self):
+        for name in ("tally_2057", "confirm_2051"):
+            for text, needle in (("Athena, confirm kills", "Confirmed"), ("Athena, tally.", "Mission total:"),
+                                 ("Athena, confirm kills, what remains", "Confirmed")):
+                with self.subTest(picture=name, ask=text):
+                    frames, replies, model, eye = run(dict(LIVE[name], _close_bandits=[BANDIT]), text)
+                    self.assertEqual(len(frames), 1)
+                    self.assertTrue(frames[0].startswith("Prometheus, Athena, " + BANDIT["call"] + " "), frames[0])
+                    self.assertIn(needle, frames[0])
+                    self.assertNotIn("Ask again", frames[0])
+                    if "remains" in text:
+                        self.assertRegex(frames[0], r"(Remaining:|remaining\.)")
+                    self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
+                    self.assertEqual(eye.announced, [BANDIT["key"]])
+                    self.assertEqual(model.calls, 0)
+
+    def test_kills_said_with_a_bandit_are_acknowledged(self):
+        eye, log = FakeEye(dict(LIVE["tally_2057"], _close_bandits=[BANDIT])), FakeTranscript()
+        c = SimpleController(None, log, model="fixture", api_key="unused", eye=eye, llm=Model())
+        first = [f["speech"] for f in c.stream(req("Athena, confirm kills"))][0]
+        self.assertIn("Confirmed", first)
+        again = [f["speech"] for f in c.stream(req("Athena, confirm kills"))][0]
+        self.assertIn("No new kills", again)
+
+    def test_remaining_is_counted_when_the_list_does_not_fit(self):
+        long_bandit = dict(BANDIT, call="MiG-29S and Su-27 and MiG-21Bis and Su-25T four-ship, two seven zero, eight, "
+                                        "angels twelve, nine o'clock level, closing fast from the west.")
+        frames, _, _, _ = run(dict(LIVE["tally_2057"], _close_bandits=[long_bandit]), "Athena, confirm kills, what remains")
+        self.assertIn("Confirmed: five trucks", frames[0])  # grouped kill wording
+        self.assertRegex(frames[0], r"Remaining: [a-z ]+ enemy ground units\.$")
+        self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
+
+    def test_no_bandit_confirm_and_remains_both_said(self):
+        frames, _, _, _ = run(LIVE["tally_2057"], "Athena, confirm kills, what remains")
+        self.assertIn("Confirmed", frames[0])
+        self.assertIn("Remaining:", frames[0])
+        self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
+
+
+# Real geometry: the 3-bandit picture of 2026-11-09 and the longest real air calls (MiG-15bis, 44 nm, angels 23).
+REAL_THREE = [call_line("F-5E", "356", 33, 12, "air", 16000, "low"), call_line("F-5E", "360", 33, 12, "air", 8000, "low"),
+              call_line("F-5E", "357", 37, 12, "air", 24000, "level")]
+LONG_THREE = [call_line("MiG-15bis", "337", 44, 12, "air", 23000, "high"),
+              call_line("MiG-15bis", "338", 47, 11, "air", 23000, "high"),
+              call_line("MiG-15bis", "339", 49, 12, "air", 27000, "level")]
+
+
+class ThreeBanditTests(unittest.TestCase):
+    """Review MAJOR-3: an air picture says the three nearest bandits whole, in one transmission."""
+
+    def test_three_compact_calls_fit(self):
+        self.assertEqual(REAL_THREE[0], "F-5E, three five six, thirty three, angels sixteen, twelve o'clock low.")
+        for three in (REAL_THREE, LONG_THREE):
+            for klass, field in (("Athena, picture", "picture_top3"), ("Athena, long range picture", "picture_long_range_top3")):
+                with self.subTest(calls=three[0], ask=klass):
+                    pic = dict(LIVE["loadout_2035"], picture_top3=three, picture_long_range_top3=three,
+                               air_picture_empty_call="x")
+                    frames, replies, model, _ = run(pic, klass)
+                    self.assertEqual(frames, ["Prometheus, Athena, " + " ".join(three)])
+                    self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
+                    self.assertEqual(model.calls, 0)
+
+    def test_model_reply_over_budget_drops_whole_calls(self):
+        answer = "Prometheus, Athena, " + " ".join(LONG_THREE) + " Two more groups further north, all cold."
+        pic = dict(LIVE["loadout_2035"], _close_bandits=[BANDIT])
+        frames, replies, _, _ = run(pic, "Athena, any bandits out there?", answer)
+        self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
+        self.assertTrue(frames[0].startswith("Prometheus, Athena, " + BANDIT["call"]), frames[0])
+        body = frames[0][len("Prometheus, Athena, " + BANDIT["call"]):].strip()
+        self.assertEqual(body, " ".join(LONG_THREE[:body.count("o'clock")]))  # whole calls only, never half
+        self.assertIn(LONG_THREE[0], body)
+        self.assertTrue(replies[0].get("trimmed"))
+
+
+class MinorFixTests(unittest.TestCase):
+    def test_wingman_or_visual_tally_is_not_the_kill_total(self):
+        for text in ("Two, tally", "Athena, visual, tally.", "two, tally."):
+            self.assertNotEqual(call_class(text), "kill_confirm", text)
+        for text in ("Athena, tally", "tally.", "Athena tally"):
+            self.assertEqual(call_class(text), "kill_confirm", text)
+
+    def test_model_reply_without_the_alerts_keeps_them_pending(self):
+        pic = dict(LIVE["loadout_2035"], splash_to_announce=["Splash one Ural-375"], _splash_keys=["k-splash"],
+                   rwr_alert_to_announce=["Spike, SA-2 at your six o'clock."], _rwr_keys=["k-rwr"])
+        _, _, _, eye = run(pic, "Athena, how is it looking", "Prometheus, Athena, quiet out here.")
+        self.assertEqual(eye.announced, [])
+        _, _, _, eye = run(pic, "Athena, how is it looking", "Prometheus, Athena, spike, SA-2 behind you.")
+        self.assertEqual(eye.announced, ["k-rwr"])
 
 
 if __name__ == "__main__":

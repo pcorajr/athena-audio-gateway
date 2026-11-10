@@ -341,7 +341,7 @@ class ReviewFix3Tests(unittest.TestCase):
             rows.append(row)
         return rows
 
-    BANDIT = [{"key": "close-bandit-9", "call": "Bandit MiG-29S " + "very long call " * 9 + "one mile."}]
+    BANDIT = [{"key": "close-bandit-9", "call": "Bandit MiG-29S " + "very long call " * 14 + "one mile."}]
 
     def mixed_kills(self):
         rows = self.many_kills()

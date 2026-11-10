@@ -362,7 +362,7 @@ func NewApplication(config conf.Configuration) (*Application, error) {
 	var speechRecognizer recognizer.Recognizer
 	switch config.Recognizer {
 	case conf.WhisperLocal:
-		speechRecognizer = recognizer.NewWhisperRecognizer(config.WhisperModel, config.Callsign, recognizerOpts...)
+		speechRecognizer = recognizer.NewWhisperRecognizer(config.WhisperModel, config.Callsign, append(recognizerOpts, recognizer.WithThreads(config.WhisperThreads))...)
 	case conf.WhisperAPI:
 		speechRecognizer = recognizer.NewWhisperAPIRecognizer(config.OpenAIAPIKey, config.Callsign, recognizerOpts...)
 	case conf.GPT4o:

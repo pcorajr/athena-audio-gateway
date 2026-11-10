@@ -62,6 +62,9 @@ func (r *whisperRecognizer) Recognize(ctx context.Context, sample []float32, ena
 		return "", fmt.Errorf("error creating whisper context: %w", err)
 	}
 
+	if r.threads > 0 {
+		wCtx.SetThreads(r.threads)
+	}
 	wCtx.SetInitialPrompt(r.initialPrompt(r.callsign))
 
 	if wCtx.IsMultilingual() {

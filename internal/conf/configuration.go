@@ -75,6 +75,8 @@ type Configuration struct {
 	RecognizerLock *flock.Flock
 	// WhisperModel is a whisper.cpp model used for Speech To Text. It may be nil if OpenAI API transcription is configured.
 	WhisperModel *whisper.Model
+	// WhisperThreads is the CPU thread count for local whisper.cpp; 0 keeps the library default.
+	WhisperThreads uint
 	// OpenAIAPIKey is the API key for the OpenAI API. It may be empty if local transcription is configured.
 	OpenAIAPIKey string
 	// Voice is the voice used for SRS transmissions

@@ -2,7 +2,6 @@ package mvp
 
 import (
 	"context"
-	"errors"
 	"github.com/dharmab/skyeye/pkg/athena/bridge"
 	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/simpleradio"
@@ -137,63 +136,155 @@ func (r *Runner) observe(ctx context.Context, t simpleradio.Transmission) (strin
 	return text, outcome
 }
 
+// Fixed spoken lines used instead of silence when a reply cannot be spoken.
+// Both must stay far below the audio limit (phase 0, 2026-11-10).
+const (
+	TooLongLine  = "Prometheus, Athena, say again, my answer was too long."
+	SayAgainLine = "Prometheus, Athena, say again."
+	// continuationGrace lets part 2 follow part 1 even when part 1 itself ran
+	// past the first-send expiry: expiry gates starting a reply, not finishing it.
+	continuationGrace = 5 * time.Second
+	fallbackTimeout   = 5 * time.Second
+)
+
+type replySender = func(context.Context, simpleradio.Audio, time.Time) simpleradio.Delivery
+
+// streamReply reads the WHOLE bounded NDJSON reply first, so the bridge HTTP
+// timeout covers only the HTTP exchange, never playback. It then synthesizes
+// every part, checks the total audio length, and only then speaks. If the
+// reply cannot be spoken (bridge error, TTS failure, too long) Athena says a
+// short fixed line instead of going silent. Outcome is "sent" only when every
+// part was sent.
 func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmission, req bridge.Request, expires time.Time, valid func() bool, client bridge.StreamClient, timing *Timing) {
 	radio, ok := r.Radio.(interface {
-		BeginMVPReply(simpleradio.Transmission) func(context.Context, simpleradio.Audio, time.Time) simpleradio.Delivery
+		BeginMVPReply(simpleradio.Transmission) replySender
 	})
 	if !ok {
 		timing.Outcome = "stream_transport_unavailable"
 		return
 	}
 	send := radio.BeginMVPReply(t)
-	part := 0
+	var parts []bridge.Response
 	err := client.ExchangeStream(workCtx, req, func(resp bridge.Response) error {
-		if !resp.Deliverable {
-			timing.Outcome = "suppressed"
-			return nil
-		}
-		part++
-		r.record(t, "reply_intended", resp.Speech, "generated", "LLM", part, nil)
-		timing.ReplyReceived = time.Since(t.ReceivedAt).Milliseconds()
-		failure := func(reason string) error {
-			timing.Outcome = reason
-			r.record(t, "delivery", resp.Speech, reason, "LLM", part, nil)
-			return errors.New(reason)
-		}
-		if !valid() {
-			return failure(timing.Outcome)
-		}
-		audio, err := r.Synthesize(workCtx, resp.Speech)
-		timing.TTSDone = time.Since(t.ReceivedAt).Milliseconds()
-		if err != nil || len(audio) == 0 {
-			return failure("tts_failed_or_empty")
-		}
-		if !valid() {
-			return failure(timing.Outcome)
-		}
-		d := send(ctx, audio, expires)
-		first, last := int64(-1), int64(-1)
-		if !d.FirstSend.IsZero() {
-			first = d.FirstSend.Sub(t.ReceivedAt).Milliseconds()
-			if timing.FirstSend < 0 {
-				timing.FirstSend = first
-			}
-		}
-		if !d.LastSend.IsZero() {
-			last = d.LastSend.Sub(t.ReceivedAt).Milliseconds()
-			timing.LastSend = last
-		}
-		timing.Outcome = deliveryOutcome(d)
-		r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", part, map[string]int64{"first_send": first, "last_send": last})
-		if d.Outcome != "sent" {
-			return errors.New("delivery_failed")
-		}
+		parts = append(parts, resp)
 		return nil
 	})
 	if err != nil {
-		r.record(t, "stream_error", "", "bridge_or_delivery_failed", "LLM", part, nil)
-		if timing.Outcome == "bridge_no_response" {
-			timing.Outcome = "bridge_failed"
+		r.record(t, "stream_error", "", "bridge_or_delivery_failed", "LLM", len(parts), nil)
+		timing.Outcome = "bridge_failed"
+		r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing)
+		return
+	}
+	timing.ReplyReceived = time.Since(t.ReceivedAt).Milliseconds()
+	if len(parts) == 0 || !parts[0].Deliverable {
+		timing.Outcome = "suppressed"
+		return
+	}
+	for i, resp := range parts {
+		r.record(t, "reply_intended", resp.Speech, "generated", "LLM", i+1, nil)
+	}
+	if !valid() {
+		for i, resp := range parts {
+			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, nil)
+		}
+		return
+	}
+	audios := make([]simpleradio.Audio, len(parts))
+	samples := 0
+	for i, resp := range parts {
+		audio, err := r.Synthesize(workCtx, resp.Speech)
+		timing.TTSDone = time.Since(t.ReceivedAt).Milliseconds()
+		if err != nil || len(audio) == 0 {
+			if ctx.Err() != nil {
+				timing.Outcome = "canceled"
+				return
+			}
+			timing.Outcome = "tts_failed_or_empty"
+			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, nil)
+			r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing)
+			return
+		}
+		audios[i] = audio
+		samples += len(audio)
+	}
+	if samples > simpleradio.MaxMVPReplySamples {
+		timing.Outcome = "speech_duration_exceeded"
+		for i, resp := range parts {
+			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, map[string]int64{"audio_ms": int64(len(audios[i])) * 1000 / 16000})
+		}
+		r.fallback(ctx, t, send, expires, TooLongLine, "too_long_fallback", timing)
+		return
+	}
+	if !valid() {
+		for i, resp := range parts {
+			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, nil)
+		}
+		return
+	}
+	for i, resp := range parts {
+		partExpires := expires
+		if i > 0 {
+			partExpires = later(expires, time.Now().Add(continuationGrace))
+		}
+		d := send(ctx, audios[i], partExpires)
+		r.noteSend(t, d, timing)
+		timing.Outcome = deliveryOutcome(d)
+		r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, map[string]int64{"first_send": sinceMs(t, d.FirstSend), "last_send": sinceMs(t, d.LastSend)})
+		if d.Outcome != "sent" {
+			// The sender is closed after a failed write; nothing more can be keyed.
+			for j := i + 1; j < len(parts); j++ {
+				r.record(t, "delivery", parts[j].Speech, "not_sent_after_failure", "LLM", j+1, nil)
+			}
+			return
 		}
 	}
+}
+
+// fallback speaks one short fixed line on the still-unused reply sender. A
+// "say again" is never stale, so it may start slightly after the expiry.
+func (r *Runner) fallback(ctx context.Context, t simpleradio.Transmission, send replySender, expires time.Time, line, label string, timing *Timing) {
+	if ctx.Err() != nil {
+		timing.Outcome = "canceled"
+		return
+	}
+	reason := timing.Outcome
+	synthCtx, cancel := context.WithTimeout(ctx, fallbackTimeout)
+	audio, err := r.Synthesize(synthCtx, line)
+	cancel()
+	if err != nil || len(audio) == 0 {
+		timing.Outcome = label + "_tts_failed:" + reason
+		r.record(t, "delivery", line, timing.Outcome, "fallback", 0, nil)
+		return
+	}
+	d := send(ctx, audio, later(expires, time.Now().Add(continuationGrace)))
+	r.noteSend(t, d, timing)
+	if d.Outcome == "sent" {
+		timing.Outcome = label + "_sent"
+	} else {
+		timing.Outcome = label + "_failed:" + deliveryOutcome(d)
+	}
+	r.record(t, "delivery", line, timing.Outcome+":"+reason, "fallback", 0, map[string]int64{"first_send": sinceMs(t, d.FirstSend), "last_send": sinceMs(t, d.LastSend)})
+}
+
+func (r *Runner) noteSend(t simpleradio.Transmission, d simpleradio.Delivery, timing *Timing) {
+	if !d.FirstSend.IsZero() && timing.FirstSend < 0 {
+		timing.FirstSend = sinceMs(t, d.FirstSend)
+	}
+	if !d.LastSend.IsZero() {
+		timing.LastSend = sinceMs(t, d.LastSend)
+	}
+}
+
+func sinceMs(t simpleradio.Transmission, at time.Time) int64 {
+	if at.IsZero() {
+		return -1
+	}
+	return at.Sub(t.ReceivedAt).Milliseconds()
+}
+
+func later(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }

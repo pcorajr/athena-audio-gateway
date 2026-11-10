@@ -62,6 +62,7 @@ var (
 	telemetryUpdateInterval      time.Duration
 	recognizerName               string
 	whisperModelPath             string
+	whisperThreads               uint
 	recognizerLockPath           string
 	openAIAPIKey                 string
 	voiceName                    string
@@ -148,6 +149,7 @@ func init() {
 	recognizerFlag := cli.NewEnum(&recognizerName, "Recognizer", string(conf.WhisperLocal), string(conf.WhisperAPI), string(conf.GPT4o), string(conf.GPT4oMini))
 	skyeye.Flags().Var(recognizerFlag, "recognizer", "Speech-to-text recognizer to use")
 	skyeye.Flags().StringVar(&whisperModelPath, "whisper-model", "", "Path to whisper.cpp model")
+	skyeye.Flags().UintVar(&whisperThreads, "whisper-threads", 8, "CPU threads for local whisper.cpp recognition (0 = whisper.cpp default of 4)")
 	skyeye.Flags().StringVar(&openAIAPIKey, "openai-api-key", "", "API key for OpenAPI AI")
 	skyeye.MarkFlagsOneRequired("whisper-model", "openai-api-key")
 	skyeye.Flags().StringVar(&recognizerLockPath, "recognizer-lock-path", "", "Path to lock file for concurrent speech-to-text when using multiple instances")
@@ -625,6 +627,7 @@ func run(_ *cobra.Command, _ []string) {
 		AthenaSRSMVP:                 athenaSRSMVP,
 		AthenaLiveTX:                 athenaLiveTX,
 		AthenaResponseMaxAge:         athenaResponseMaxAge,
+		WhisperThreads:               whisperThreads,
 		AthenaCommandModulation:      athenaModulation,
 		AthenaCommandChannels:        athenaChannels,
 		AthenaPilotName:              athenaPilotName,

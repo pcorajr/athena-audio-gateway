@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/ggerganov/whisper.cpp/bindings/go/pkg/whisper"
@@ -75,7 +76,9 @@ func BenchmarkWhisperRecognizer(b *testing.B) {
 	samples := loadSamples(b)
 	model, err := whisper.New(modelPath)
 	require.NoError(b, err)
-	recognizer := NewWhisperRecognizer(&model, "Thunderhead")
+	// SKYEYE_WHISPER_THREADS compares thread counts; unset keeps the default.
+	threads, _ := strconv.Atoi(os.Getenv("SKYEYE_WHISPER_THREADS"))
+	recognizer := NewWhisperRecognizer(&model, "Thunderhead", WithThreads(uint(max(threads, 0))))
 	b.ResetTimer()
 	for _, sample := range samples {
 		b.Run(sample.filename, func(b *testing.B) {

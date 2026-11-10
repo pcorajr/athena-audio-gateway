@@ -60,7 +60,7 @@ The dynamic prompt carries the current vocabulary. The base file is a candidate 
 
 - Loopback only; one request per connection; 64 KiB body; header and body deadline 2 s.
 - Request keys are exactly `transmission_id, transcript, speaker, frequency_hz, modulation, received_at, transcribed_at`; `addressee` must be empty; speaker must be in the pilot list.
-- Responses carry `deliverable`, `speech` (at most 900 characters), `intent_class` (`factual` when deliverable), `state`. At most two deliverable parts per reply.
+- Responses carry `deliverable`, `speech` (at most 900 characters), `intent_class` (`factual` when deliverable), `state`. At most two deliverable parts per reply (wire limit). SimpleController itself sends ONE part within `MAX_REPLY_CHARS` (230 characters, about 18 s of Piper speech; the spoken debrief within `DEBRIEF_CHARS` 150), and fixed replies (kills, tally, loadout, launches, pictures, intent acks) never call the model; transcript reply records carry `route` = `fixed` | `llm` | `debrief` and `timings_ms.llm`.
 - Any contract error gives an empty 400 and the gateway stays silent. Failures mean silence or a fixed fallback line, never an invented fact.
 - The gateway owns admission, expiry, mute/live-TX interlocks, TTS and transmit. This process never touches audio.
 

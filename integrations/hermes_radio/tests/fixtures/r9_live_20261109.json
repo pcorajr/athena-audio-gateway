@@ -521,6 +521,64 @@
    "type": "F-4E-45MC"
   }
  },
+ "ground_1954": {
+  "connected": true,
+  "ground_empty_call": "No ground targets within twenty miles.",
+  "ground_targets_within_20nm": [
+   {
+    "call": "Enemy ground vehicle, forty nine contacts, bearing two nine nine, fifteen miles, ground target. Target is at your seven o'clock.",
+    "category": "ground vehicle",
+    "member_categories": [
+     "AAA",
+     "armor",
+     "artillery",
+     "ground vehicle",
+     "infantry"
+    ]
+   },
+   {
+    "call": "Enemy ground vehicle, twenty two contacts, bearing two nine one, sixteen miles, ground target. Target is at your six o'clock.",
+    "category": "ground vehicle",
+    "member_categories": [
+     "ground vehicle"
+    ]
+   },
+   {
+    "call": "Enemy ground vehicle, three contacts, bearing zero three five, seventeen miles, ground target. Target is at your ten o'clock.",
+    "category": "ground vehicle",
+    "member_categories": [
+     "ground vehicle"
+    ]
+   },
+   {
+    "call": "Enemy ground vehicle, twenty four contacts, bearing three two eight, eighteen miles, ground target. Target is at your seven o'clock.",
+    "category": "ground vehicle",
+    "member_categories": [
+     "AAA",
+     "SAM",
+     "ground vehicle"
+    ]
+   },
+   {
+    "call": "Enemy ground vehicle, three contacts, bearing zero four zero, eighteen miles, ground target. Target is at your ten o'clock.",
+    "category": "ground vehicle",
+    "member_categories": [
+     "ground vehicle"
+    ]
+   },
+   {
+    "call": "Enemy armor, bearing zero four seven, twenty miles, ground target. Target is at your ten o'clock.",
+    "category": "armor",
+    "member_categories": [
+     "armor"
+    ]
+   }
+  ],
+  "ownship": {
+   "coalition": "blue",
+   "type": "F-100D"
+  }
+ },
  "launch_2038": {
   "connected": true,
   "ownship": {
@@ -708,6 +766,408 @@
    "lon": -115.6375,
    "player_name": "Prometheus",
    "speed_kt": 543,
+   "type": "F-4E-45MC"
+  }
+ },
+ "tally_2057": {
+  "alive_totals_by_coalition": {
+   "blue": {
+    "attack": 2,
+    "fighter": 1,
+    "transport": 4
+   },
+   "red": {
+    "AAA": 5,
+    "SAM": 8,
+    "armor": 6,
+    "artillery": 1,
+    "ground vehicle": 5
+   }
+  },
+  "connected": true,
+  "last_attack_age_s": 167.1,
+  "my_kills_this_mission": [
+   {
+    "age_s": 767,
+    "category": "SAM",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 587.998,
+    "seq": 3383,
+    "shooter_id": "17084",
+    "t": 1794275075.1955342,
+    "target": "SNR 75V",
+    "target_id": 17161,
+    "target_kind": "unit",
+    "weapon": "AGM-65A"
+   },
+   {
+    "age_s": 738,
+    "category": "vehicles",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 616.979,
+    "seq": 3427,
+    "shooter_id": "17084",
+    "t": 1794275104.1625555,
+    "target": "Ural-4320T",
+    "target_id": 17175,
+    "target_kind": "unit",
+    "weapon": "AGM-65A"
+   },
+   {
+    "age_s": 616,
+    "category": "SAM",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 739.242,
+    "seq": 3557,
+    "shooter_id": "17084",
+    "t": 1794275226.4327025,
+    "target": "p-19 s-125 sr",
+    "target_id": 17170,
+    "target_kind": "unit",
+    "weapon": "AGM-65A"
+   },
+   {
+    "age_s": 530,
+    "category": "AAA",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 825.422,
+    "seq": 3663,
+    "shooter_id": "17084",
+    "t": 1794275312.6108341,
+    "target": "ZU-23 Emplacement Closed",
+    "target_id": 17176,
+    "target_kind": "unit",
+    "weapon": "AGM-65A"
+   },
+   {
+    "age_s": 441,
+    "category": "vehicles",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 914.046,
+    "seq": 3762,
+    "shooter_id": "17084",
+    "t": 1794275401.2378302,
+    "target": "Ural-4320T",
+    "target_id": 17174,
+    "target_kind": "unit",
+    "weapon": "AGM-65A"
+   },
+   {
+    "age_s": 325,
+    "category": "vehicles",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 1063.413,
+    "seq": 3921,
+    "shooter_id": "17084",
+    "t": 1794275517.7982726,
+    "target": "ZIL-131 KUNG",
+    "target_id": 17169,
+    "target_kind": "unit",
+    "weapon": "M53-APT-RED"
+   },
+   {
+    "age_s": 320,
+    "category": "vehicles",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 1070.68,
+    "seq": 3927,
+    "shooter_id": "17084",
+    "t": 1794275522.8091578,
+    "target": "ZIL-131 KUNG",
+    "target_id": 17168,
+    "target_kind": "unit",
+    "weapon": "M53-APT-RED"
+   },
+   {
+    "age_s": 230,
+    "category": "vehicles",
+    "confidence": "confirmed",
+    "how": "kill event",
+    "inferred": false,
+    "mission_time": 1177.394,
+    "seq": 4038,
+    "shooter_id": "17084",
+    "t": 1794275612.9608011,
+    "target": "ATMZ-5",
+    "target_id": 17172,
+    "target_kind": "unit",
+    "weapon": "M56A3-HE-RED"
+   }
+  ],
+  "my_shots_last_15_min": {
+   "by_result": {
+    "kill": 6,
+    "miss": 3
+   },
+   "shots": [
+    {
+     "age_s": 789,
+     "count": 1,
+     "hit": {
+      "category": "SAM",
+      "coalition": "red",
+      "id": 17161,
+      "kind": "unit",
+      "name": "Ground-8-1",
+      "player": null,
+      "type": "SNR_75V"
+     },
+     "intended_target": {
+      "category": "AAA",
+      "coalition": "red",
+      "group": "Ground-5",
+      "group_count_at_launch": 1,
+      "id": 17158,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-5-1",
+      "off_nose_deg": 0,
+      "player": null,
+      "range_nm_at_launch": 4.1,
+      "type": "ZU-23 Emplacement Closed"
+     },
+     "kind": "missile",
+     "result": "kill",
+     "weapon": "AGM-65A"
+    },
+    {
+     "age_s": 630,
+     "count": 1,
+     "hit": {
+      "category": "SAM",
+      "coalition": "red",
+      "id": 17170,
+      "kind": "unit",
+      "name": "Ground-8-10",
+      "player": null,
+      "type": "p-19 s-125 sr"
+     },
+     "intended_target": {
+      "category": "SAM",
+      "coalition": "red",
+      "group": "Ground-8",
+      "group_count_at_launch": 13,
+      "id": 17164,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-8-4",
+      "off_nose_deg": 0,
+      "player": null,
+      "range_nm_at_launch": 2.9,
+      "type": "S_75M_Volhov"
+     },
+     "kind": "missile",
+     "result": "kill",
+     "weapon": "AGM-65A"
+    },
+    {
+     "age_s": 541,
+     "count": 1,
+     "hit": {
+      "category": "AAA",
+      "coalition": "red",
+      "id": 17176,
+      "kind": "unit",
+      "name": "Ground-9-1",
+      "player": null,
+      "type": "ZU-23 Emplacement Closed"
+     },
+     "intended_target": {
+      "category": "ground vehicle",
+      "coalition": "red",
+      "group": "Ground-8",
+      "group_count_at_launch": 11,
+      "id": 17174,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-8-14",
+      "off_nose_deg": 0,
+      "player": null,
+      "range_nm_at_launch": 2.7,
+      "type": "Ural-4320T"
+     },
+     "kind": "missile",
+     "result": "kill",
+     "weapon": "AGM-65A"
+    },
+    {
+     "age_s": 456,
+     "count": 1,
+     "hit": {
+      "category": "ground vehicle",
+      "coalition": "red",
+      "id": 17174,
+      "kind": "unit",
+      "name": "Ground-8-14",
+      "player": null,
+      "type": "Ural-4320T"
+     },
+     "intended_target": {
+      "category": "AAA",
+      "coalition": "red",
+      "group": "Ground-7",
+      "group_count_at_launch": 1,
+      "id": 17160,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-7-1",
+      "off_nose_deg": 0,
+      "player": null,
+      "range_nm_at_launch": 3.0,
+      "type": "ZU-23 Emplacement Closed"
+     },
+     "kind": "missile",
+     "result": "kill",
+     "weapon": "AGM-65A"
+    },
+    {
+     "age_s": 339,
+     "count": 340,
+     "hits": 0,
+     "intended_target": {
+      "category": "ground vehicle",
+      "coalition": "red",
+      "group": "Ground-8",
+      "group_count_at_launch": 10,
+      "id": 17168,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-8-8",
+      "off_nose_deg": 1,
+      "player": null,
+      "range_nm_at_launch": 1.0,
+      "type": "ZIL-131 KUNG"
+     },
+     "kind": "gun",
+     "result": "miss",
+     "weapon": "gun, 340 rounds",
+     "weapon_from": "loadout change"
+    },
+    {
+     "age_s": 337,
+     "hit": {
+      "category": "SAM",
+      "coalition": "red",
+      "id": 17167,
+      "kind": "unit",
+      "name": "Ground-8-7",
+      "player": null,
+      "type": "S_75M_Volhov"
+     },
+     "hits": 30,
+     "intended_target": {
+      "category": "ground vehicle",
+      "coalition": "red",
+      "group": "Ground-8",
+      "group_count_at_launch": 10,
+      "id": 17168,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-8-8",
+      "off_nose_deg": 0,
+      "player": null,
+      "range_nm_at_launch": 0.7,
+      "type": "ZIL-131 KUNG"
+     },
+     "kind": "gun",
+     "no_longer_showing": [
+      "ZIL-131 KUNG",
+      "ZIL-131 KUNG"
+     ],
+     "result": "kill",
+     "weapon": "M-61A1"
+    },
+    {
+     "age_s": 245,
+     "count": 226,
+     "hit": {
+      "category": "ground vehicle",
+      "coalition": "red",
+      "id": 17172,
+      "kind": "unit",
+      "name": "Ground-8-12",
+      "player": null,
+      "type": "ATMZ-5"
+     },
+     "hits": 6,
+     "intended_target": {
+      "category": "ground vehicle",
+      "coalition": "red",
+      "group": "Ground-8",
+      "group_count_at_launch": 8,
+      "id": 17172,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-8-12",
+      "off_nose_deg": 1,
+      "player": null,
+      "range_nm_at_launch": 0.5,
+      "type": "ATMZ-5"
+     },
+     "kind": "gun",
+     "no_longer_showing": [
+      "ATMZ-5"
+     ],
+     "result": "kill",
+     "weapon": "gun, 226 rounds",
+     "weapon_from": "loadout change"
+    },
+    {
+     "age_s": 219,
+     "count": 57,
+     "hits": 0,
+     "intended_target": {
+      "category": "armor",
+      "coalition": "red",
+      "group": "Ground-18",
+      "group_count_at_launch": 1,
+      "id": 17187,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-18-1",
+      "off_nose_deg": 22,
+      "player": null,
+      "range_nm_at_launch": 5.4,
+      "type": "BTR-80"
+     },
+     "kind": "gun",
+     "result": "miss",
+     "weapon": "gun, 57 rounds",
+     "weapon_from": "loadout change"
+    },
+    {
+     "age_s": 167,
+     "count": 16,
+     "hits": 0,
+     "intended_target": {
+      "category": "SAM",
+      "coalition": "red",
+      "group": "Ground-8",
+      "group_count_at_launch": 7,
+      "id": 17166,
+      "method": "guess: enemy nearest the nose at launch",
+      "name": "Ground-8-6",
+      "off_nose_deg": 1,
+      "player": null,
+      "range_nm_at_launch": 0.8,
+      "type": "S_75M_Volhov"
+     },
+     "kind": "gun",
+     "result": "miss",
+     "weapon": "gun, 16 rounds",
+     "weapon_from": "loadout change"
+    }
+   ],
+   "total": 9
+  },
+  "ownship": {
+   "coalition": "blue",
    "type": "F-4E-45MC"
   }
  }

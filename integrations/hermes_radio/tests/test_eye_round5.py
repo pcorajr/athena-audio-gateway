@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from integrations.hermes_radio.contract import MAX_SPEECH_CHARS, encode_response
 from integrations.hermes_radio.eye import Eye, GrpcFeeder, RAW_SAMPLE_CHARS, norm_unit
-from integrations.hermes_radio.simple_controller import CLASS_HINTS, PROMPT, SimpleController, call_class
+from integrations.hermes_radio.simple_controller import CLASS_HINTS, MAX_REPLY_CHARS, PROMPT, SimpleController, call_class
 from integrations.hermes_radio.tests import eye_fixture as fx
 from integrations.hermes_radio.tests.test_eye_round4 import A10, Clock, FakeTranscript, LUA, req, store_rows
 
@@ -56,10 +56,11 @@ class TrafficTests(unittest.TestCase):
         self.assertEqual([list(g["types"])[0] for g in pic["air_traffic"]["blue"]], ["F-16C_50", "UH-1H"])
         for text in ("any blue traffic near me", "confirm only blue traffic", "blue only"):
             speech, _, _ = exchange(eye, text)
-            self.assertIn("F-16C", speech)
-            self.assertIn("UH-1H", speech)
+            self.assertIn("F-16C", speech)  # phase 0 budget: the nearest call whole, the rest counted
+            self.assertIn("Plus one more.", speech)
             self.assertNotIn("armor", speech)
-            self.assertEqual(speech.count("bearing"), 2)
+            self.assertEqual(speech.count("bearing"), 1)
+            self.assertLessEqual(len(speech), MAX_REPLY_CHARS)
 
     def test_ground_traffic_is_explicit_exception(self):
         self.assertNotEqual(call_class("confirm blue ground traffic", {"last_attack_age_s": 5}), "traffic")
@@ -119,26 +120,22 @@ class AirPictureTests(unittest.TestCase):
                                               eye=eye, llm=lambda _: "Three bandits overhead.")
                 with patch.object(eye, "picture", return_value=pic), patch.object(eye, "mark_announced") as mark:
                     frames = list(controller.stream(req("air picture")))
-                self.assertLessEqual(len(frames), 2)
-                self.assertLessEqual(sum(len(f["speech"]) for f in frames), MAX_SPEECH_CHARS)
+                self.assertEqual(len(frames), 1)  # phase 0: one frame within the one reply budget
                 for frame in frames:
                     encode_response(frame)
-                speech = " ".join(f["speech"] for f in frames)
-                self.assertLessEqual(len(speech), MAX_SPEECH_CHARS)
-                for call in base["picture_top3"]:
-                    self.assertIn(call, speech)
-                rwr_count = sum(1 for i in range(count) if "Spike, SA-11 at your three o'clock, contact number %d." % i in speech)
-                splash_count = sum(1 for i in range(count) if "Splash one T-55, target number %d." % i in speech)
-                expected = rwr_keys[:rwr_count] + splash_keys[:splash_count]
-                if expected:
-                    self.assertEqual([[k for k in c.args[0] if not str(k).startswith('close-bandit')] for c in mark.call_args_list], [expected])  # 20 nm close-bandit keys tested in test_final_tiers
-                else:
-                    self.assertFalse([k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')])
-                if count == 4:
-                    self.assertEqual(rwr_count + splash_count, count * 2)
-                    self.assertEqual(len(frames), 2)  # everything fits; second frame carries the rest
-                if count == 30:
-                    self.assertLess(rwr_count + splash_count, count * 2)
+                speech = frames[0]["speech"]
+                self.assertLessEqual(len(speech), MAX_REPLY_CHARS)
+                self.assertIn(base["picture_top3"][0], speech)  # nearest group whole, never clipped
+                for call in base["picture_top3"][1:]:
+                    self.assertNotIn(call.split(".")[0], speech)  # dropped whole, not half
+                self.assertIn("Plus two more.", speech)
+                rwr_said = [k for i, k in enumerate(rwr_keys) if "contact number %d." % i in speech]
+                splash_said = [k for i, k in enumerate(splash_keys) if "target number %d." % i in speech]
+                marked = [k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')]
+                self.assertEqual(marked, rwr_said + splash_said)  # only what was actually said is announced
+                if count:
+                    self.assertTrue(rwr_said)  # alerts ride in the room left by the picture
+                    self.assertLess(len(rwr_said) + len(splash_said), count * 2)  # the rest stay pending
 
     def test_oversize_requested_calls_are_reported_not_silently_truncated(self):
         eye, _ = make_eye(contact(1))
@@ -146,6 +143,7 @@ class AirPictureTests(unittest.TestCase):
         pic["picture_top3"] = ["Bandit " + "long type " * 100 + ". At your twelve o'clock, high."]
         pic["rwr_alert_to_announce"] = ["Spike, SA-11."]
         pic["_rwr_keys"] = ["pending-spike"]
+        pic["_close_bandits"] = []  # (a close bandit would be said first, then "Ask again for the rest.")
         log = FakeTranscript()
         controller = SimpleController(None, log, model="fixture", api_key="unused", eye=eye,
                                       llm=lambda _: "Three bandits overhead.")
@@ -158,18 +156,19 @@ class AirPictureTests(unittest.TestCase):
         self.assertTrue(any(r.get("outcome") == "fixed_response_overflow" for r in log.records))
         self.assertFalse([k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')])
 
-    def test_three_closest_with_full_format_and_no_character_truncation(self):
+    def test_closest_with_full_format_and_no_character_truncation(self):
         eye, _ = make_eye(*(contact(i, distance=d) for i, d in enumerate((19, 29, 39, 45, 51), 1)))
         pic = eye.picture()
         self.assertEqual(len(pic["picture_top3"]), 3)
         for text in ("air picture", "bogey dope", "give me the picture"):  # mission status = overview
             speech, _, _ = exchange(eye, text)
-            for line in pic["picture_top3"]:
-                self.assertIn(line, speech)
-            self.assertEqual(speech.count("Bandit Su-27 one-ship"), 3)
-            self.assertEqual(speech.count("bearing"), 3)
-            self.assertEqual(speech.count("angels"), 3)
-            self.assertEqual(speech.count("At your"), 3)
+            self.assertLessEqual(len(speech), MAX_REPLY_CHARS)
+            kept = [line for line in pic["picture_top3"] if line in speech]
+            self.assertEqual(kept, pic["picture_top3"][:len(kept)])  # nearest first, whole calls only
+            self.assertGreaterEqual(len(kept), 1)
+            for word in ("Bandit Su-27 one-ship", "bearing", "angels", "At your"):
+                self.assertEqual(speech.count(word), len(kept), word)
+            self.assertIn("Plus %s more." % ("two" if len(kept) == 1 else "one"), speech)
             self.assertNotIn("overhead", speech)
             self.assertNotIn("more groups", speech)
             self.assertNotIn("fifty one", speech)
@@ -204,7 +203,7 @@ class AirPictureTests(unittest.TestCase):
 
     def test_ground_picture_still_routes_to_ground(self):
         self.assertEqual(call_class("give me the ground picture"), "ground_picture")
-        self.assertEqual(call_class("bearing to enemy armor"), "bearing_one")
+        self.assertIsNone(call_class("bearing to enemy armor"))  # phase 0: bearings are the model's job
 
     def test_stale_air_picture_is_labeled_not_discarded(self):
         eye, clock = make_eye(contact(1))
@@ -373,7 +372,7 @@ class AttackFollowupTests(unittest.TestCase):
         pic = {"last_attack_age_s": 5}
         for text, expected in (("confirm only blue traffic", "traffic"), ("confirm fuel", None),
                                ("confirm gear down", None), ("confirm picture", "picture"),
-                               ("confirm bearing to enemy armor", "bearing_one")):
+                               ("confirm bearing to enemy armor", None)):
             self.assertEqual(call_class(text, pic), expected)
 
     def test_confirm_chaos_answers_kills_without_upgrading_likely(self):
@@ -386,7 +385,7 @@ class AttackFollowupTests(unittest.TestCase):
         self.assertIn("Likely: one Infantry AK", speech)
         self.assertNotIn("Bandit", speech)
         self.assertTrue(eye.my_kills[0]["likely"])
-        self.assertIn(CLASS_HINTS["kill_confirm"], [m["content"] for m in messages])
+        self.assertEqual(messages, [])  # phase 0: the fixed kill answer never calls the model
 
     def test_last_attack_age_uses_end_of_burst(self):
         eye, clock = make_eye()

@@ -6,7 +6,7 @@ import unittest
 
 from integrations.hermes_radio.contract import Request
 from integrations.hermes_radio.eye import (Eye, bearing_range, classify, clock_phrase, norm_unit, weapon_kind)
-from integrations.hermes_radio.simple_controller import FALLBACK, SimpleController, split_parts
+from integrations.hermes_radio.simple_controller import FALLBACK, MAX_REPLY_CHARS, SimpleController, fit_reply
 from integrations.hermes_radio.tests import eye_fixture as fx
 
 
@@ -350,7 +350,7 @@ class ControllerTests(unittest.TestCase):
             seen.append(messages)
             return "Prometheus, Athena, two bandits, bearing zero six zero, twenty miles, angels twenty five, your eleven o'clock, hot."
         c = self.controller(llm)
-        parts = list(c.stream(req("picture")))  # no "Athena" prefix needed
+        parts = list(c.stream(req("how is it looking")))  # no "Athena" prefix needed; no fixed route -> model
         self.assertTrue(parts[0]["deliverable"])
         self.assertIn("bearing zero six zero", " ".join(p["speech"] for p in parts))
         picture = [m for m in seen[0] if m["content"].startswith("PICTURE ")][0]["content"]
@@ -472,14 +472,15 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(results["second"][0], 200)
         self.assertIn("copy second", json.loads(results["second"][1])["speech"])
 
-    def test_split_parts(self):
+    def test_fit_reply_one_budget(self):
         answer = "Prometheus, Athena, picture. " + " ".join("Group %d, bearing zero four zero, ten miles." % i
                                                          for i in range(30))
-        parts = split_parts(answer)
-        self.assertEqual(parts[0], "Prometheus, Athena, picture.")
-        self.assertTrue(all(len(p) <= 420 for p in parts))
-        self.assertEqual(" ".join(parts), answer)
-        self.assertEqual(split_parts("Prometheus, Athena, loud and clear."), ["Prometheus, Athena, loud and clear."])
+        text, trimmed = fit_reply(answer)
+        self.assertTrue(trimmed)
+        self.assertTrue(text.startswith("Prometheus, Athena, picture. Group 0,"))
+        self.assertLessEqual(len(text), MAX_REPLY_CHARS)
+        self.assertIn(text, answer)
+        self.assertEqual(fit_reply("Prometheus, Athena, loud and clear."), ("Prometheus, Athena, loud and clear.", False))
 
 
 if __name__ == "__main__":

@@ -439,7 +439,7 @@ class ControllerRound2Tests(unittest.TestCase):
         c = SimpleController(None, FakeTranscript(), model="test", api_key="x", eye=eye, llm=llm)
         list(c.stream(req("Athena, acknowledge my last transmission.")))
         list(c.stream(req("-")))
-        list(c.stream(req("what do I have left", tid="t3")))
+        list(c.stream(req("how is it looking", tid="t3")))  # phase 0: fixed replies (loadout) skip the model
         self.assertEqual(seen[0]["splash_to_announce"], ["Splash one T-72B"])
         self.assertNotIn("_splash_keys", seen[0])
         self.assertNotIn("splash_to_announce", seen[1])  # announced once

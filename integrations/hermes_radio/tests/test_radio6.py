@@ -341,11 +341,31 @@ class ReviewFix3Tests(unittest.TestCase):
             rows.append(row)
         return rows
 
-    def test_overflowed_confirmation_does_not_acknowledge(self):
+    BANDIT = [{"key": "close-bandit-9", "call": "Bandit MiG-29S " + "very long call " * 9 + "one mile."}]
+
+    def mixed_kills(self):
+        rows = self.many_kills()
+        for i, row in enumerate(rows):
+            row["category"] = ("armor", "SAM", "AAA", "infantry")[i % 4]
+        return rows
+
+    def test_long_confirmation_names_kill_groups_within_budget(self):
         eye = FakeEye()
         eye.pic["my_kills_this_mission"] = self.many_kills()
         c = self.controller(eye)
-        self.assertIn("too long for one transmission", say(c, "confirm kills"))
+        said = say(c, "confirm kills")
+        self.assertEqual(said, "Prometheus, Athena, Confirmed: sixty armor.")  # grouped, not 60 type names
+        self.assertIn("No new kills", say(c, "confirm kills"))  # it was said, so it is acknowledged
+
+    def test_overflowed_confirmation_does_not_acknowledge(self):
+        eye = FakeEye()
+        eye.pic["my_kills_this_mission"] = self.mixed_kills()
+        eye.pic["_close_bandits"] = self.BANDIT  # the bandit goes first; the kill line no longer fits
+        c = self.controller(eye)
+        said = say(c, "confirm kills")
+        self.assertIn("Ask again for the rest.", said)
+        self.assertNotIn("Confirmed", said)
+        del eye.pic["_close_bandits"]
         eye.pic["my_kills_this_mission"] = self.many_kills()[:1]
         self.assertIn("splash one Target type number 00", say(c, "confirm kill"))
 
@@ -354,8 +374,10 @@ class ReviewFix3Tests(unittest.TestCase):
         eye.pic["my_kills_this_mission"] = self.many_kills("likely")[:1]
         c = self.controller(eye)
         self.assertIn("Likely", say(c, "confirm kill"))
-        eye.pic["my_kills_this_mission"] = self.many_kills()
-        self.assertIn("too long for one transmission", say(c, "confirm kills"))
+        eye.pic["my_kills_this_mission"] = self.mixed_kills()
+        eye.pic["_close_bandits"] = self.BANDIT
+        self.assertIn("Ask again for the rest.", say(c, "confirm kills"))
+        del eye.pic["_close_bandits"]
         eye.pic["my_kills_this_mission"] = self.many_kills()[:1]
         self.assertIn("Now confirmed, earlier likely", say(c, "confirm kill"))
 

@@ -2,7 +2,7 @@
 spoken debrief summary."""
 import unittest
 
-from integrations.hermes_radio.simple_controller import SimpleController, call_class, debrief_summary
+from integrations.hermes_radio.simple_controller import MAX_REPLY_CHARS, SimpleController, call_class, debrief_summary
 from integrations.hermes_radio.tests.test_eye_round4 import FakeTranscript, req
 from integrations.hermes_radio.tests.test_eye_round5 import contact, make_eye
 
@@ -32,7 +32,9 @@ class TierTests(unittest.TestCase):
         eye, _ = make_eye(*(contact(i, "F-5E-3", distance=d) for i, d in enumerate((30, 90, 140, 160), 1)))
         self.assertEqual(call_class("Athena, long range picture"), "long_picture")
         said = speech(eye, "Athena, long range picture")
-        self.assertEqual(said.count("Bandit"), 3, said)
+        self.assertIn("Bandit F-5E-3 one-ship, bearing zero nine zero, thirty miles", said)  # nearest first
+        self.assertIn("Plus two more.", said, said)  # phase 0 budget: the rest are counted, not read
+        self.assertLessEqual(len(said), MAX_REPLY_CHARS)
         self.assertNotIn("one hundred sixty", said)
 
     def test_ground_targets_only_within_20(self):
@@ -166,7 +168,7 @@ class Final8bReviewTests(unittest.TestCase):
 
 
 class Final8cReviewTests(unittest.TestCase):
-    def test_close_bandit_rides_a_long_ground_reply_when_two_frames_fit(self):
+    def test_close_bandit_goes_first_and_the_ground_reply_fills_the_rest(self):
         units = [contact(i, "Ural-375", "red", "GROUND", distance=3 + i * 2, bearing=i * 40) for i in range(1, 4)]
         units.append(contact(9, "MiG-29S", distance=5, bearing=300))
         eye, _ = make_eye(*units)
@@ -174,9 +176,14 @@ class Final8cReviewTests(unittest.TestCase):
                              llm=lambda m: "Prometheus, Athena, LLM.")
         frames = list(c.stream(req("Athena, ground picture")))
         said = " ".join(f["speech"] for f in frames)
-        self.assertLessEqual(len(frames), 2)
-        self.assertIn("MiG-29S", said)
-        self.assertIn("ground target", said)
+        self.assertEqual(len(frames), 1)
+        self.assertLessEqual(len(said), MAX_REPLY_CHARS)
+        self.assertTrue(said.startswith("Prometheus, Athena, Bandit MiG-29S"), said)
+        self.assertTrue(said.endswith("Ask again for the rest."), said)  # no ground call fits behind it
+        again = " ".join(f["speech"] for f in c.stream(req("Athena, ground picture")))
+        self.assertNotIn("MiG-29S", again)  # the bandit was said once
+        self.assertIn("ground target", again)
+        self.assertIn("Plus two more.", again)
 
 
 if __name__ == "__main__":

@@ -33,7 +33,7 @@ Facts that matter:
 - event_stream.state other than "live" means shot and kill reports may be missing; mention it only when asked about shots or kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 - cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
-- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_inbound and threats.sam_in_range calls instead ("SAM SA-11 could be tracking you, ..."); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see."
+- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls instead ("SAM SA-11 could be tracking you, ..."); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
 - Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
 - Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
@@ -77,7 +77,7 @@ FOCUS_RULES = (
                        r"(locking|locked on|lock on|tracking|targeting|looking at) me\b|am i (being )?locked\b(?! on)|"
                        r"anyone locking|launch|missile inbound|threats? on me)", re.I),
      "cockpit.rwr.threats (type, signal, clock); empty with fresh cockpit = RWR clean; when threats.rwr_source is "
-     "grpc_inferred use threats.missiles_inbound and threats.sam_in_range"),
+     "grpc_inferred use threats.missiles_in_flight (else missiles_inbound) and threats.sam_in_range"),
     ("fuel", re.compile(r"\b(fuel|bingo|joker|gas)\b", re.I),
      "ownship.fuel (total_lb pounds, else internal_pct percent; known false = fuel unknown)"),
     ("gear", re.compile(r"\b(gear|wheels|flaps|speed ?brakes?|hook|configured|configuration)\b", re.I),
@@ -184,7 +184,7 @@ CLASS_HINTS = {
     "intent": "INTENT CALL: short acknowledgement only.",
     "impact": "IMPACT / RESULT CHECK: report the latest weapon's result only.",
     "loadout": "LOADOUT: remaining weapons and gun rounds only; if the pilot also asks what they are flying, name the aircraft type first.",
-    "launch": "MISSILE LAUNCH REPORT: read EVERY missile in threats.missiles_inbound (type, clock, range), not only the named type; "
+    "launch": "MISSILE LAUNCH REPORT: read EVERY missile in threats.missiles_in_flight (spoken_name, clock, range; one row per missile id; missiles_inbound only if absent), not only the named type; "
               "none = no missile in the air that I can see.",
     "bearing_one": "BEARING REQUEST: give ONLY the nearest matching group's call line (hostile_groups are nearest "
                    "first), not every group.",
@@ -277,12 +277,20 @@ def loadout_calls(own, text=""):
         lead = "You're flying %s %s. " % ("an" if craft[0].upper() in "AEFHILMNORSX" else "a", craft)
     if not lo.get("available"):
         return [lead.strip()] if lead else None
-    items = ["%s %s" % (w.get("weapon"), words(w["count"])) for w in lo.get("weapons", [])
-             if w.get("count") and w.get("weapon") and not NON_WEAPON.search(w["weapon"])]
+    def label(w):
+        return w.get("spoken_name") or w.get("weapon")
+    items = ["%s %s" % (label(w), words(w["count"])) for w in lo.get("weapons", [])
+             if w.get("count") and label(w) and not NON_WEAPON.search(str(label(w)))]
+    pods = []  # pods are carried stores, never weapons: listed after the weapons, never counted as fired
+    for w in lo.get("weapons", []):
+        name = str(label(w) or "")
+        if re.search(r"\bpod\b", name, re.I) and not re.search(r"HB-|ALE|ORD", name) and name not in pods:
+            pods.append(name)
+    tail = (" Pods: %s." % _join_and(pods)) if pods else ""
     rounds = lo.get("gun_rounds")
     if rounds:
         items.append("gun %s rounds" % words(rounds))
-    return [lead + ("You have " + ", ".join(items) + "." if items else "Winchester, no weapons left.")]
+    return [lead + ("You have " + ", ".join(items) + "." if items else "Winchester, no weapons left.") + tail]
 
 
 def intent_ack(text):
@@ -626,9 +634,10 @@ class SimpleController:
         if isinstance(pic.get("threats"), dict):
             th = pic["threats"]
             out["rwr_source"] = th.get("rwr_source")
-            if th.get("sam_in_range") or th.get("missiles_inbound"):
+            flight = th.get("missiles_in_flight") if isinstance(th.get("missiles_in_flight"), list) else th.get("missiles_inbound")
+            if th.get("sam_in_range") or flight:
                 out["threats"] = {"sam": len(th.get("sam_in_range") or []),
-                                  "missiles": len(th.get("missiles_inbound") or [])}
+                                  "missiles": len(flight or [])}
         if isinstance(es, dict) and es.get("kinds_total"):
             out["event_kinds"] = es["kinds_total"]
         if isinstance(hostile, list) and hostile and isinstance(hostile[0], dict) and "clock" in hostile[0]:
@@ -811,20 +820,35 @@ class SimpleController:
         age = pic.get("last_attack_age_s")
         return age is not None and 0 <= age <= RELEASE_WINDOW_S and not cats
     def launch_calls(self, text, pic):
-        """Every missile in flight near the pilot (not only the named type); 'same missile' on a repeat ask."""
+        """Every missile in flight near the pilot (not only the named type); 'same missile' / 'new launch' by id.
+        Reads the Eye's one-row-per-missile threats.missiles_in_flight; missiles_inbound only when it is absent."""
         threats = pic.get("threats")
-        if not isinstance(threats, dict) or "missiles_inbound" not in threats:
+        if not isinstance(threats, dict):
+            return None
+        source = "missiles_in_flight" if isinstance(threats.get("missiles_in_flight"), list) else "missiles_inbound"
+        if source not in threats:
             return None
         now = time.time()
         self._reported_missiles = {k: v for k, v in self._reported_missiles.items() if now - v[1] <= 180}
-        missiles = sorted((m for m in threats.get("missiles_inbound") or [] if isinstance(m, dict)),
-                          key=lambda m: m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else 1e9)
+        rows, ids = [], set()
+        for m in threats.get(source) or []:
+            if not isinstance(m, dict):
+                continue
+            ident = m.get("id", m.get("missile_id", m.get("weapon_id")))
+            if ident is not None:
+                if ident in ids:
+                    continue  # one missile listed twice (shot-event row + live row)
+                ids.add(ident)
+            rows.append(m)
+        missiles = sorted(rows, key=lambda m: m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else 1e9)
         self._last_launch_reply = now
         if not missiles:
             return ["No missile in the air that I can see."]
         def key(m):
             ident = m.get("id", m.get("missile_id", m.get("weapon_id")))
-            return ("id", ident) if ident is not None else (m.get("type"), m.get("launcher"))
+            return ("id", str(ident)) if ident is not None else (m.get("type"), m.get("launcher"))
+        def name_of(m):
+            return _missile_name(m.get("spoken_name") or m.get("type"))
         def where(m):
             bits = []
             if m.get("clock") is not None:
@@ -839,24 +863,31 @@ class SimpleController:
             return old is not None and (key(m)[0] == "id" or not isinstance(r, (int, float)) or old[0] is None
                                         or r <= old[0] + 2)
         shown = missiles[:3]
-        same = len(missiles) == 1 and ANOTHER_ASK.search(text or "") and seen(missiles[0])
+        asked_another = bool(ANOTHER_ASK.search(text or ""))
+        had_before = bool(self._reported_missiles)
+        was_seen = [seen(m) for m in shown]
+        same = len(missiles) == 1 and asked_another and was_seen[0]
         for m in shown:
             self._reported_missiles[key(m)] = (m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else None, now)
-        names = [_missile_name(m.get("type")) for m in shown]
-        named = _named_missile(text)
-        lines = []
+        names = [name_of(m) for m in shown]
         if same:
-            lines.append("Same missile, %s in the air, %s." % (names[0], where(shown[0])))
-            return lines
+            return ["Same missile, %s in the air, %s." % (names[0], where(shown[0]))]
+        named = _named_missile(text)
         lead = ""
-        if named and not any(named.lower() in n.lower() for n in _missile_name_set(missiles)):
+        if named and not any(named.lower() in n.lower() for n in names + [name_of(m) for m in missiles]):
             lead = "Negative %s; " % named
-        for i, (m, name) in enumerate(zip(shown, names)):
-            span = where(m)
-            if i == 0:
-                lines.append("%s%s in the air%s." % (lead, name, (", " + span) if span else ""))
+        fresh = [i for i, ok in enumerate(was_seen) if not ok] if (asked_another and had_before) else []
+        order = fresh + [i for i in range(len(shown)) if i not in fresh]
+        lines = []
+        for pos, i in enumerate(order):
+            span = where(shown[i])
+            tail = (", " + span) if span else ""
+            if pos == 0 and fresh:
+                lines.append("%sNew launch, %s in the air%s." % (lead, names[i], tail))
+            elif pos == 0:
+                lines.append("%s%s in the air%s." % (lead, names[i], tail))
             else:
-                lines.append("Also %s%s." % (name, (", " + span) if span else ""))
+                lines.append("Also %s%s." % (names[i], tail))
         if len(missiles) > 3:
             lines.append("Plus %s more." % words(len(missiles) - 3))
         return lines

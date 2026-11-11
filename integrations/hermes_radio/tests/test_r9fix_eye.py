@@ -5,7 +5,7 @@ import unittest
 from integrations.hermes_radio import cockpit as cp
 from integrations.hermes_radio.eye import Eye, spoken_type
 from integrations.hermes_radio.tests import eye_fixture as fx
-from integrations.hermes_radio.tests.test_eye_round4 import F4E, SA11_LN, f4e_eye, f4e_packet
+from integrations.hermes_radio.tests.test_eye_round4 import F4E, SA11_LN, SA11_SR, f4e_eye, f4e_packet
 from integrations.hermes_radio.tests.test_eye_round5 import contact, make_eye
 
 
@@ -89,18 +89,33 @@ class MissileIdentityTests(unittest.TestCase):
         self.assertEqual([m["id"] for m in pic["threats"]["missiles_in_flight"]], ["778"])
 
     def test_same_missile_once_shot_event_plus_eval(self):
-        eye, clock = f4e_eye(extra=(SA11_LN,))
+        # Phase 1 (R3 T1): live, the shot-event id is invented by the overlay and NEVER equals the scan's real id;
+        # DCS also names the SA-2/SA-11 radar as the scan's launcher. Use different ids and launchers, as live.
+        eye, clock = f4e_eye(extra=(SA11_SR, SA11_LN))
         eye.on_cockpit_packet(f4e_packet())
-        eye.on_event(self.shot(779, 281.0))
-        first_seen = eye.picture()["threats"]["missiles_in_flight"][0]["first_seen"]
-        clock.t += 3
+        eye.on_weapons([])  # the 1 Hz scan is running
+        eye.on_event(self.shot(4294967294, 281.0))
+        first = eye.picture()["threats"]["missiles_in_flight"]
+        self.assertEqual([m["id"] for m in first], ["4294967294"])  # bridge row before the scan sees it
+        first_seen = first[0]["first_seen"]
+        clock.t += 1
         lat, lon = fx.offset(95, 8)
-        eye.on_weapons([{"id": 779, "type": "SA2V755", "lat": lat, "lon": lon, "alt": 2000, "vn": 0, "ve": -600,
-                         "coal": 1, "target": "Aerial-3-2", "launcher": "SAM LN"}])
-        flight = eye.picture()["threats"]["missiles_in_flight"]
-        self.assertEqual([m["id"] for m in flight], ["779"])  # one missile, not two
+        eye.on_weapons([{"id": 16786433, "type": "SA2V755", "lat": lat, "lon": lon, "alt": 2000, "vn": 0, "ve": -600,
+                         "coal": 1, "target": "Aerial-3-2", "launcher": "SAM SR",
+                         "launcher_type": "SA-11 Buk SR 9S18M1"}])
+        pic = eye.picture()
+        flight = pic["threats"]["missiles_in_flight"]
+        self.assertEqual([m["id"] for m in flight], ["16786433"])  # one missile, not two
         self.assertEqual(flight[0]["first_seen"], first_seen)
         self.assertEqual(flight[0]["range_nm"], 8.0)
+        self.assertEqual([m["id"] for m in pic["threats"]["missiles_inbound"]], ["16786433"])
+        self.assertEqual([a["kind"] for a in eye.threat_alerts], ["missile launch"])  # ONE launch alert
+        clock.t += 1
+        eye.on_weapons([])  # the missile left the scan: it is gone
+        eye.tick()
+        pic = eye.picture()
+        self.assertEqual(pic["threats"]["missiles_in_flight"], [])
+        self.assertFalse([c for c in pic.get("rwr_alert_to_announce", []) if c.startswith("Missile launch")])
 
     def test_new_launch_gets_new_id(self):
         eye, _ = f4e_eye(extra=(SA11_LN,))

@@ -27,6 +27,33 @@ Shot results also drop superseded credit: a real hit remains "hit"; without a hi
 "kill credited to another shooter". Area shots retain "kill" (or a likely result) while another
 target still supports pilot credit. my_shots_last_15_min.by_result uses those corrected results.
 Mission start/reset clears all tallies/history; sequence numbers never rewind.
+
+Phase 1 item 3 (2026-11-10): every earlier picture key keeps its name and meaning. New or changed keys:
+- Unit category (every `category`): classify() is the ONE labeller. Order: TYPE_OVERRIDES (types the 2026-11 review
+  proved wrong) > aircraft type sets > DCS's own attributes (Unit.getDescByName(type).attributes, read once per type
+  over the Eval channel and cached in TYPE_INFO) > the old name patterns (only when DCS gave nothing).
+- threats.missiles_in_flight: the live Eval weapon scan is the only source. A shot event only bridges the first
+  BRIDGE_S seconds (row "from": "shot event, not yet in the live scan") and is merged into the scan row (by launcher
+  group + type + launch point); a missile that left the scan is gone. With the scan off (Eval disabled) shot rows
+  stay EVAL_OFF_KEEP_S with "from": "shot event (no live scan)". threats.missiles_inbound = the subset of the same
+  rows aimed at Prometheus or closing (no second source). One launch alert per missile; an alert expires when its
+  missile is gone and its call is rebuilt from the live row.
+- threats.sam_in_range rows gain "confidence": "DCS radar: tracking you" | "DCS radar: sees you" |
+  "DCS radar: searching" | "range only: could be tracking". DCS radar rows come from a 1 Hz read-only Eval of
+  hostile radars (Unit:getRadar + group radar detection, threats.sam_radar) and win over the range table; a SAM
+  group whose radar DCS reports off or dead is not listed. The range table is the fallback, with RANGE_HYST_NM
+  hysteresis (no edge flicker). New: threats.sam_source ("dcs_radar" | "range_table"), threats.sam_radar
+  {available, age_s, source, confidence, tracking_you[], radars_on}.
+- connected: True while ANY DCS-gRPC stream is up (one bad stream no longer reads as "DCS disconnected").
+  New data_health: {connected, streams{name: up|down ...}, events, combat_events, unit_sync, note}.
+  event_stream.state may now also read "stale (heartbeat stopped; resubscribing)" (30 s when the 1 Hz
+  simulation_fps heartbeat was flowing) or "combat events missing (kills may be unconfirmed)".
+- After a unit stream (re)subscribes, units of that category that DCS does not re-send within the sync window are
+  removed (recent_kills_and_losses row "no longer showing (missed during a data outage)", no kill credit).
+- ownship.fuel: Unit:getFuel() x DCS getDesc().fuelMassMax when DCS gives it ("source" says so, not estimated);
+  the airframe table is the fallback. Fractions above 1 = "includes_external": true.
+- picture() is a pure read (no shot settling, alerts, pruning or kill-row edits); tick() does those and is called
+  by the feeder (1 Hz threats loop + watchdog) and on every event.
 """
 from collections import Counter, OrderedDict, deque
 import argparse
@@ -101,10 +128,51 @@ ATTACK = {"A-10A", "A-10C", "A-10C_2", "Su-25", "Su-25T", "Su-25TM", "Su-24M", "
           "MB-339A", "Su-34", "F-15E", "F-15ESE", "MQ-9 Reaper", "MQ-1A Predator", "WingLoong-I"}
 ATTACK_HELO = {"AH-64D", "AH-64D_BLK_II", "AH-1W", "Ka-50", "Ka-50_3", "Mi-24P", "Mi-24V", "Mi-28N",
                "SA342M", "SA342L", "SA342Minigun", "SA342Mistral", "OH58D", "OH-58D"}
+# Phase 1 item 3: types whose label the 2026-11 code review proved wrong (R2 F1, R3 T10). Checked before
+# everything else, so they stay right even before (or without) DCS's own attributes.
+TYPE_OVERRIDES = {
+    "Soldier M4": "infantry", "Soldier M249": "infantry", "KAMAZ Truck": "ground vehicle",
+    "M-60": "armor", "PT_76": "armor", "M1_37mm": "AAA", "RQ-1A Predator": "attack",
+    "generator_5i57": "ground vehicle", "RPC_5N62V": "SAM",
+}
+# DCS unit-type attribute names (Unit.getDescByName(type).attributes) -> Eye category, first match wins.
+# Missile launchers before guns (Tunguska carries both), guns before radars (radar triple-A also has "SAM TR").
+ATTRIBUTE_CATEGORY = (
+    (("SAM LL", "AA_missile", "IR Guided SAM", "MANPADS", "SR SAM", "MR SAM", "LR SAM"), "SAM"),
+    (("AA_flak", "AAA", "Static AAA", "Mobile AAA"), "AAA"),
+    (("SAM SR", "SAM TR", "SAM CC", "SAM AUX", "SAM elements", "SAM related", "EWR", "MANPADS AUX"), "SAM"),
+    (("Infantry",), "infantry"),
+    (("Tanks", "IFV", "APC", "Armored vehicles"), "armor"),
+    (("Artillery", "MLRS", "Indirect fire"), "artillery"),
+    (("Trucks", "Cars", "Unarmed vehicles", "Armed vehicles", "Ground vehicles", "Vehicles"), "ground vehicle"),
+)
+AIR_ATTRIBUTE_CATEGORY = ((("AWACS",), "AWACS"), (("Tankers",), "tanker"), (("Transports",), "transport"),
+                          (("Bombers", "Strategic bombers"), "bomber"), (("UAVs",), "attack"))
+# DCS type name -> {"attributes": frozenset, "fuel_max_kg": float|None} from Eval, once per type. A per-type DCS
+# fact, the same for every Eye; an empty attribute set means "DCS gave nothing" (patterns decide).
+TYPE_INFO = {}
+# Attributes of things that emit or launch (SAM warnings by range only consider these when attributes are known).
+AIR_DEFENCE_THREAT_ATTRS = frozenset(("SAM SR", "SAM TR", "SAM LL", "EWR", "AA_missile", "AA_flak", "IR Guided SAM",
+                                      "MANPADS", "SR SAM", "MR SAM", "LR SAM"))
+
+
+def _attr_category(attrs, ground=True):
+    for names, category in (ATTRIBUTE_CATEGORY if ground else AIR_ATTRIBUTE_CATEGORY):
+        if any(n in attrs for n in names):
+            return category
+    return None
+
+
+def type_attributes(type_name):
+    """DCS attribute set for a unit type (empty when DCS has not told us)."""
+    info = TYPE_INFO.get(type_name or "")
+    return info["attributes"] if info else frozenset()
+
+
 SAM_PAT = re.compile(r"(sam|s-300|s_300|s-125|s_125|s-200|s_75|s-75|snr|patriot|hawk|roland|rapier|nasams|"
                      r"buk|kub|tor |tor_|9a331|osa|strela|igla|stinger|avenger|chaparral|tunguska|2s6|pantsir|"
                      r"hq-7|hq7|sa-\d|sa\d|9s18|9a310|5p85|40b6|64h6|54k6|1l13|55g6|ewr|dog ear|p-19|"
-                     r"rls_19j6|st-68|fps-117|5n66|9s80|9p31|9a33|ln |sr$| sr|tr$| tr|str$|cwar|pcp|cp$|"
+                     r"rls_19j6|st-68|fps-117|5n66|9s80|9p31|9a33|\bln\b|\bsr\b|\btr\b|str$|cwar|pcp|\bcp\b|"
                      r"manpad|mistral|iris|ra-|hq-|soldier stinger|sa-18|sa-24)", re.I)
 AAA_PAT = re.compile(r"(zsu|zu-23|zu_23|shilka|gepard|vulcan|flak|bofors|ks-19|ks19|s-60|s_60|aaa|m45|"
                      r"m1939|type 59|zpu|dshk|l118|m163|bunker)", re.I)
@@ -120,9 +188,12 @@ SHIP_CARRIER = re.compile(r"(cvn|stennis|vinson|lincoln|washington|truman|forres
 
 
 def classify(type_name, group_category=None):
-    """Return a short human category for a DCS type name (fighter, AWACS, SAM, armor, ...)."""
+    """Return a short human category for a DCS type name (fighter, AWACS, SAM, armor, ...). The ONE labeller:
+    overrides > aircraft sets > DCS attributes (TYPE_INFO) > name patterns."""
     t = type_name or ""
     gc = (group_category or "").upper()
+    if t in TYPE_OVERRIDES:
+        return TYPE_OVERRIDES[t]
     if t in AWACS:
         return "AWACS"
     if t in TANKERS:
@@ -135,22 +206,27 @@ def classify(type_name, group_category=None):
         return "attack helo" if t in ATTACK_HELO else "helicopter"
     if t in ATTACK:
         return "attack"
+    attrs = type_attributes(t)
     if gc.endswith("AIRPLANE"):
-        return "fighter"
+        return _attr_category(attrs, ground=False) or "fighter"
     if gc.endswith("SHIP"):
         return "carrier" if SHIP_CARRIER.search(t) else "ship"
     if gc.endswith("TRAIN"):
         return "train"
+    if attrs:
+        by_dcs = _attr_category(attrs)
+        if by_dcs:
+            return by_dcs
     if AAA_PAT.search(t):
         return "AAA"
     if SAM_PAT.search(t):
         return "SAM"
+    if INFANTRY_PAT.search(t):
+        return "infantry"  # before armor: "Soldier M4" is not a Sherman
     if ARTY_PAT.search(t):
         return "artillery"
     if ARMOR_PAT.search(t):
         return "armor"
-    if INFANTRY_PAT.search(t):
-        return "infantry"
     if gc.endswith("GROUND") or re.search(r"ural|gaz-|uaz|zil-|kamaz|truck|hummer", t, re.I):
         return "ground vehicle"
     return "unknown"
@@ -167,7 +243,7 @@ def domain(category):
 AAM_PAT = re.compile(r"(aim|r-\d|r_\d|r-2|r-3|r-4|r-6|r-7|mica|magic|python|derby|pl-|pl_|sd-10|meteor|iris-t|"
                      r"super530|super_530|r550|sidewinder|sparrow|phoenix|amraam|rb_74|rb-74|rb_24|"
                      r"aa-|\bah\b)", re.I)
-BOMB_PAT = re.compile(r"(gbu|mk_8|mk-8|mk8|fab|kab|cbu|bdu|blu|sab|rbk|betab|m_117|m117|bomb|odab|"
+BOMB_PAT = re.compile(r"(gbu|mk_8|mk-8|mk8|fab|kab|cbu|bdu|blu|sab|rbk|betab|m_117|(?<!9)m117|bomb|odab|"
                       r"agm_154|agm-154|jsow|b_8|mk_20|mk-20|rockeye|durandal|beta|sc_|sd_|lgb)", re.I)
 ROCKET_PAT = re.compile(r"(hydra|s-5|s_5|s-8|s_8|s-13|s_13|s-24|s_24|s-25|s_25|zuni|sneb|c_8|c_5|c_13|c_24|"
                         r"lau|ffar|rocket|apkws|m151|m156|m257|m274|mk1|wp|hvar|rp-3)", re.I)
@@ -188,7 +264,9 @@ def weapon_kind(name, burst=False):
     if burst:
         return "gun"
     n = name or ""
-    if (ROCKET_PAT.search(n) or re.search(r"agr[-_]20", n, re.I)) and not AAM_PAT.search(n):
+    if re.search(r"agr[-_]20|apkws", n, re.I):
+        return "rocket"  # APKWS: R_20 inside AGR_20 must not read as an R-xx air-to-air missile (R3 T9)
+    if ROCKET_PAT.search(n) and not AAM_PAT.search(n):
         return "rocket"
     if BOMB_PAT.search(n):
         return "bomb"
@@ -217,7 +295,7 @@ SAM_RANGES = (
     (re.compile(r"s-125|s_125|5p73|snr s-125|p-19|sa-3\b", re.I), 13.0, "SA-3"),
     (re.compile(r"kub|1s91|2p25|sa-6", re.I), 13.0, "SA-6"),
     (re.compile(r"nasams", re.I), 13.0, "NASAMS"),
-    (re.compile(r"tor|9a331|sa-15", re.I), 6.5, "SA-15"),
+    (re.compile(r"(?<![a-z])tor(\b|_)|9a331|sa-15", re.I), 6.5, "SA-15"),
     (re.compile(r"hq-7|hq7", re.I), 6.5, "HQ-7"),
     (re.compile(r"osa|9a33|sa-8", re.I), 5.5, "SA-8"),
     (re.compile(r"roland", re.I), 4.3, "Roland"),
@@ -230,10 +308,25 @@ SAM_RANGES = (
     (re.compile(r"1l13|55g6|ewr|fps-117|dog ear|9s80|rls_19j6|st-68", re.I), 80.0, "EWR"),
 )
 SAM_DEFAULT_NM = 2.5  # unknown SAM-category unit (MANPADS, IR SAM): close range only
+# Air-defence support vehicles that neither emit nor launch: no range-table SAM warning while DCS has not described
+# the type (live 2026-11-09: "SAM SA-18 Igla comm could be tracking you" 13 times in one F-4E flight).
+SAM_SUPPORT_PAT = re.compile(r"(\bcomm\b|command|\bpcp\b|\bcp\b|generator)", re.I)
 MISSILE_PICTURE_NM = 20.0  # missiles_in_flight lists every hostile missile this close, aimed at Prometheus or not
-MISSILE_SHOT_KEEP_S = 60.0
+MISSILE_SHOT_KEEP_S = 60.0  # kept for compatibility; shot rows now live BRIDGE_S (scan on) or EVAL_OFF_KEEP_S (scan off)
+BRIDGE_S = 2.5  # a shot-event row bridges only the first ~2 s before the 1 Hz Eval scan sees the missile
+EVAL_OFF_KEEP_S = 20.0  # no live scan (Eval disabled): a shot-event row is all we have, about one SAM flight time
+WEAPONS_FRESH_S = 10.0  # the live scan counts as "on" while its last reply is this recent
 MISSILE_ALERT_NM = 25.0  # a hostile missile shot (event) within this range of Prometheus and closing -> launch alert
 THREAT_ANNOUNCE_S = 90.0
+RANGE_HYST_NM = 2.0  # range-table fallback: once inside, a SAM stays listed until this far past its nominal range
+SAM_REARM_S = 60.0  # a SAM group out of range / no longer tracking this long gets a fresh alert next time
+RADAR_POLL_NM = 100.0  # hostile radar units polled for "is it tracking me" (nearest first)
+RADAR_POLL_MAX = 30
+RADAR_FRESH_S = 5.0
+TYPE_POLL_MAX = 25  # unit types asked from DCS per Eval call
+HEARTBEAT_STALE_S = 30.0  # no event message at all this long while the 1 Hz simulation_fps heartbeat was flowing
+COMBAT_MISSING_WINDOW_S = 600.0
+COMBAT_MISSING_SHOTS = 3  # my loadout dropped this often in 10 min with not one shot event: combat events missing
 
 
 def sam_profile(type_name):
@@ -567,6 +660,7 @@ class Eye:
         self.stores_dir = stores_dir  # durable stores/shots log (stores-YYYYMMDD.jsonl); None = off
         self.reset("init")
         self.connected = False
+        self.streams = {}  # stream name -> {"up": bool, "t": eye clock, "error": str|None}
         self.last_error = None
         self.airbases, self.airbases_at = {}, None
         self.declination, self.declination_at = None, None
@@ -578,6 +672,8 @@ class Eye:
         self.event_rx = deque()
         self.events_rx_at = None
         self.events_total = 0
+        self.heartbeat_at = None  # last simulation_fps (1 Hz heartbeat: proves the pipe, not the combat feed)
+        self.mission_events_at = None  # last real mission event (anything but heartbeat/noise kinds)
         self.resubscribes = Counter()
         self.last_resubscribe = None
         # Round 4: raw event debug (kind counts since start, per-minute counts, one sample per kind per minute).
@@ -616,18 +712,116 @@ class Eye:
             self.weapons_in_flight = {}  # weapon id -> row (Eval world.searchObjects around ownship)
             self.weapons_at = None
             self.missiles_near = {}  # weapon id -> row: every hostile missile within MISSILE_PICTURE_NM or aimed at me
-            self.missile_shots = {}  # weapon id -> row from the shot event (kept MISSILE_SHOT_KEEP_S)
+            self.missile_shots = {}  # weapon id -> bridge row from the shot event (until the live scan sees it)
             self.threat_alerts = deque(maxlen=50)
-            self._sam_alerted = {}  # SAM group -> t first called in range
+            self._sam_alerted = {}  # SAM group -> t called (re-armed after SAM_REARM_S out of range / not tracking)
+            self._sam_inside = {}  # SAM group -> last t listed (re-arm timing; written by tick only)
+            self._sam_listed = set()  # SAM groups listed at the last tick (range hysteresis; tick only)
+            self._sam_arm = Counter()  # SAM group -> alert generation (new key after a re-arm)
+            self.radars = {}  # unit name -> latest Eval radar row {on, tracking_me, detected, has_radar}
+            self.radars_at = None
+            self.unit_sync = {}  # group category -> {"since", "window", "stream"}: sweep units not re-sent
+            self.last_sweep = None
             self.units_at = None
             self.events_at = None
             self.reset_reason, self.reset_at = reason, self.clock()
 
-    def set_connected(self, ok, error=None):
+    def set_connected(self, ok, error=None, stream=None):
+        """Per-stream connection state (R2 F5). `connected` is True while ANY stream is up, so one failing stream
+        never reads as "DCS disconnected" (Memory ends a mission after 60 s of that). stream=None = all streams."""
         with self.lock:
-            self.connected = ok
+            self.streams[stream or "_all"] = {"up": bool(ok), "t": self.clock(), "error": error}
+            if stream is None:
+                for s in self.streams.values():
+                    s["up"] = bool(ok)
+            self.connected = any(s["up"] for s in self.streams.values())
             if error:
                 self.last_error = error
+
+    def streams_json(self, now):
+        out = {}
+        for name, s in sorted(self.streams.items()):
+            if name == "_all":
+                continue
+            out[name] = "up" if s["up"] else "down %ds (%s)" % (int(now - s["t"]), s["error"] or "error")
+        return out
+
+    def note_type_info(self, rows):
+        """DCS unit-type descriptions from Eval (once per type): {type: {"attributes": [...], "fuel_max_kg": n} or
+        None/False when DCS gave nothing}. Relabels every unit of those types through classify()."""
+        from . import cockpit as _cp
+        changed = set()
+        for t, info in (rows or {}).items():
+            if not t:
+                continue
+            attrs, fuel = frozenset(), None
+            if isinstance(info, dict):
+                raw = info.get("attributes")
+                if isinstance(raw, dict):  # Lua may send {name = true} or a list
+                    raw = [k for k, v in raw.items() if v] if not all(str(k).isdigit() for k in raw) \
+                        else list(raw.values())
+                attrs = frozenset(str(a) for a in (raw or []) if a)
+                fuel = _f(info.get("fuel_max_kg"))
+            TYPE_INFO[t] = {"attributes": attrs, "fuel_max_kg": fuel if fuel and fuel > 0 else None}
+            if fuel and fuel > 0:
+                _cp.DCS_FUEL_MAX_KG[t] = fuel
+            changed.add(t)
+        with self.lock:
+            for table in (self.units, self.last_known):
+                for u in table.values():
+                    if u.get("type") in changed:
+                        u["category"] = classify(u["type"], u.get("group_category"))
+        return len(changed)
+
+    def types_to_describe(self, limit=TYPE_POLL_MAX):
+        """Unit types seen but not yet described by DCS (bounded per Eval)."""
+        with self.lock:
+            seen = []
+            for u in list(self.units.values()):
+                t = u.get("type")
+                if t and t not in TYPE_INFO and t not in seen and _known_type(t):
+                    seen.append(t)
+                    if len(seen) >= limit:
+                        break
+            return seen
+
+    def begin_unit_sync(self, category, since, window, stream=None):
+        """A unit stream (re)subscribed at `since`: DCS-gRPC re-sends every live unit of that category, so units
+        not re-sent within `window` seconds died or left while the stream was down (R2 F2). tick() sweeps them."""
+        with self.lock:
+            self.unit_sync[category] = {"since": since, "window": window, "stream": stream}
+
+    def _sweep_units(self, now):
+        for category, sync in list(self.unit_sync.items()):
+            if now - sync["since"] < sync["window"]:
+                continue
+            del self.unit_sync[category]
+            stream = self.streams.get(sync.get("stream") or "")
+            if stream is not None and not stream["up"]:
+                continue  # the stream failed again inside the window: its resend was not complete
+            stale = [u for u in self.units.values() if u.get("group_category") == category
+                     and (u.get("seen") or 0) < sync["since"]]
+            for u in stale:
+                self.units.pop(u["id"], None)
+                self.vanished.append({"t": now, "unit": u, "reason": "reconnect_sweep"})
+                self._log_store({"kind": "unit_swept", "unit": _brief(u), "category": category,
+                                 "note": "not re-sent after the unit stream reconnected"})
+            self.last_sweep = {"category": category, "removed": len(stale), "t": now}
+            if stale:
+                LOG.info("eye: %d %s units not re-sent after resubscribe; removed", len(stale), category)
+
+    def tick(self, now=None):
+        """Every state change that used to happen inside picture() (R2 F6): prune, settle shots, drop finished
+        missile bridges, the SAM range hysteresis + alerts, and the post-reconnect unit sweep. Idempotent."""
+        with self.lock:
+            now = self.clock() if now is None else now
+            self._prune(now)
+            self._settle_shots(now)
+            self._prune_missiles(now)
+            self._sweep_units(now)
+            own = self._own_locked()
+            if own is not None and own.get("lat") is not None:
+                self._update_sam_state(own, now)
 
     def note_resubscribe(self, reason):
         with self.lock:
@@ -755,6 +949,10 @@ class Eye:
             self.event_rx.append(now)
             while self.event_rx and now - self.event_rx[0] > 300:
                 self.event_rx.popleft()
+            if kind == "simulation_fps":
+                self.heartbeat_at = now
+            elif kind not in (None, "mark_change", "score", "weapon_add"):
+                self.mission_events_at = now
             self._raw_debug(kind, msg, now)
             memory_generation = self.memory.generation if self.memory is not None else None
         if kind is None:
@@ -811,6 +1009,8 @@ class Eye:
                 self.missiles_near, self.missile_shots = {}, {}
                 self.threat_alerts.clear()
                 self._sam_alerted = {}
+                self._sam_inside, self._sam_listed = {}, set()
+                self.radars, self.radars_at = {}, None
                 if self.on_mission_start is not None:
                     self.on_mission_start()
             ev["initiator"] = self._enrich_object(ev["initiator"])
@@ -823,6 +1023,7 @@ class Eye:
                     ev["weapon"] = self.weapon_types.get(wid)
             self.events.append(ev)
             self._prune(now)
+            self._settle_shots(now)  # settle at event time (was: whenever a picture happened to be built)
             wake = self._apply(ev)
             if self.memory is not None:  # memory6: include takeoff/landing, loss and damage evidence
                 self.memory.publish("event", dict(ev, mine=self._is_me(ev.get("initiator"))), at=now)
@@ -1289,8 +1490,13 @@ class Eye:
         self._log_store({"kind": "threat_alert", "alert": kind, "call": call, "source": extra.get("source")})
         return a
 
+    def _eval_scan_on(self, now):
+        """The live Eval weapon scan answered recently (it replies every second, also with no missiles)."""
+        return self.weapons_at is not None and now - self.weapons_at <= WEAPONS_FRESH_S
+
     def _hostile_shot(self, ev):
-        """A hostile missile shot (DCS-gRPC shot event) closing on Prometheus -> missile launch alert."""
+        """A hostile missile shot event near Prometheus. Phase 1: only a BRIDGE row for the first ~2 s until the
+        live scan (real DCS weapon id) sees the missile; the launch alert comes from the scan when it is on."""
         ini = ev["initiator"]
         own = self._own_locked()
         if own is None or own.get("lat") is None or not self._hostile_to(ini.get("coalition"), own):
@@ -1309,33 +1515,63 @@ class Eye:
             return None
         hour = clock_of(brg - (own.get("heading") or 0.0))
         wtype = weapon_name(ev["weapon"] or "missile")
-        wid = str(ev["weapon_id"]) if ev.get("weapon_id") else None
+        # The overlay's shot-event weapon id is invented per event (R3 T1): never equal to the scan's real id.
+        wid = str(ev["weapon_id"]) if ev.get("weapon_id") else "shot-%s" % ev["seq"]
         call = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
-        if wid and rng <= MISSILE_PICTURE_NM:  # stable id, even when the missile is not aimed at Prometheus
-            self.missile_shots[wid] = {"id": wid, "type": wtype, "raw_type": ev["weapon"], "spoken_name": wtype,
-                                       "bearing": where.get("bearing_mag") or where.get("bearing_true"),
-                                       "range_nm": round(rng, 1), "clock": hour, "call": call,
-                                       "launcher": spoken_type(ini.get("type")), "first_seen": ev["t"],
-                                       "from": "shot event"}
         hdg = (ev.get("weapon_pos") or {}).get("heading")
-        if hdg is not None and abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) > 45.0:
+        closing = hdg is None or abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) <= 45.0
+        if rng <= MISSILE_PICTURE_NM or closing:
+            self.missile_shots[wid] = {
+                "id": wid, "type": wtype, "raw_type": ev["weapon"], "spoken_name": wtype,
+                "bearing": where.get("bearing_mag") or where.get("bearing_true"), "range_nm": round(rng, 1),
+                "clock": hour, "call": call, "launcher": spoken_type(ini.get("type")), "first_seen": ev["t"],
+                "from": "shot event", "closing": closing, "targeting_me": False,
+                "_launch": (src["lat"], src["lon"]), "_group": ini.get("group"), "_launcher": ini.get("name")}
+        if not closing:
             return None  # flying away from Prometheus
-        return self._threat_alert("launch-%s" % (ev["weapon_id"] or ev["seq"]), call, "missile launch", ev["t"],
-                                  source="shot event", type=wtype, launcher=spoken_type(ini.get("type")),
-                                  range_nm=round(rng, 1), clock=hour, id=wid, raw_type=ev["weapon"])
+        if self._eval_scan_on(ev["t"]):
+            return None  # the scan sees it within a second and raises the ONE alert, with the real id
+        a = self._threat_alert("launch-%s" % wid, call, "missile launch", ev["t"], source="shot event", type=wtype,
+                               launcher=spoken_type(ini.get("type")), range_nm=round(rng, 1), clock=hour, id=wid,
+                               raw_type=ev["weapon"])
+        if a is not None and wid in self.missile_shots:
+            self.missile_shots[wid]["_alert"] = a["key"]
+        return a
+
+    def _match_bridge(self, r, now, launcher_group):
+        """The shot-event bridge row of a missile the scan sees for the first time: same type and (launcher unit,
+        launcher group, or close to the launch point). DCS reports the SA-2 radar as getLauncher() while the shot
+        event names the launcher, so the group and the launch point carry the match. Pops the bridge row."""
+        rtype = _norm_weapon_name(r.get("type"))
+        best = None
+        for key, b in self.missile_shots.items():
+            if now - b["first_seen"] > 10.0:
+                continue
+            btype = _norm_weapon_name(b.get("raw_type"))
+            if rtype and btype and btype != rtype:
+                continue
+            same = bool(r.get("launcher")) and r.get("launcher") == b.get("_launcher") or \
+                bool(launcher_group) and launcher_group == b.get("_group")
+            _, d = bearing_range(b["_launch"][0], b["_launch"][1], r["lat"], r["lon"])
+            if not same and d > 3.0 + max(0.0, now - b["first_seen"]):
+                continue
+            score = (0 if same else 1, d)
+            if best is None or score < best[0]:
+                best = (score, key)
+        return self.missile_shots.pop(best[1]) if best else None
 
     def on_weapons(self, rows):
         """Missiles in flight near Prometheus (Eval world.searchObjects): rows {id, type, lat, lon, alt, vn, ve,
-        target, launcher, launcher_type, coal}. Hostile ones aimed at Prometheus or closing -> alert + picture."""
+        target, launcher, launcher_type, coal}. THE source of threats.missiles_in_flight (real DCS weapon ids)."""
         now = self.clock()
         with self.lock:
             own = self._own_locked()
-            current, near = {}, {}
             if own is None or own.get("lat") is None:
                 self.weapons_in_flight, self.weapons_at = {}, now
                 self.missiles_near = {}
                 return []
-            new = []
+            current, near, new = {}, {}, []
+            by_name = None
             for r in rows or []:
                 if not isinstance(r, dict) or r.get("lat") is None or r.get("lon") is None:
                     continue
@@ -1366,64 +1602,184 @@ class Eye:
                        "closing": closing, "launcher": spoken_type(r.get("launcher_type")) if r.get("launcher_type")
                        else None, "speed_kt": int(round(speed * MS_TO_KT))}
                 row["call"] = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
-                if at_me or rng <= MISSILE_PICTURE_NM:
-                    prior = self.missiles_near.get(wid) or self.missile_shots.get(wid)
-                    near[wid] = dict(row, first_seen=(prior or {}).get("first_seen", now))
-                if not (at_me or (closing and rng <= MISSILE_ALERT_NM)):
+                alertable = at_me or (closing and rng <= MISSILE_ALERT_NM)
+                if not (alertable or rng <= MISSILE_PICTURE_NM):
+                    continue
+                prior = self.missiles_near.get(wid)
+                if prior is None:
+                    if by_name is None:
+                        by_name = {u.get("name"): u for u in self.units.values()}
+                    bridge = self._match_bridge(r, now, (by_name.get(r.get("launcher")) or {}).get("group"))
+                    prior = {"first_seen": bridge["first_seen"], "_alert": bridge.get("_alert")} if bridge else {}
+                    if bridge and bridge.get("_alert"):
+                        for a in self.threat_alerts:  # the shot-event alert now follows the live missile
+                            if a["key"] == bridge["_alert"]:
+                                a["id"] = wid
+                near[wid] = dict(row, first_seen=prior.get("first_seen", now), _alert=prior.get("_alert"))
+                if not alertable:
                     continue
                 current[wid] = row
-                if wid not in self.weapons_in_flight:
+                if wid not in self.weapons_in_flight and not near[wid]["_alert"]:
                     a = self._threat_alert("missile-%s" % wid, row["call"], "missile launch", now,
                                            source="DCS-gRPC weapon in flight", type=wtype, range_nm=row["range_nm"],
-                                           clock=hour)
+                                           clock=hour, id=wid)
                     if a:
+                        near[wid]["_alert"] = a["key"]
                         new.append(a)
             self.weapons_in_flight, self.weapons_at = current, now
             self.missiles_near = near
             return new
 
+    def _prune_missiles(self, now):
+        keep = BRIDGE_S if self._eval_scan_on(now) else EVAL_OFF_KEEP_S
+        for wid, b in list(self.missile_shots.items()):
+            if now - b["first_seen"] > keep:
+                del self.missile_shots[wid]
+
+    def radar_candidates(self, limit=RADAR_POLL_MAX):
+        """Names of hostile SAM/AAA/EWR units to ask DCS 'is your radar on / tracking Prometheus' (nearest first,
+        known radars before the rest, bounded)."""
+        with self.lock:
+            own = self._own_locked()
+            if own is None or own.get("lat") is None:
+                return []
+            rows = []
+            for u in self.units.values():
+                if u["category"] not in ("SAM", "AAA") or u.get("lat") is None or not u.get("name"):
+                    continue
+                if not self._hostile_to(u["coalition"], own):
+                    continue
+                _, rng = bearing_range(own["lat"], own["lon"], u["lat"], u["lon"])
+                if rng > RADAR_POLL_NM:
+                    continue
+                attrs = type_attributes(u["type"])
+                radar = bool(attrs & {"SAM SR", "SAM TR", "EWR"}) if attrs else sam_profile(u["type"])[1] is not None
+                rows.append((not radar, rng, u["name"]))
+            rows.sort()
+            return [name for _, _, name in rows[:limit]]
+
+    def on_radars(self, rows):
+        """Eval radar state (1 Hz): rows {name, has_radar, on, tracking_me, detected}. Missing fields = unknown."""
+        now = self.clock()
+        with self.lock:
+            by_name = {u.get("name"): u for u in self.units.values()}
+            out = {}
+            for r in rows or []:
+                if not isinstance(r, dict) or not r.get("name"):
+                    continue
+                u = by_name.get(r["name"]) or {}
+                out[r["name"]] = {"has_radar": bool(r.get("has_radar")), "on": bool(r.get("on")),
+                                  "tracking_me": bool(r.get("tracking_me")), "detected": bool(r.get("detected")),
+                                  "group": u.get("group") or r["name"], "type": u.get("type")}
+            self.radars, self.radars_at = out, now
+            return out
+
+    def _radar_fresh(self, now):
+        return self.radars_at is not None and now - self.radars_at <= RADAR_FRESH_S
+
+    _RADAR_LEVEL = {"off": 0, "searching": 1, "sees you": 2, "tracking you": 3}
+
+    def _radar_groups(self, now):
+        """SAM group -> strongest DCS radar state among its polled radar units ('off' when every radar is off)."""
+        out = {}
+        if not self._radar_fresh(now):
+            return out
+        for r in self.radars.values():
+            if not r["has_radar"]:
+                continue
+            state = ("tracking you" if r["tracking_me"] else "sees you" if r["on"] and r["detected"]
+                     else "searching" if r["on"] else "off")
+            if self._RADAR_LEVEL[state] >= self._RADAR_LEVEL.get(out.get(r["group"]), -1):
+                out[r["group"]] = state
+        return out
+
     def _sam_threats(self, own, now):
-        """Hostile SAM/AAA/EWR radars with Prometheus inside their nominal range, one row per group, nearest first."""
+        """Hostile SAM/AAA/EWR threats, one row per group, nearest first. DCS radar state (sam_radar) wins: tracking
+        you at any polled range, else listed only inside the nominal range and never when DCS says its radar is
+        off. Groups without radar data use the range table (with RANGE_HYST_NM hysteresis). Pure read."""
         best = {}
         own_alt = own.get("alt_m") or 0.0
+        radar = self._radar_groups(now)
         for u in self.units.values():
             if u["category"] not in ("SAM", "AAA") or u.get("lat") is None:
                 continue
             if not self._hostile_to(u["coalition"], own):
                 continue
+            attrs = type_attributes(u["type"])
+            if attrs and not attrs & AIR_DEFENCE_THREAT_ATTRS or not attrs and SAM_SUPPORT_PAT.search(u["type"]):
+                continue  # neither emits nor launches (command post, generator, ...): DCS attributes, else name
             nominal, label, ewr = sam_profile(u["type"])
             if u["category"] == "AAA" and label is None:
                 continue  # optical triple A: not a radar threat
-            _, rng = bearing_range(own["lat"], own["lon"], u["lat"], u["lon"])
-            if rng > nominal + 1:
-                continue
-            slant = math.hypot(rng, (own_alt - (u.get("alt_m") or 0.0)) / NM)
-            if slant > nominal:
-                continue
             key = u.get("group") or str(u["id"])
+            state = radar.get(key)
+            if state == "off":
+                continue  # DCS: this group's radar is off or gone
+            limit = nominal + (RANGE_HYST_NM if key in self._sam_listed else 0.0)
+            _, rng = bearing_range(own["lat"], own["lon"], u["lat"], u["lon"])
+            slant = math.hypot(rng, (own_alt - (u.get("alt_m") or 0.0)) / NM)
+            if state != "tracking you" and (rng > limit + 1 or slant > limit):
+                continue
             prev = best.get(key)
             if prev is None or (nominal, -slant) > (prev[0], -prev[1]):
-                best[key] = (nominal, slant, u, label, ewr)
+                best[key] = (nominal, slant, u, label, ewr, state)
         rows = []
-        for key, (nominal, slant, u, label, ewr) in best.items():
+        for key, (nominal, slant, u, label, ewr, state) in best.items():
             res = self._where(own, u["lat"], u["lon"])
             if res is None:
                 continue
             _, brg, _ = res
             hour = clock_of(brg - (own.get("heading") or 0.0))
             name = label or spoken_type(u["type"])
-            if ewr:
-                call = "Early warning radar %s could be watching you, your %s o'clock, %s." % (
-                    spoken_type(u["type"]), words(hour), range_words(slant))
+            where = "your %s o'clock, %s." % (words(hour), range_words(slant))
+            if state is not None:
+                what = "Early warning radar %s" % spoken_type(u["type"]) if ewr else \
+                    "Radar triple A %s" % spoken_type(u["type"]) if label == "radar triple A" else "SAM %s" % name
+                verb = {"tracking you": "tracking you", "sees you": "radar sees you",
+                        "searching": "radar searching"}[state]
+                call, confidence = "%s %s, %s" % (what, verb, where), "DCS radar: " + state
+            elif ewr:
+                call = "Early warning radar %s could be watching you, %s" % (spoken_type(u["type"]), where)
+                confidence = "range only: could be tracking"
             elif label == "radar triple A":
-                call = "Radar triple A %s could be tracking you, your %s o'clock, %s." % (
-                    spoken_type(u["type"]), words(hour), range_words(slant))
+                call = "Radar triple A %s could be tracking you, %s" % (spoken_type(u["type"]), where)
+                confidence = "range only: could be tracking"
             else:
-                call = "SAM %s could be tracking you, your %s o'clock, %s." % (name, words(hour), range_words(slant))
+                call = "SAM %s could be tracking you, %s" % (name, where)
+                confidence = "range only: could be tracking"
             rows.append({"group": key, "type": u["type"], "sam": name, "ewr": ewr, "range_nm": round(slant, 1),
-                         "nominal_range_nm": nominal, "clock": hour, "call": call})
-        rows.sort(key=lambda r: (r["ewr"], r["range_nm"]))
+                         "nominal_range_nm": nominal, "clock": hour, "call": call, "confidence": confidence})
+        rows.sort(key=lambda r: (r["ewr"], r["confidence"] != "DCS radar: tracking you", r["range_nm"]))
         return rows
+
+    def _update_sam_state(self, own, now):
+        """tick(): range hysteresis memory + SAM alerts (once per group; again after SAM_REARM_S away, and once
+        more when DCS says the radar went from anything else to tracking you)."""
+        rows = self._sam_threats(own, now)
+        listed = set()
+        for r in rows:
+            g = r["group"]
+            listed.add(g)
+            self._sam_inside[g] = now
+            if r["ewr"]:
+                continue
+            tracking = r["confidence"] == "DCS radar: tracking you"
+            if not tracking and r["confidence"] != "DCS radar: sees you" and not r["confidence"].startswith("range"):
+                continue  # radar only searching: listed, not announced
+            prev = self._sam_alerted.get(g)
+            if prev is not None and (prev[1] or not tracking):
+                continue
+            self._sam_alerted[g] = (now, tracking)
+            kind = "SAM tracking" if tracking else "SAM in range"
+            self._threat_alert("sam-%s-%d%s" % (g, self._sam_arm[g], "-track" if tracking else ""), r["call"],
+                               kind, now, group=g,
+                               source="DCS radar state" if r["confidence"].startswith("DCS") else "DCS-gRPC SAM range")
+        self._sam_listed = listed
+        for g, last in list(self._sam_inside.items()):
+            if g not in listed and now - last > SAM_REARM_S:
+                del self._sam_inside[g]
+                if self._sam_alerted.pop(g, None) is not None:
+                    self._sam_arm[g] += 1
 
     def _rwr_source(self):
         latest = self.cockpit.latest
@@ -1434,60 +1790,74 @@ class Eye:
         return "none"
 
     def _threats_json(self, own, now):
+        """Pure read: (threats section, sam rows, all missile rows) -- the last two feed the pending alerts."""
         source = self._rwr_source()
         out = {"rwr_source": source, "rwr_export_by_module": self.cockpit.rwr_modules_json()}
+        radar_fresh = self._radar_fresh(now)
+        out["sam_source"] = "dcs_radar" if radar_fresh else "range_table"
+        tracking = []
+        if radar_fresh:
+            for r in self.radars.values():
+                if r["has_radar"] and r["tracking_me"]:
+                    tracking.append({"group": r["group"], "type": r["type"], "name": spoken_type(r["type"])})
+        out["sam_radar"] = {
+            "available": radar_fresh, "age_s": None if self.radars_at is None else round(now - self.radars_at, 1),
+            "source": "DCS Unit:getRadar() + group radar detection (Eval, 1 Hz)",
+            "confidence": "DCS truth" if radar_fresh else "unavailable (range table used)",
+            "tracking_you": tracking[:5],
+            "radars_on": sum(1 for r in self.radars.values() if r["has_radar"] and r["on"]) if radar_fresh else 0}
         if own is None or own.get("lat") is None:
             out["sam_in_range"], out["missiles_inbound"] = [], []
-            return out
+            return out, [], []
         sams = self._sam_threats(own, now)
         out["sam_in_range"] = sams[:PICTURE_TOP]
         if len(sams) > PICTURE_TOP:
             out["more_sam_groups_in_range"] = len(sams) - PICTURE_TOP
+        flight = self._missiles_in_flight(now)
+        out["missiles_inbound"] = [m for m in flight if m.get("targeting_me") or m.get("closing")][:PICTURE_TOP]
+        out["missiles_in_flight"] = flight[:PICTURE_TOP + 2]
         if source != "cockpit":
-            for r in sams:  # no RWR in this jet: call each SAM group once when Prometheus enters its range
-                if r["ewr"] or r["group"] in self._sam_alerted:
-                    continue
-                self._sam_alerted[r["group"]] = now
-                self._threat_alert("sam-%s-%d" % (r["group"], int(now)), r["call"], "SAM in range", now,
-                                   source="DCS-gRPC SAM range")
-        fresh_weapons = self.weapons_at is not None and now - self.weapons_at <= 10
-        missiles = list(self.weapons_in_flight.values()) if fresh_weapons else []
-        for a in self.threat_alerts:
-            if a["kind"] == "missile launch" and a.get("source") == "shot event" and now - a["t"] <= 60:
-                missiles.append({"type": a.get("type"), "range_nm": a.get("range_nm"), "clock": a.get("clock"),
-                                 "launcher": a.get("launcher"), "age_s": int(now - a["t"]), "call": a["call"],
-                                 "from": "shot event", "id": a.get("id"), "spoken_name": a.get("type"),
-                                 "raw_type": a.get("raw_type")})
-        missiles.sort(key=lambda m: m.get("range_nm") or 0)
-        out["missiles_inbound"] = missiles[:PICTURE_TOP]
-        out["missiles_in_flight"] = self._missiles_in_flight(now, fresh_weapons)
-        if source != "cockpit":
-            out["note"] = ("no RWR feed from this aircraft: these are inferred from DCS-gRPC (SAM ranges, missiles in "
-                           "flight); say 'could be' for SAMs")
-        return out
+            out["note"] = ("no RWR feed from this aircraft. sam_in_range confidence 'DCS radar: ...' is DCS's own radar "
+                           "state; 'range only' rows are inferred from nominal range: say 'could be' for those")
+        return out, sams, flight
 
-    def _missiles_in_flight(self, now, fresh_weapons):
-        """Round 9: one row per missile with a stable DCS weapon id, so the controller can tell 'same missile' from
-        'new launch'. Includes SAM missiles not aimed at Prometheus within MISSILE_PICTURE_NM."""
+    def _missiles_in_flight(self, now, fresh_weapons=None):
+        """One row per missile: the live scan's rows (real DCS weapon ids), plus shot-event rows only while they
+        bridge the first BRIDGE_S seconds (EVAL_OFF_KEEP_S when there is no live scan). Pure read, all rows."""
+        scan = self._eval_scan_on(now)
         rows = {}
-        for wid, a in list(self.missile_shots.items()):
-            if now - a["first_seen"] > MISSILE_SHOT_KEEP_S:
-                del self.missile_shots[wid]
-            else:
-                rows[wid] = dict(a, age_s=int(now - a["first_seen"]))
-        if fresh_weapons:
+        if scan:
             for wid, a in self.missiles_near.items():
-                rows[wid] = dict(a, age_s=int(now - a["first_seen"]))  # live Eval position beats the shot position
-        out = sorted(rows.values(), key=lambda m: (not m.get("targeting_me"), m.get("range_nm") or 0))
-        return out[:PICTURE_TOP + 2]
-    def _pending_threat_alerts(self, now):
+                rows[wid] = dict({k: v for k, v in a.items() if not k.startswith("_")}, age_s=int(now - a["first_seen"]))
+        keep = BRIDGE_S if scan else EVAL_OFF_KEEP_S
+        for wid, a in self.missile_shots.items():
+            if now - a["first_seen"] <= keep and wid not in rows:
+                rows[wid] = dict({k: v for k, v in a.items() if not k.startswith("_")},
+                                 age_s=int(now - a["first_seen"]),
+                                 scan="not yet in the live scan" if scan else "no live scan (Eval off)")
+        return sorted(rows.values(), key=lambda m: (not m.get("targeting_me"), m.get("range_nm") or 0))
+
+    def _pending_threat_alerts(self, now, sams=None, flight=None):
+        """Alerts not yet announced. Pure read. A missile alert whose missile is gone is dropped and a live one is
+        re-worded from the live row (R3 T5); a SAM alert only while that group is still listed."""
         cockpit_launch = any(a["signal"] == "launch" and now - a["t"] <= 15 for a in self.cockpit.alerts)
+        live = {m["id"]: m for m in (flight or [])}
+        groups = {r["group"]: r for r in (sams or [])}
         out = []
         for a in self.threat_alerts:
             if a["key"] in self.announced or now - a["t"] > THREAT_ANNOUNCE_S:
                 continue
-            if a["kind"] == "missile launch" and cockpit_launch:
-                continue  # the cockpit RWR already called the launch
+            if a["kind"] == "missile launch":
+                if cockpit_launch:
+                    continue  # the cockpit RWR already called the launch
+                m = live.get(a.get("id"))
+                if m is None:
+                    continue  # that missile is gone: no stale launch call
+                a = dict(a, call=m["call"])
+            elif a.get("group") is not None:
+                if a["group"] not in groups:
+                    continue
+                a = dict(a, call=groups[a["group"]]["call"])
             out.append(a)
         out.sort(key=lambda a: a["kind"] != "missile launch")
         return out
@@ -1591,6 +1961,10 @@ class Eye:
                 pass
         fuel = snapshot.get("fuel")
         fuel = float(fuel) if isinstance(fuel, (int, float)) else None
+        fuel_max = _f(snapshot.get("fuel_max_kg"))
+        if fuel_max and fuel_max > 0 and unit.get("type"):
+            from . import cockpit as _cp
+            _cp.DCS_FUEL_MAX_KG[unit["type"]] = fuel_max  # DCS getDesc().fuelMassMax beats the airframe table
         with self.lock:
             self.stores_status = "ok"
             uid = unit["id"]
@@ -1700,14 +2074,16 @@ class Eye:
 
     def _settle_shots(self, now):
         for s in self.shots:
-            if s["result"] != "pending":
-                continue
-            start = s["burst_end"] if s["burst_end"] is not None else s["t"]
-            if s["kind"] == "gun" and s["burst_end"] is None and now - s["t"] < 60:
-                continue
-            if now - start > _resolve_window(s["kind"]):
+            if s["result"] == "pending" and self._settled_miss(s, now):
                 s["result"] = "miss"
                 s["resolved_t"] = now
+
+    @staticmethod
+    def _settled_miss(s, now):
+        start = s["burst_end"] if s["burst_end"] is not None else s["t"]
+        if s["kind"] == "gun" and s["burst_end"] is None and now - s["t"] < 60:
+            return False
+        return now - start > _resolve_window(s["kind"])
 
     # -- picture
     def _where(self, own, lat, lon, alt_m=None):
@@ -1838,27 +2214,65 @@ class Eye:
             g["players"] = players
         return g
 
+    def _combat_events_missing(self, now):
+        """(missing?, my loadout drops without a shot event in the window): R2 F3. The 1 Hz heartbeat proves the
+        pipe is up, not that DCS-gRPC still forwards shot/hit/kill events."""
+        drops = event_shots = 0
+        for s in self.shots:
+            if now - s["t"] > COMBAT_MISSING_WINDOW_S:
+                continue
+            if s.get("event_seen"):
+                event_shots += 1
+            elif s.get("source") == "stores_diff":
+                drops += 1
+        return drops >= COMBAT_MISSING_SHOTS and event_shots == 0, drops
+
     def stream_health(self, now=None):
         """Event-stream liveness for the picture, the transcript tool log and the feeder watchdog."""
         with self.lock:
             now = self.clock() if now is None else now
             units_fresh = self.units_at is not None and now - self.units_at < 60
             ev_age = None if self.events_rx_at is None else round(now - self.events_rx_at, 1)
+            heartbeat = self.heartbeat_at is not None and self.events_rx_at is not None and \
+                self.events_rx_at - self.heartbeat_at < 10  # the last message seen was (near) a heartbeat
+            missing, drops = self._combat_events_missing(now)
             if ev_age is None:
                 state = "never received" if units_fresh else "waiting"
             elif ev_age > EVENTS_STALE_S and units_fresh:
                 state = "stale (units update, events silent; resubscribing)"
+            elif heartbeat and ev_age >= HEARTBEAT_STALE_S and units_fresh:
+                state = "stale (heartbeat stopped; resubscribing)"
+            elif missing:
+                state = "combat events missing (kills may be unconfirmed)"
             else:
                 state = "live"
             recent = sum(1 for t in self.event_rx if now - t <= 300)
             out = {"state": state, "last_event_age_s": ev_age, "events_per_min": round(recent / 5.0, 1),
                    "events_total": self.events_total, "units_age_s": None if self.units_at is None
-                   else round(now - self.units_at, 1)}
+                   else round(now - self.units_at, 1),
+                   "last_mission_event_age_s": None if self.mission_events_at is None
+                   else round(now - self.mission_events_at, 1)}
+            if drops:
+                out["shots_without_event_10_min"] = drops
             if self.resubscribes:
                 out["resubscribes"] = dict(self.resubscribes)
             if self.raw_kinds:
                 out["kinds_total"] = dict(self.raw_kinds.most_common(12))
             return out
+
+    def _data_health(self, now, events):
+        out = {"connected": self.connected, "streams": self.streams_json(now), "events": events["state"],
+               "combat_events": "missing: %d of my shots seen only as loadout drops, no shot event" %
+               events.get("shots_without_event_10_min", 0) if events["state"].startswith("combat events missing")
+               else "ok" if events["state"] == "live" else "unknown (event stream %s)" % events["state"]}
+        if self.last_sweep is not None:
+            out["unit_sync"] = {"category": self.last_sweep["category"], "removed": self.last_sweep["removed"],
+                                "age_s": round(now - self.last_sweep["t"], 1)}
+        if self.unit_sync:
+            out["unit_sync_pending"] = sorted(self.unit_sync)
+        if events["state"] != "live":
+            out["note"] = "shot/hit/kill reports may be missing: kills may be unconfirmed; say so if asked."
+        return out
 
     def mark_announced(self, keys):
         """The controller gave these splash calls to the model; don't ask for them again."""
@@ -2064,10 +2478,9 @@ class Eye:
         coalition = (own or {}).get("coalition")
         if coalition not in ("blue", "red") and self.my_kills:
             coalition = self.my_kills[-1]["shooter"].get("coalition")
-        for k in self.other_kills:
-            if coalition in ("blue", "red") and k["shooter"].get("coalition") == coalition:
-                k["friendly"] = True
-        return sorted(self.my_kills + [k for k in self.other_kills if k["friendly"]], key=lambda k: k["seq"])
+        friendly = [k for k in self.other_kills if k["friendly"] or
+                    (coalition in ("blue", "red") and k["shooter"].get("coalition") == coalition)]
+        return sorted(self.my_kills + friendly, key=lambda k: k["seq"])  # pure read: no k["friendly"] write
 
     def kills_since(self, seq, shooter="me"):
         """Non-consuming cursor query; duplicates/upgrades retain their original sequence number."""
@@ -2110,16 +2523,16 @@ class Eye:
                                "by_shooter": by_shooter}
 
     def _picture_locked(self, own):
-        now = self.clock()
-        self._prune(now)
-        self._settle_shots(now)
+        now = self.clock()  # pure read (R2 F6): pruning, settling and alerts happen in tick()
         age = lambda t: None if t is None else round(now - t, 1)  # noqa: E731
+        events = self.stream_health(now)
         pic = {
             "source": "Athena Eye (DCS-gRPC %s)" % self.source,
             "connected": self.connected,
             "data_age_s": {"units": age(self.units_at), "last_event": age(self.events_at),
                            "airbases": age(self.airbases_at), "ownship": age(own["seen"]) if own else None},
-            "event_stream": self.stream_health(now),
+            "event_stream": events,
+            "data_health": self._data_health(now, events),
             "theatre": self.theatre,
             "bearings": ("magnetic (declination %.1f deg from DCS)" % self.declination
                          if self.declination is not None else "TRUE (magnetic declination unavailable)"),
@@ -2135,7 +2548,8 @@ class Eye:
                 "Traffic means aircraft (including helos), not ground units. Use air_traffic and airbase traffic.",
                 "Never say overhead unless the contact has overhead_allowed true (within 3 nm).",
                 "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): "
-                "config, flight, payload, rwr threats, locked_target, warning_lights. Fuel: ownship.fuel.",
+                "config, flight, payload, warning_lights; rwr/locked_target only when cockpit.rwr.available is true "
+                "(no module has exported them so far). Fuel: ownship.fuel.",
             ],
         }
         if self.last_error and not self.connected:
@@ -2167,8 +2581,8 @@ class Eye:
             pic["working_target"] = self._working_target(own, cockpit, now)
         pic["airbases"] = self._airbases_json(own)
         pic["cockpit"] = cockpit
-        pic["threats"] = self._threats_json(own, now)
-        alerts = self.cockpit.pending_alerts(self.announced, now) + self._pending_threat_alerts(now)
+        pic["threats"], sams, flight = self._threats_json(own, now)
+        alerts = self.cockpit.pending_alerts(self.announced, now) + self._pending_threat_alerts(now, sams, flight)
         if alerts:
             pic["rwr_alert_to_announce"], pic["_rwr_keys"] = group_alerts(alerts)
         pic["my_shots_last_15_min"] = self._shots_json(own, now)
@@ -2249,7 +2663,7 @@ class Eye:
             if now - s["t"] > 15 * 60:
                 continue
             row = {"weapon": weapon_name(s["weapon"]), "kind": s["kind"], "age_s": int(now - s["t"]),
-                   "result": s["result"]}
+                   "result": "miss" if s["result"] == "pending" and self._settled_miss(s, now) else s["result"]}
             if s.get("weapon_source") == "stores_diff":
                 row["weapon_from"] = "loadout change"
             if s.get("source") == "stores_diff" and not s.get("event_seen"):
@@ -2316,6 +2730,8 @@ class Eye:
                 continue
             row = {"age_s": int(now - v["t"]), "event": "no longer showing, likely destroyed", "inferred": True,
                    "victim": _brief(u)}
+            if v.get("reason") == "reconnect_sweep":
+                row["event"] = "no longer showing (missed during a data outage)"
             mine = next((k for k in self.my_kills if k["target_id"] == u["id"]), None)
             if mine:
                 row["by_me"], row["weapon"] = True, weapon_name(mine["weapon"])
@@ -2507,7 +2923,7 @@ class GrpcFeeder:
             except Exception as error:  # noqa: BLE001 - reconnect forever, report reason
                 msg = "%s: %s %s" % (name, type(error).__name__, _code(error))
                 if name not in ("watchdog", "prompt", "stores", "threats"):
-                    self.eye.set_connected(False, msg)
+                    self.eye.set_connected(False, msg, stream=name)
                 self._errored.add(name)
                 if failures % 60 == 0:  # first failure, then about every 10 minutes
                     LOG.info("eye %s disconnected (retrying forever): %s", name, msg)
@@ -2542,6 +2958,7 @@ class GrpcFeeder:
         self._check_session(stub)
         req = mission_pb2.StreamUnitsRequest(poll_rate=poll, max_backoff=backoff,
                                              category=common_pb2.GroupCategory.Value(category))
+        subscribed = self.eye.clock()
         call = stub.StreamUnits(req)
         with self._calls_lock:
             self._unit_calls.add(call)
@@ -2550,10 +2967,12 @@ class GrpcFeeder:
             for resp in call:
                 if self.stop.is_set():
                     return
-                self.eye.set_connected(True)
+                self.eye.set_connected(True, stream=name)
                 if first:
                     first = False
                     self._live(name, call)
+                    # DCS-gRPC re-sends every live unit on subscribe: what is not re-sent soon is gone (R2 F2).
+                    self.eye.begin_unit_sync(category, subscribed, max(10.0, 3.0 * poll), stream=name)
                 self.eye.on_units_message(self._to_dict(resp))
         except grpc.RpcError as error:
             if error.code() == grpc.StatusCode.CANCELLED and not self.stop.is_set():
@@ -2640,7 +3059,7 @@ class GrpcFeeder:
             for resp in call:
                 if self.stop.is_set():
                     return
-                self.eye.set_connected(True)
+                self.eye.set_connected(True, stream="events")
                 if first:
                     first = False
                     self._live("events", call)
@@ -2660,13 +3079,20 @@ class GrpcFeeder:
         now = self.eye.clock()
         with self.eye.lock:
             units_at, events_at = self.eye.units_at, self.eye.events_rx_at
+            heartbeat_at = self.eye.heartbeat_at
         with self._calls_lock:
             subscribed = self._events_subscribed
         if units_at is None or now - units_at > 60 or subscribed is None:
             return None
-        if now - subscribed < self.events_stale_s:
+        # The 1 Hz simulation_fps heartbeat makes a stall visible fast: 30 s of silence after it was flowing
+        # (recovered or announced within 60 s), else the old 2-minute window.
+        stale_s = self.events_stale_s
+        if heartbeat_at is not None and events_at is not None and events_at - heartbeat_at < 10 \
+                and heartbeat_at >= subscribed:
+            stale_s = min(stale_s, HEARTBEAT_STALE_S)
+        if now - subscribed < stale_s:
             return None  # give a fresh subscription time to deliver
-        if events_at is not None and now - events_at < self.events_stale_s:
+        if events_at is not None and now - events_at < stale_s:
             return None
         with self._calls_lock:
             self._events_subscribed = now  # one resubscribe per stale window
@@ -2675,6 +3101,7 @@ class GrpcFeeder:
 
     def _watchdog(self):
         while not self.stop.wait(self.watchdog_period):
+            self.eye.tick()
             self.check_liveness()
 
     # -- loadout / stores (DCS-gRPC CustomService.Eval -> Unit:getAmmo(); needs evalEnabled = true on the DCS PC)
@@ -2686,7 +3113,9 @@ class GrpcFeeder:
                   "category = d.category} end "
                   "local ok, life = pcall(function() return u:getLife() end) "
                   "local ok0, life0 = pcall(function() return u:getLife0() end) "
-                  "return {fuel = u:getFuel(), ammo = ammo, life = ok and life or nil, life0 = ok0 and life0 or nil}")
+                  "local okm, fmax = pcall(function() return u:getDesc().fuelMassMax end) "
+                  "return {fuel = u:getFuel(), ammo = ammo, life = ok and life or nil, life0 = ok0 and life0 or nil, "
+                  "fuel_max_kg = okm and fmax or nil}")
     EVAL_OFF = ("unavailable: DCS-gRPC Eval is disabled on the DCS PC. Set evalEnabled = true in "
                 "Saved Games/DCS/Config/dcs-grpc.lua (infra/dcs-client kit) and restart the mission")
     # Fuel only (round 4): the cockpit payload replaces getAmmo for ownship, but its fuel can be unusable.
@@ -2694,7 +3123,9 @@ class GrpcFeeder:
                 "if not u or not u:isExist() then return nil end "
                 "local ok, life = pcall(function() return u:getLife() end) "
                 "local ok0, life0 = pcall(function() return u:getLife0() end) "
-                "return {fuel = u:getFuel(), life = ok and life or nil, life0 = ok0 and life0 or nil}")
+                "local okm, fmax = pcall(function() return u:getDesc().fuelMassMax end) "
+                "return {fuel = u:getFuel(), life = ok and life or nil, life0 = ok0 and life0 or nil, "
+                "fuel_max_kg = okm and fmax or nil}")
     # Round 4 RWR fallback: missiles in flight within 60 km of ownship (target, launcher, position, velocity).
     WEAPONS_LUA = ("local own = Unit.getByName(%s) "
                    "if not own or not own:isExist() then return nil end "
@@ -2704,6 +3135,7 @@ class GrpcFeeder:
                    "pcall(function() "
                    "local d = w:getDesc() or {} "
                    "if d.category ~= Weapon.Category.MISSILE or #out >= 20 then return end "
+                   "if w:getCoalition() == own:getCoalition() then return end "
                    "local p = w:getPoint() local lat, lon, alt = coord.LOtoLL(p) "
                    "local v = w:getVelocity() or {x = 0, y = 0, z = 0} "
                    "local t = w:getTarget() local l = w:getLauncher() "
@@ -2714,6 +3146,47 @@ class GrpcFeeder:
                    "end) return true end) "
                    "return {weapons = out}")
     WEAPONS_POLL_S = 1.0
+    # Phase 1 item 3, read-only. Unit-type description once per type (DCS's own attributes + max internal fuel);
+    # a missing Unit.getDescByName (older DCS) or a nil desc answers false = "DCS gave nothing" (patterns decide).
+    TYPES_LUA = ("local out = {} "
+                 "for _, t in ipairs(%s) do "
+                 "local ok, d = pcall(function() return Unit.getDescByName(t) end) "
+                 "if ok and type(d) == 'table' then "
+                 "local a = {} for k, v in pairs(d.attributes or {}) do if v and type(k) == 'string' then "
+                 "a[#a + 1] = k end end "
+                 "out[t] = {attributes = a, fuel_max_kg = d.fuelMassMax} "
+                 "else out[t] = false end end "
+                 "return {types = out}")
+    # Is a hostile radar on / tracking / detecting Prometheus (names chosen by Eye.radar_candidates, bounded).
+    # Every call is pcall-wrapped: a missing API leaves that field out and the Eye falls back to the range table.
+    RADARS_LUA = ("local own = Unit.getByName(%s) "
+                  "if not own or not own:isExist() then return nil end "
+                  "local me = own:getName() local out = {} "
+                  "for _, n in ipairs(%s) do pcall(function() "
+                  "local u = Unit.getByName(n) "
+                  "if not u or not u:isExist() then return end "
+                  "local r = {name = n} "
+                  "local okh, has = pcall(function() return u:hasSensors(Unit.SensorType.RADAR) end) "
+                  "if okh then r.has_radar = has and true or false end "
+                  "local okr, on, tgt = pcall(function() return u:getRadar() end) "
+                  "if okr then r.on = on and true or false "
+                  "if tgt then local okn, tn = pcall(function() return tgt:getName() end) "
+                  "r.tracking_me = (okn and tn == me) and true or false end end "
+                  "local okd, det = pcall(function() "
+                  "return u:getGroup():getController():isTargetDetected(own, Controller.Detection.RADAR) end) "
+                  "if okd then r.detected = det and true or false end "
+                  "out[#out + 1] = r end) end "
+                  "return {radars = out}")
+    TYPES_RETRY_S = 30.0
+
+    @staticmethod
+    def _lua_list(names):
+        return "{" + ",".join(json.dumps(str(n), ensure_ascii=False) for n in names) + "}"
+
+    def _eval_json(self, custom, lua):
+        from dcs.custom.v0 import custom_pb2
+        raw = custom.Eval(custom_pb2.EvalRequest(lua=lua), timeout=5).json
+        return json.loads(raw) if raw else None
 
     def poll_weapons(self, custom=None):
         """One Eval of missiles in flight around ownship -> eye.on_weapons. Returns the new alerts."""
@@ -2723,26 +3196,62 @@ class GrpcFeeder:
         if custom is None:
             from dcs.custom.v0 import custom_pb2_grpc
             custom = custom_pb2_grpc.CustomServiceStub(self._chan())
-        from dcs.custom.v0 import custom_pb2
-        raw = custom.Eval(custom_pb2.EvalRequest(lua=self.WEAPONS_LUA % json.dumps(own["name"])), timeout=5).json
-        value = json.loads(raw) if raw else None
+        value = self._eval_json(custom, self.WEAPONS_LUA % json.dumps(own["name"]))
         rows = value.get("weapons") if isinstance(value, dict) else None
         if isinstance(rows, dict):  # an empty Lua table encodes as {}
             rows = list(rows.values())
         return self.eye.on_weapons(rows or [])
 
+    def poll_types(self, custom=None):
+        """Describe unit types DCS has not described yet (once per type). Returns how many were cached."""
+        names = self.eye.types_to_describe()
+        if not names:
+            return 0
+        if custom is None:
+            from dcs.custom.v0 import custom_pb2_grpc
+            custom = custom_pb2_grpc.CustomServiceStub(self._chan())
+        value = self._eval_json(custom, self.TYPES_LUA % self._lua_list(names))
+        rows = value.get("types") if isinstance(value, dict) else None
+        if not isinstance(rows, dict):
+            return 0  # no answer: ask again later, never cache a failure of the call itself
+        return self.eye.note_type_info({t: rows.get(t) for t in names})
+
+    def poll_radars(self, custom=None):
+        """One Eval of hostile radar state (on / tracking me / detecting me) -> eye.on_radars."""
+        own = self.eye.ownship()
+        if own is None or not own.get("name") or own.get("source") == "cockpit":
+            return None
+        names = self.eye.radar_candidates()
+        if custom is None:
+            from dcs.custom.v0 import custom_pb2_grpc
+            custom = custom_pb2_grpc.CustomServiceStub(self._chan())
+        if not names:
+            return self.eye.on_radars([])
+        value = self._eval_json(custom, self.RADARS_LUA % (json.dumps(own["name"]), self._lua_list(names)))
+        rows = value.get("radars") if isinstance(value, dict) else None
+        if rows is None:
+            return None  # no answer: the radar picture goes stale and the range table takes over
+        if isinstance(rows, dict):
+            rows = list(rows.values())
+        return self.eye.on_radars(rows)
+
     def _threats_loop(self):
         from dcs.custom.v0 import custom_pb2_grpc
         custom = custom_pb2_grpc.CustomServiceStub(self._chan())
+        next_at = {}
         while not self.stop.wait(self.WEAPONS_POLL_S):
-            if not self.eval_ok:
-                continue
-            try:
-                self.poll_weapons(custom)
-            except Exception as error:  # noqa: BLE001 - Eval off or mission loading: retry next tick
-                if "UNAVAILABLE" in _code(error):
-                    raise
-                self.stop.wait(5.0)
+            if self.eval_ok:
+                for name, poll, retry in (("types", self.poll_types, self.TYPES_RETRY_S),
+                                          ("weapons", self.poll_weapons, 5.0), ("radars", self.poll_radars, 5.0)):
+                    if time.monotonic() < next_at.get(name, 0.0):
+                        continue
+                    try:
+                        poll(custom)
+                    except Exception as error:  # noqa: BLE001 - Eval off or mission loading: retry later
+                        if "UNAVAILABLE" in _code(error):
+                            raise
+                        next_at[name] = time.monotonic() + retry
+            self.eye.tick()
 
     def poll_stores(self, custom=None):
         """One loadout poll for every player unit (ownship first)."""
@@ -2836,7 +3345,7 @@ class GrpcFeeder:
             if now >= due["airbases"]:
                 resp = world.GetAirbases(world_pb2.GetAirbasesRequest(coalition=common_pb2.COALITION_ALL), timeout=10)
                 self.eye.set_airbases([self._to_dict(a) for a in resp.airbases])
-                self.eye.set_connected(True)
+                self.eye.set_connected(True, stream="world")
                 try:
                     self.eye.theatre = world.GetTheatre(world_pb2.GetTheatreRequest(), timeout=5).theatre
                 except Exception:  # noqa: BLE001

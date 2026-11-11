@@ -168,24 +168,38 @@ MAX_INTERNAL_FUEL_LB = {
     # https://www.supersabre.com/f-100specs.htm (F-100D "Internal Fuel quantities 1,189 gall"). Not read from DCS.
     "F-100D": 7730,
     # F-14B: 16,200 lb internal (Grumman F-14 data, e.g. detailandscale.com F-14 Tomcat data sheet).
-    "F-14B": 16200, "F-14A-135-GR": 16200,
+    "F-14B": 16200, "F-14A-135-GR": 16200, "F-14BU": 16200,  # F-14BU = what the F-14B module reports (R3 T12)
 }
-FRACTION_MAX = 1.5  # LoGetEngineInfo fuel values at or below this are a fraction of capacity, above it kilograms
+# Phase 1: DCS's own max internal fuel (kg, Unit getDesc().fuelMassMax via Eval), per type; beats the table above.
+DCS_FUEL_MAX_KG = {}
+# LoGetEngineInfo fuel at or below this is a fraction of internal capacity (above 1 = with external tanks, the
+# F-100D read 1.57), above it kilograms. No airframe holds 3 kg of fuel, fractions never reach 3.
+FRACTION_MAX = 3.0
 
 
 def fuel_lb_from_fraction(fraction, aircraft, source="DCS-gRPC Unit:getFuel()"):
-    """Fuel fraction -> {"total_lb", "internal_pct", "source"} (pounds only for airframes in the table)."""
+    """Fuel fraction -> {"total_lb", "internal_pct", "source"}: pounds from DCS's own fuelMassMax when known,
+    else from the airframe table (approximate), else percent only. A fraction above 1 includes external tanks."""
     f = _f(fraction)
     if f is None or f <= 0:
         return None
-    out: dict = {"internal_pct": int(round(f * 100))}
-    max_lb = MAX_INTERNAL_FUEL_LB.get(aircraft or "")
+    out: dict = {"internal_pct": min(100, int(round(f * 100)))}
+    if f > 1.0:
+        out["total_pct"] = int(round(f * 100))
+        out["includes_external"] = True  # DCS fractions above 1 = internal full plus external tanks
+    max_kg = DCS_FUEL_MAX_KG.get(aircraft or "")
+    max_lb = max_kg * KG_TO_LB if max_kg else MAX_INTERNAL_FUEL_LB.get(aircraft or "")
     if max_lb:
         out["total_lb"] = int(round(f * max_lb, -1))
-        out["internal_lb"] = out["total_lb"]
-        out["source"] = "%s fraction x %s max internal (approximate)" % (source, aircraft)
-        out["estimated"] = True  # table value, not a DCS reading: say "about N pounds"
-        out["spoken"] = "about %s pounds" % format(out["total_lb"], ",")
+        out["internal_lb"] = int(round(min(f, 1.0) * max_lb, -1))
+        if max_kg:
+            out["source"] = "%s fraction x DCS fuelMassMax for %s" % (source, aircraft)
+            out["estimated"] = False
+            out["spoken"] = "%s pounds" % format(out["total_lb"], ",")
+        else:
+            out["source"] = "%s fraction x %s max internal (approximate)" % (source, aircraft)
+            out["estimated"] = True  # table value, not a DCS reading: say "about N pounds"
+            out["spoken"] = "about %s pounds" % format(out["total_lb"], ",")
     else:
         out["source"] = "%s fraction (pounds unknown for this airframe: give percent)" % source
     return out
@@ -253,6 +267,19 @@ def payload_to_stores(pay):
     return {"ammo": ammo, "fuel": None}
 
 
+RAD_TO_DEG = 57.29578
+
+
+def aoa_deg(p):
+    """AoA in degrees. AthenaExport.lua sends `aoa` = deg(LoGetAngleOfAttack()), but that function already returns
+    degrees, so `aoa` is degrees x 57.3 (R3 T11: A-10C II median 237 'degrees'; /57.3 = 4.1). A fixed export
+    should send `aoa_deg` (taken as is). Do NOT drop deg() in the Lua without renaming the key."""
+    if _f(p.get("aoa_deg")) is not None:
+        return _r(p.get("aoa_deg"), 1)
+    v = _f(p.get("aoa"))
+    return None if v is None else round(v / RAD_TO_DEG, 1)
+
+
 def _gear_word(v):
     if v is None:
         return None
@@ -271,6 +298,7 @@ class CockpitState:
         self.lock = threading.RLock()
         self.latest, self.at, self.src = None, None, None
         self.packets, self.bad, self.started_at, self.stopped_at = 0, 0, None, None
+        self.rejected = 0  # UDP packets from a source other than the DCS PC (dropped)
         self.slow = {}       # key -> (value, t) for pay/mech/warn/tgt
         self.emitters = {}   # emitter key -> highest signal level seen while it stays on the RWR
         self.alerts = deque(maxlen=50)
@@ -400,11 +428,14 @@ class CockpitState:
             if p is None:
                 return {"available": False, "reason": "no cockpit feed yet: AthenaExport.lua on the DCS PC sends "
                         "UDP %d (Export.lua loader line + Athena firewall)" % COCKPIT_PORT,
-                        "packets": self.packets, "status": self.status}
+                        "packets": self.packets, "status": self.status,
+                        **({"rejected_packets_other_source": self.rejected} if self.rejected else {})}
             age = now - self.at
             out = {"available": True, "fresh": age <= FRESH_S and self.stopped_at is None, "age_s": round(age, 1),
                    "aircraft": p.get("ac"),
                    "pilot": clean_name(p.get("pilot")) or None}
+            if self.rejected:
+                out["rejected_packets_other_source"] = self.rejected
             if self.stopped_at is not None:
                 out["note"] = self.status
             if age > 60:
@@ -425,7 +456,7 @@ class CockpitState:
                       "alt_msl_ft": _r(p.get("alt_msl") if p.get("alt_msl") is not None else p.get("alt"), -1,
                                        M_TO_FT),
                       "agl_ft": _r(p.get("agl"), -1, M_TO_FT), "vs_fpm": _r(p.get("vs"), -1, M_TO_FT * 60),
-                      "g": _r(p.get("g"), 1), "aoa_deg": _r(p.get("aoa"), 1),
+                      "g": _r(p.get("g"), 1), "aoa_deg": aoa_deg(p),
                       "heading_true": _r(p.get("hdg"), 0), "heading_mag": _r(p.get("hdg_mag"), 0),
                       "pitch_deg": _r(p.get("pitch"), 0), "bank_deg": _r(p.get("bank"), 0)}
             out["flight"] = {k: (int(v) if k.endswith("_ft") or k == "vs_fpm" else v)
@@ -509,11 +540,32 @@ class CockpitState:
         return out
 
 
-class CockpitListener:
-    """UDP listener thread: AthenaExport packets -> eye.on_cockpit_packet(pkt, src)."""
+COCKPIT_SOURCE_DEFAULT = "10.90.10.113"  # the DCS PC (same host as the DCS-gRPC source)
 
-    def __init__(self, eye, host="0.0.0.0", port=COCKPIT_PORT):
+
+def allowed_sources(eye=None):
+    """Who may send cockpit packets (R3 T14): ATHENA_COCKPIT_ALLOWED (comma list, "*" = anyone) > the host of
+    the existing DCS source setting (ATHENA_DCS_SOURCE / the Eye's "host:port") > the DCS PC default."""
+    import os
+    raw = os.environ.get("ATHENA_COCKPIT_ALLOWED", "").strip()
+    if not raw:
+        for candidate in (os.environ.get("ATHENA_DCS_SOURCE", ""), getattr(eye, "source", "") or ""):
+            host = candidate.strip().rsplit(":", 1)[0] if candidate.count(":") <= 1 else candidate.strip()
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
+                raw = host
+                break
+    if raw == "*":
+        return None
+    return {h.strip() for h in (raw or COCKPIT_SOURCE_DEFAULT).split(",") if h.strip()}
+
+
+class CockpitListener:
+    """UDP listener thread: AthenaExport packets -> eye.on_cockpit_packet(pkt, src). Only the configured DCS PC
+    may send (others are dropped and counted in cockpit.rejected)."""
+
+    def __init__(self, eye, host="0.0.0.0", port=COCKPIT_PORT, allowed=False):
         self.eye, self.host, self.port = eye, host, port
+        self.allowed = allowed_sources(eye) if allowed is False else allowed  # None = anyone
         self.stop = threading.Event()
         self.sock = None
         self.thread = None
@@ -546,6 +598,13 @@ class CockpitListener:
                 if self.stop.is_set():
                     return
                 time.sleep(0.2)
+                continue
+            if self.allowed is not None and addr[0] not in self.allowed:
+                with self.eye.cockpit.lock:
+                    self.eye.cockpit.rejected += 1
+                    if self.eye.cockpit.rejected == 1:
+                        LOG.warning("cockpit: dropping UDP packets from %s (allowed: %s)", addr[0],
+                                    ",".join(sorted(self.allowed)))
                 continue
             pkt = parse_packet(data)
             if pkt is None:

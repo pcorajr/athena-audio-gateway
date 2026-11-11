@@ -8,7 +8,7 @@ stop/start); roll back in reverse (Python first, then Go). Old Python with the n
 Optional `test_pilot` (boolean, deliverable frames only): the TEST stand-in is the pilot for this reply. The Go
 gateway remembers it to mark its own "say again" "Test pilot." too. The Go gateway built before it (v13) rejects
 the key like any unknown key, so the new Go binary must be running BEFORE a Python that sends it: new Go + old
-Python is fine (no flag, no marker on the gateway line), old Go + new Python drops every reply (silent) as soon
+Python is fine (no flag, no marker on the gateway line), old Go + new Python answers every call with the gateway's "say again" (not silence) as soon
 as ATHENA_TEST_OWNSHIP is set. With ATHENA_TEST_OWNSHIP unset this Python never sends the key, so it also runs
 against old Go. Roll back in reverse: Python first, then Go."""
 from dataclasses import dataclass

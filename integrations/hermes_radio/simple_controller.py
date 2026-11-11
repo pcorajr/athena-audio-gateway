@@ -435,9 +435,9 @@ POSITION_CLASSES = ("picture", "long_picture", "ground_picture", "traffic", "atc
 TOTALS_ASK = re.compile(r"\b(how many|kill\w*|lost|left|alive|destroyed|dead|war)\b", re.I)
 # Kill reports and status asks ("SA-2 is down", "tally SA-2", "mission status threats") need no position, unless
 # they also ask for a range or bearing ("nearest", "where").
-REPORT_ASK = re.compile(r"\b(down|shack|tally|neutrali[sz]ed|suppress\w*|splash|hits?|status)\b", re.I)
-RANGE_ASK = re.compile(r"\b(nearest|closest|nearby|near me|am i clear|vectors?|rtb|where|bearing|braa)\b", re.I)
-NEEDS_POSITION = re.compile(r"\b(threats?|nearest|closest|nearby|near me|am i clear|rtb|vectors?|defending|sa-?\d+)\b", re.I)
+REPORT_ASK = re.compile(r"\b(down|shack|tally|neutrali[sz]ed|suppress\w*|splash|hits?|mission status|kill status|got the|burning|toast|is out|off the air|scratch|gone)\b", re.I)
+RANGE_ASK = re.compile(r"\b(nearest|closest|nearby|near me|am i clear|vectors?|rtb|where|bearing|braa|any (other |more )?(threats?|sams?)|anything else|what else|there|range|low|ahead|area|route|target|safe|am i good|tracked|worry|threats? status|sams? status|rwr status|status of|threat picture|painting|(sams?|threats?) tally)\b", re.I)
+NEEDS_POSITION = re.compile(r"\b(threats?|sams?|nearest|closest|nearby|near me|am i clear|rtb|vectors?|defending|sa-?\d+)\b", re.I)
 
 
 def requested_calls(klass, text, pic):

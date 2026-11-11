@@ -1,0 +1,291 @@
+{
+ "source": "live adapter transcript 2026-11-11, r12.1 on the DCS server, Syria mission with no human player (ownship None)",
+ "asks": [
+  {
+   "time": "2026-11-11T10:22:06.126830-05:00",
+   "text": "Athena, Prometheus, picture",
+   "live_reply": "Prometheus, Athena, no hostile air groups within fifty miles.",
+   "route": "llm"
+  },
+  {
+   "time": "2026-11-11T10:22:07.665330-05:00",
+   "text": "Athena, Prometheus, what enemy ground units are out there",
+   "live_reply": "Prometheus, Athena, no ground targets within twenty miles.",
+   "route": "llm"
+  },
+  {
+   "time": "2026-11-11T10:22:08.905410-05:00",
+   "text": "Athena, Prometheus, any SAM threats",
+   "live_reply": "Prometheus, Athena, no SAMs in range and no missile inbound that I can see.",
+   "route": "llm"
+  },
+  {
+   "time": "2026-11-11T10:22:10.453013-05:00",
+   "text": "Athena, Prometheus, how many friendly aircraft are airborne",
+   "live_reply": "Prometheus, Athena, no air traffic data available to confirm how many friendlies are airborne.",
+   "route": "llm"
+  },
+  {
+   "time": "2026-11-11T10:22:13.649856-05:00",
+   "text": "Athena, Prometheus, confirm kills",
+   "live_reply": "Prometheus, Athena, no confirmed kills recorded, and no shots reported in the last fifteen minutes. The recent helicopter disappearances are unconfirmed.",
+   "route": "llm"
+  },
+  {
+   "time": "2026-11-11T10:22:15.242375-05:00",
+   "text": "Athena, Prometheus, say my fuel state",
+   "live_reply": "Prometheus, Athena, fuel unknown; ownship data is unavailable because you\u2019re not currently in an aircraft.",
+   "route": "llm"
+  }
+ ],
+ "picture": {
+  "source": "Athena Eye (DCS-gRPC 10.90.10.78:50051)",
+  "connected": true,
+  "data_age_s": {
+   "units": 0.7,
+   "last_event": null,
+   "airbases": 15.0,
+   "ownship": null
+  },
+  "event_stream": {
+   "state": "live",
+   "last_event_age_s": 0.2,
+   "events_per_min": 7.0,
+   "events_total": 35,
+   "units_age_s": 0.7,
+   "last_mission_event_age_s": null,
+   "resubscribes": {
+    "reconnect:units-helo": 1,
+    "reconnect:units-ground": 1,
+    "reconnect:units-air": 1,
+    "reconnect:units-ship": 1,
+    "reconnect:events": 1
+   },
+   "kinds_total": {
+    "simulation_fps": 35
+   }
+  },
+  "data_health": {
+   "connected": true,
+   "streams": {
+    "events": "up",
+    "units-air": "up",
+    "units-ground": "up",
+    "units-helo": "up",
+    "units-ship": "up",
+    "world": "up"
+   },
+   "events": "live",
+   "combat_events": "ok",
+   "unit_sync": {
+    "category": "GROUP_CATEGORY_SHIP",
+    "removed": 0,
+    "age_s": 8.7
+   }
+  },
+  "theatre": "Syria",
+  "bearings": "TRUE (magnetic declination unavailable)",
+  "notes": [
+   "Every unit listed in contacts/totals is ALIVE as of data_age_s.",
+   "Kills, losses and deaths come ONLY from recent_kills_and_losses / my_shots / my_kills. A kill with confidence confirmed is a kill (say splash, no 'likely'); only confidence likely is 'likely'.",
+   "Mission totals come from kill_tallies / my_kills_this_mission, never recent lists. For fresh confirmations use my_kills_recent seq after your last confirmation cursor.",
+   "clock is relative to Prometheus' nose (12 = ahead).",
+   "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
+   "picture_top3 = the three closest hostile air groups within 50 nm, verbatim. No extra-group count.",
+   "Traffic means aircraft (including helos), not ground units. Use air_traffic and airbase traffic.",
+   "Never say overhead unless the contact has overhead_allowed true (within 3 nm).",
+   "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): config, flight, payload, warning_lights; rwr/locked_target only when cockpit.rwr.available is true (no module has exported them so far). Fuel: ownship.fuel."
+  ],
+  "ownship": null,
+  "ownship_note": "Prometheus is not currently in an aircraft (no unit with player name Prometheus,Player,Client)",
+  "airbases": {
+   "count": 256,
+   "nearest": [
+    {
+     "name": "Abu al-Duhur",
+     "owner": "neutral",
+     "category": "airdrome"
+    },
+    {
+     "name": "Adana Sakirpasa",
+     "owner": "neutral",
+     "category": "airdrome"
+    },
+    {
+     "name": "Al Qusayr",
+     "owner": "neutral",
+     "category": "airdrome"
+    },
+    {
+     "name": "An Nasiriyah",
+     "owner": "neutral",
+     "category": "airdrome"
+    },
+    {
+     "name": "Tha'lah",
+     "owner": "neutral",
+     "category": "airdrome"
+    }
+   ]
+  },
+  "cockpit": {
+   "available": false,
+   "reason": "no cockpit feed yet: AthenaExport.lua on the DCS PC sends UDP 7778 (Export.lua loader line + Athena firewall)",
+   "packets": 0,
+   "status": "no cockpit packets yet"
+  },
+  "threats": {
+   "rwr_source": "grpc_inferred",
+   "rwr_export_by_module": {},
+   "sam_source": "range_table",
+   "sam_radar": {
+    "available": false,
+    "age_s": null,
+    "source": "DCS Unit:getRadar() + group radar detection (Eval, 1 Hz)",
+    "confidence": "unavailable (range table used)",
+    "tracking_you": [],
+    "radars_on": 0
+   },
+   "sam_in_range": [],
+   "missiles_inbound": []
+  },
+  "my_shots_last_15_min": {
+   "total": 0,
+   "by_result": {},
+   "shots": []
+  },
+  "last_attack_age_s": null,
+  "my_kills_this_mission": [],
+  "my_kills_recent": [],
+  "friendly_kills_this_mission": [],
+  "friendly_kills_recent": [],
+  "kill_seq": 0,
+  "kill_tallies": {
+   "me": {
+    "total": 0,
+    "confirmed": 0,
+    "likely": 0,
+    "by_category": {
+     "armor": 0,
+     "AAA": 0,
+     "SAM": 0,
+     "infantry": 0,
+     "vehicles": 0,
+     "scenery": 0
+    },
+    "by_type": {}
+   },
+   "all_friendly": {
+    "total": 0,
+    "confirmed": 0,
+    "likely": 0,
+    "by_category": {
+     "armor": 0,
+     "AAA": 0,
+     "SAM": 0,
+     "infantry": 0,
+     "vehicles": 0,
+     "scenery": 0
+    },
+    "by_type": {}
+   },
+   "by_shooter": {}
+  },
+  "my_weapons_used_this_mission": {
+   "source": "shot events",
+   "by_weapon": {}
+  },
+  "recent_kills_and_losses_last_10_min": [
+   {
+    "age_s": 34,
+    "event": "no longer showing (missed during a data outage)",
+    "inferred": true,
+    "victim": {
+     "type": "Mi-8MT",
+     "name": "Front line Golan South/Golan North CAS|47|27|Mi-8MTV2 Hip| Pilot #1",
+     "coalition": "red",
+     "category": "helicopter"
+    }
+   },
+   {
+    "age_s": 34,
+    "event": "no longer showing (missed during a data outage)",
+    "inferred": true,
+    "victim": {
+     "type": "Mi-8MT",
+     "name": "Front line Golan South/Golan North CAS|47|27|Mi-8MTV2 Hip| Pilot #2",
+     "coalition": "red",
+     "category": "helicopter"
+    }
+   },
+   {
+    "age_s": 34,
+    "event": "no longer showing (missed during a data outage)",
+    "inferred": true,
+    "victim": {
+     "type": "UH-1H",
+     "name": "Front line Golan South/Golan North CAS|80|4|UH-1H Iroquois| Pilot #4",
+     "coalition": "blue",
+     "category": "helicopter"
+    }
+   },
+   {
+    "age_s": 34,
+    "event": "no longer showing (missed during a data outage)",
+    "inferred": true,
+    "victim": {
+     "type": "UH-1H",
+     "name": "Front line Golan South/Golan North CAS|80|4|UH-1H Iroquois| Pilot #3",
+     "coalition": "blue",
+     "category": "helicopter"
+    }
+   }
+  ],
+  "recent_events_last_10_min": [],
+  "alive_totals_by_coalition": {
+   "blue": {
+    "helicopter": 4,
+    "SAM": 61,
+    "AAA": 12,
+    "armor": 30,
+    "artillery": 9,
+    "ground vehicle": 30,
+    "infantry": 12,
+    "AWACS": 1,
+    "fighter": 12,
+    "attack": 1,
+    "ship": 7,
+    "carrier": 2
+   },
+   "red": {
+    "armor": 46,
+    "artillery": 7,
+    "SAM": 37,
+    "AAA": 78,
+    "ground vehicle": 44,
+    "infantry": 15,
+    "attack": 27,
+    "fighter": 13,
+    "helicopter": 2
+   }
+  },
+  "_memory_generation": 1,
+  "memory": {
+   "coverage": {
+    "audit_claim_limit": 256,
+    "audit_claims_truncated": false,
+    "note": "Recent evidence window only. Older claims/evidence are not fully audited; missing evidence is inconclusive.",
+    "raw_event_limit": 2048,
+    "raw_events_truncated": false
+   },
+   "kill_loss_timeline": [],
+   "mission_key": "mission-02ec3e64d24057f24b337cd91ff79e8f70b41c1eab0adafa9e3a1b02069ad4cf",
+   "recent_disagreements": [],
+   "takeoff_airfield": null,
+   "weapons_used_this_mission": {
+    "by_weapon": {},
+    "source": "shot events"
+   }
+  }
+ }
+}

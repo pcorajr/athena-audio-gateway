@@ -16,7 +16,7 @@ import unicodedata
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
 from .cockpit import spoken_name
 from .codex_llm import read_chunks
-from .eye import KILL_REPORT, _QUESTION, domain, words
+from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
 
@@ -43,6 +43,7 @@ Facts that matter:
 
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
+- If ownship is null you have NO position for Prometheus: for anything that needs a range or bearing from him (picture, bogey dope, ground targets, SAMs, threats, traffic, vectors) say no_position_call and nothing else. Never say "no ... within ... miles", "no SAMs in range" or "no missile inbound" without a position. Coalition-wide facts (alive totals, kills) are still fine.
 - Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
 - Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (read the picture_top3 calls verbatim, every call whole, nothing added between them); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts. Never cut a call mid-way: if the answer must be shorter, leave out whole calls from the end.
 - Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
@@ -429,9 +430,14 @@ def debrief_summary(pic):
     return fit_reply(" ".join(parts), DEBRIEF_CHARS)[0]
 
 
+# No pilot position (ownship null): these answers are a range/bearing from the pilot, so they cannot be given.
+POSITION_CLASSES = ("picture", "long_picture", "ground_picture", "traffic", "atc", "launch")
 def requested_calls(klass, text, pic):
     """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
     if not pic.get("ownship"):
+        if "ownship" in pic and (klass in POSITION_CLASSES or (klass is None and (
+                GROUND_ASK.search(text) or BEARING_ASK.search(text) or "rwr" in focus_of(text)))):
+            return [NO_POSITION]  # never an all-clear from an empty list (live 2026-11-11)
         return None
     if klass == "long_picture" and "picture_long_range_top3" in pic:
         return pic["picture_long_range_top3"] or ["No bandits within one hundred fifty miles."]
@@ -1225,8 +1231,8 @@ class SimpleController:
         stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
         if age is not None and age > 60:
             stale.append("Contact data is %s seconds old." % words(age))
-        if klass == "launch":
-            calls = self.launch_calls(text, pic) if pic.get("ownship") else None
+        if klass == "launch" and pic.get("ownship"):
+            calls = self.launch_calls(text, pic)
         elif klass == "kill_confirm" and pic.get("ownship") and "my_kills_this_mission" in pic:
             # the real room: a close bandit call goes first and takes its share (grouped kill wording then)
             first = [row["call"] for row in (close_bandits or [])[:1]]

@@ -37,6 +37,7 @@ Key options (flag, or environment variable):
 | `--port` | | 8650 |
 | `--eye-host`, `--eye-port` | `ATHENA_EYE_HOST`, `ATHENA_EYE_PORT` | overridden by `ATHENA_DCS_SOURCE` (`client` = 10.90.10.113:50051, `server` = 10.90.10.78:50051) |
 | `--cockpit-port`, `--cockpit-host` | `ATHENA_COCKPIT_PORT`, `ATHENA_COCKPIT_HOST` | 7778 (0 = off), 0.0.0.0 |
+| `--test-ownship` | `ATHENA_TEST_OWNSHIP` | unset. **Test only:** exact DCS unit name treated as the pilot when no real player unit is in the mission (a real player always wins). The picture says `TEST stand-in pilot: <unit>`; Memory records carry `test_ownship`. Never set for a real flight. |
 | cockpit sender allowlist | `ATHENA_COCKPIT_ALLOWED` (comma list, `*` = anyone) | the pilot's client PC (`ATHENA_DCS_CLIENT_HOST`, else 10.90.10.113) in client AND server mode (AthenaExport.lua always runs on the client PC), plus the Eye's DCS host; other senders are dropped, counted and named (`cockpit.rejected_packets_other_source`, `cockpit.rejected_senders`, and `cockpit.reason` while no packet was accepted) |
 | `--llm-backend` | `ATHENA_RADIO_BACKEND` | `openai`; the launcher sets `codex` |
 | `--codex-model`, `--codex-effort`, `--codex-timeout` | `ATHENA_RADIO_CODEX_*` | `gpt-6-luna`, `low`, 6 s (wall clock) |

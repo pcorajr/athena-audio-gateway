@@ -38,6 +38,9 @@ def main():
     parser.add_argument("--whisper-prompt-out", default=os.environ.get("ATHENA_WHISPER_DYNAMIC_PROMPT"),
                         help="file the eye keeps current with callsign + nearby airfields for the gateway's "
                              "--athena-dynamic-prompt-file; default: <transcript dir>/whisper-prompt-dynamic.txt")
+    parser.add_argument("--test-ownship", default=os.environ.get("ATHENA_TEST_OWNSHIP"),
+                        help="TEST ONLY, off by default: exact DCS unit name treated as the pilot when no real "
+                             "player unit is in the mission (a real player always wins)")
     args = parser.parse_args()
     feeder = listener = None
     try:
@@ -52,9 +55,11 @@ def main():
             logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
             eye, feeder = build(args.eye_host, args.eye_port, player=args.speaker,
                                 stores_dir=args.stores_dir or str(transcript.root),
-                                prompt_path=args.whisper_prompt_out or str(transcript.root / "whisper-prompt-dynamic.txt"))
+                                prompt_path=args.whisper_prompt_out or str(transcript.root / "whisper-prompt-dynamic.txt"),
+                                test_ownship=args.test_ownship or "")
             feeder.start()
-            transcript.log(kind="eye_start", outcome="starting", source="%s:%d" % (args.eye_host, args.eye_port))
+            transcript.log(kind="eye_start", outcome="starting", source="%s:%d" % (args.eye_host, args.eye_port),
+                           **({"test_ownship": eye.test_ownship} if eye.test_ownship else {}))
             if args.cockpit_port:
                 from .cockpit import CockpitListener
                 listener = CockpitListener(eye, host=args.cockpit_host, port=args.cockpit_port).start()

@@ -91,6 +91,8 @@ STORES_POLL_S = 3.0
 AMMO_KIND = {0: "gun", 1: "missile", 2: "rocket", 3: "bomb", 4: "torpedo"}
 DEATH_KINDS = ("kill", "dead", "unit_lost", "crash", "pilot_dead")
 LOG = logging.getLogger("athena.eye")
+# Said instead of any range/bearing answer when no pilot unit is known (live 2026-11-11: false all-clears).
+NO_POSITION = "I don't have your position; you're not showing in an aircraft."
 # Round 4 kill confirmation: a target that stops showing within this many seconds of my last attack on it
 # (gun/rocket: last rounds; bomb/missile: release, covers the time of flight) is a CONFIRMED kill
 # (still flagged inferred in the log). Later than that (up to 5 min) it is only "likely".
@@ -676,8 +678,10 @@ def _raw_compact(value):
 
 # ----------------------------------------------------------------------------- the eye
 class Eye:
-    def __init__(self, player=PLAYER, *, clock=time.time, source="unconfigured", stores_dir=None):
+    def __init__(self, player=PLAYER, *, clock=time.time, source="unconfigured", stores_dir=None, test_ownship=None):
         self.player, self.clock, self.source = player, clock, source
+        # TEST ONLY (ATHENA_TEST_OWNSHIP): exact DCS unit name used as the pilot when no real player unit exists.
+        self.test_ownship = (test_ownship or "").strip() or None
         self.memory = None  # memory6: optional nonblocking observation publisher
         self.lock = threading.RLock()
         self._seq = itertools.count(1)
@@ -857,6 +861,7 @@ class Eye:
 
     # -- durable stores/shot log
     def _log_store(self, record):
+        record = dict(record, **self._test_tag())
         if self.memory is not None:  # memory6: every new Eye fact = publish an observation
             self.memory.publish(record.get("kind", "derived_fact"), record, at=self.clock())
         if not self.stores_dir:
@@ -927,7 +932,23 @@ class Eye:
                 players.append(u)
         if len(players) == 1:
             return players[0]
-        return cockpit.ownship() if cockpit is not None else None
+        own = cockpit.ownship() if cockpit is not None else None
+        name = getattr(self, "test_ownship", None)
+        if own is None and name:  # test stand-in: only when no real pilot resolved; gone when the unit dies
+            return next((u for u in self.units.values() if u.get("name") == name and u.get("lat") is not None), None)
+        return own
+    def _stand_in(self, own):
+        """The label when `own` is the TEST stand-in (an AI unit), else None."""
+        name = getattr(self, "test_ownship", None)
+        if own is None or not name or own.get("name") != name or own.get("player") or own.get("source") == "cockpit":
+            return None
+        return "TEST stand-in pilot: %s (an AI unit, NOT a human pilot)" % name
+    def _test_tag(self):
+        """Marks Memory / stores-log records made while the stand-in is the pilot (the debrief says so)."""
+        if not getattr(self, "test_ownship", None):
+            return {}
+        with self.lock:
+            return {"test_ownship": self.test_ownship} if self._stand_in(self._own_locked()) else {}
 
     def ownship(self):
         with self.lock:
@@ -1054,7 +1075,7 @@ class Eye:
             self._settle_shots(now)  # settle at event time (was: whenever a picture happened to be built)
             wake = self._apply(ev)
             if self.memory is not None:  # memory6: include takeoff/landing, loss and damage evidence
-                self.memory.publish("event", dict(ev, mine=self._is_me(ev.get("initiator"))), at=now)
+                self.memory.publish("event", dict(ev, mine=self._is_me(ev.get("initiator")), **self._test_tag()), at=now)
         if wake and self.on_player_shot is not None:
             try:
                 self.on_player_shot()
@@ -1855,7 +1876,9 @@ class Eye:
             "tracking_you": tracking[:5],
             "radars_on": sum(1 for r in self.radars.values() if r["has_radar"] and r["on"]) if radar_fresh else 0}
         if own is None or own.get("lat") is None:
-            out["sam_in_range"], out["missiles_inbound"] = [], []
+            # None, not []: with no pilot position nothing was checked, so an empty list would read as all-clear.
+            out["sam_in_range"], out["missiles_inbound"] = None, None
+            out["note"] = "no position for Prometheus: SAM range and missile checks are NOT running (not an all-clear)"
             return out, [], []
         sams = self._sam_threats(own, now)
         out["sam_in_range"] = sams[:PICTURE_TOP]
@@ -2610,6 +2633,15 @@ class Eye:
         if own is None:
             pic["ownship"] = None
             pic["ownship_note"] = "Prometheus is not currently in an aircraft (no unit with player name %s)" % self.player
+            if self.test_ownship:
+                pic["ownship_note"] += ("; TEST stand-in pilot unit '%s' is not in the mission (no such unit, or it "
+                                        "died)" % self.test_ownship)
+            # No pilot position: nothing range/bearing-based can be answered, and an empty list is NOT an all-clear.
+            pic["no_position_call"] = NO_POSITION
+            pic["notes"].append("ownship is null: Athena has NO position for Prometheus. Anything needing range or "
+                                "bearing (picture, ground targets, SAMs, threats, traffic) = say no_position_call; "
+                                "never 'no ... within N miles' or 'no SAMs in range'. Coalition-wide facts "
+                                "(alive_totals_by_coalition, kills) are still valid.")
         else:
             pic["ownship"] = {
                 "type": own["type"], "coalition": own["coalition"], "group": clean_name(own["group"]),
@@ -2628,6 +2660,10 @@ class Eye:
                 pic["ownship"]["heading_mag"] = _three((own["heading"] or 0) - self.declination)
             if own.get("source") == "cockpit":
                 pic["ownship"]["source"] = "cockpit feed only (DCS-gRPC has no unit for Prometheus)"
+            stand_in = self._stand_in(own)
+            if stand_in:  # never mistaken for a real pilot: said on the ownship, at top level and in the notes
+                pic["ownship"]["source"] = pic["test_ownship"] = stand_in
+                pic["notes"].append(stand_in + ". Positions, fuel, loadout, shots and kills are that unit's.")
             if own.get("lat") is not None:
                 self._contacts(own, pic)
             pic["working_target"] = self._working_target(own, cockpit, now)
@@ -3028,6 +3064,8 @@ class GrpcFeeder:
                 self.eye.on_units_message(self._to_dict(resp))
         except grpc.RpcError as error:
             if error.code() == grpc.StatusCode.CANCELLED and not self.stop.is_set():
+                with self.eye.lock:  # the resend was cut short: no sweep on it, the next subscription starts one
+                    self.eye.unit_sync.pop(category, None)
                 return  # resubscribe requested (mission change): reconnect for a full unit snapshot
             raise
         finally:
@@ -3422,7 +3460,7 @@ class GrpcFeeder:
             self.stop.wait(2)
 
 
-def build(host, port, player=PLAYER, *, stores_dir=None, prompt_path=None):
+def build(host, port, player=PLAYER, *, stores_dir=None, prompt_path=None, test_ownship=None):
     # memory6: one source setting for both independent readers.
     import os
     if "ATHENA_DCS_SOURCE" in os.environ or os.environ.get("ATHENA_MEMORY_ENABLED") == "1":
@@ -3432,7 +3470,11 @@ def build(host, port, player=PLAYER, *, stores_dir=None, prompt_path=None):
             from metis.state_service.memory_source import resolve_source
         source = resolve_source()
         host, port = source.host, source.port
-    eye = Eye(player, source="%s:%d" % (host, port), stores_dir=stores_dir)
+    eye = Eye(player, source="%s:%d" % (host, port), stores_dir=stores_dir,
+              test_ownship=os.environ.get("ATHENA_TEST_OWNSHIP") if test_ownship is None else test_ownship)
+    if eye.test_ownship:
+        LOG.warning("eye: !!!!!!!! TEST STAND-IN PILOT ACTIVE: unit '%s' is treated as Prometheus when no real "
+                    "player is in the mission (ATHENA_TEST_OWNSHIP). NOT FOR REAL FLIGHTS. !!!!!!!!", eye.test_ownship)
     from .memory_link import attach  # memory6: isolated optional integration
     attach(eye)
     return eye, GrpcFeeder(eye, host, port, prompt_path=prompt_path)
@@ -3446,9 +3488,12 @@ def main(argv=None):
     parser.add_argument("--cockpit-port", type=int, default=0,
                         help="also listen for the AthenaExport.lua cockpit feed on this UDP port (0 = off; the "
                              "radio adapter normally owns 7778)")
+    parser.add_argument("--test-ownship", default=None,
+                        help="TEST ONLY: exact DCS unit name used as the pilot when no real player is in the mission "
+                             "(default: env ATHENA_TEST_OWNSHIP)")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO)
-    eye, feeder = build(args.host, args.port)
+    eye, feeder = build(args.host, args.port, test_ownship=args.test_ownship)
     feeder.start()
     listener = CockpitListener(eye, port=args.cockpit_port).start() if args.cockpit_port else None
     time.sleep(args.seconds)

@@ -191,6 +191,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 		return
 	}
 	timing.Route, timing.Model = frameRoute(parts[0]), parts[0].Model
+	r.noteTestPilot(parts[0])
 	for i, resp := range parts {
 		r.recordFrame(t, "reply_intended", resp, "generated", i+1, map[string]int64{"reply_received": timing.ReplyReceived})
 	}
@@ -251,6 +252,31 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 	}
 }
 
+// testPilotFresh bounds how long a test_pilot frame keeps marking the gateway's
+// own lines: a real pilot who joined after it must never hear the marker.
+const testPilotFresh = 5 * time.Minute
+
+// noteTestPilot remembers whether the adapter's latest deliverable frame said
+// the TEST stand-in is the pilot. No frame seen (or an adapter that never sends
+// the field) = false.
+func (r *Runner) noteTestPilot(resp bridge.Response) {
+	if resp.TestPilot {
+		r.testPilotAt.Store(time.Now().UnixNano())
+		return
+	}
+	r.testPilotAt.Store(0)
+}
+
+// markTestPilot puts "Test pilot." after the address of the gateway's own
+// "say again" while the adapter's last frame said so, like the adapter's replies.
+func (r *Runner) markTestPilot(line string) string {
+	at := r.testPilotAt.Load()
+	if at == 0 || time.Since(time.Unix(0, at)) > testPilotFresh {
+		return line
+	}
+	return strings.Replace(line, "Prometheus, Athena, ", "Prometheus, Athena, Test pilot. ", 1)
+}
+
 // fallback speaks one short fixed line on the still-unused reply sender. A
 // "say again" is never stale, so it may start slightly after the expiry.
 func (r *Runner) fallback(ctx context.Context, t simpleradio.Transmission, send replySender, expires time.Time, line, label string, timing *Timing) {
@@ -259,6 +285,7 @@ func (r *Runner) fallback(ctx context.Context, t simpleradio.Transmission, send 
 		return
 	}
 	reason := timing.Outcome
+	line = r.markTestPilot(line)
 	synthCtx, cancel := context.WithTimeout(ctx, fallbackTimeout)
 	audio, err := r.Synthesize(synthCtx, line)
 	cancel()

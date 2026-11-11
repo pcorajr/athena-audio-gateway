@@ -157,7 +157,7 @@ func validateMVPJSON(payload []byte) error {
 			return invalid()
 		}
 		switch key {
-		case "deliverable":
+		case "deliverable", "test_pilot":
 			var b bool
 			if json.Unmarshal(value, &b) != nil {
 				return invalid()

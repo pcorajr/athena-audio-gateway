@@ -30,6 +30,8 @@ type Timing struct {
 	TransmissionID                                                 string
 	Received, STTDone, ReplyReceived, TTSDone, FirstSend, LastSend int64
 	Outcome                                                        string
+	// Route and Model are the adapter's labels of the reply (empty: none sent).
+	Route, Model string
 }
 
 func LogTiming(t Timing) {
@@ -92,8 +94,11 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 	r.lastTransmissionID = t.TraceID
 	timing := Timing{TransmissionID: t.TraceID, Received: 0, STTDone: -1, ReplyReceived: -1, TTSDone: -1, FirstSend: -1, LastSend: -1, Outcome: "bridge_no_response"}
 	defer func() {
-		route := exchangeRoute(timing)
-		r.record(t, "exchange_outcome", "", timing.Outcome, route, 0, map[string]int64{"stt_done": timing.STTDone, "reply_received": timing.ReplyReceived, "tts_done": timing.TTSDone, "first_send": timing.FirstSend, "last_send": timing.LastSend})
+		route, model := exchangeRoute(timing), timing.Model
+		if route != timing.Route && timing.Route != "" {
+			model = "" // a gateway fallback: the adapter's words were not spoken
+		}
+		r.log(t, transcript.Record{Kind: "exchange_outcome", Outcome: timing.Outcome, Route: route, Model: model, Timings: map[string]int64{"stt_done": timing.STTDone, "reply_received": timing.ReplyReceived, "tts_done": timing.TTSDone, "first_send": timing.FirstSend, "last_send": timing.LastSend}})
 		if r.Record != nil {
 			r.Record(timing)
 		} else {
@@ -166,7 +171,8 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 		timing.Outcome = "suppressed"
 		return
 	}
-	r.record(t, "reply_intended", resp.Speech, "generated", "LLM", 1, nil)
+	timing.Route, timing.Model = frameRoute(resp), resp.Model
+	r.recordFrame(t, "reply_intended", resp, "generated", 1, map[string]int64{"reply_received": timing.ReplyReceived})
 	audio, err := r.Synthesize(workCtx, resp.Speech)
 	timing.TTSDone = time.Since(t.ReceivedAt).Milliseconds()
 	if err != nil || len(audio) == 0 {
@@ -187,7 +193,7 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 		timing.LastSend = delivery.LastSend.Sub(t.ReceivedAt).Milliseconds()
 	}
 	timing.Outcome = deliveryOutcome(delivery)
-	r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", 1, map[string]int64{"first_send": timing.FirstSend, "last_send": timing.LastSend})
+	r.recordFrame(t, "delivery", resp, timing.Outcome, 1, map[string]int64{"first_send": timing.FirstSend, "last_send": timing.LastSend})
 }
 
 // exchangeRoute labels the exchange_outcome record. A spoken (or attempted)
@@ -196,10 +202,21 @@ func exchangeRoute(t Timing) string {
 	switch {
 	case strings.HasPrefix(t.Outcome, "say_again_fallback"), strings.HasPrefix(t.Outcome, "too_long_fallback"):
 		return "fallback"
+	case t.ReplyReceived >= 0 && t.Route != "":
+		return t.Route
 	case t.ReplyReceived >= 0:
 		return "LLM"
 	}
 	return "ignored"
+}
+
+// frameRoute is the adapter's route label of a reply frame (fixed, llm,
+// debrief or fallback); a frame from an adapter that sends none stays "LLM".
+func frameRoute(resp bridge.Response) string {
+	if resp.Route == "" {
+		return "LLM"
+	}
+	return resp.Route
 }
 func deliveryOutcome(d simpleradio.Delivery) string {
 	if d.Reason != "" {

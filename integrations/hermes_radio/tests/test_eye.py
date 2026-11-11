@@ -368,7 +368,8 @@ class ControllerTests(unittest.TestCase):
         self.assertFalse(list(c.stream(req("picture", speaker="Someone")))[0]["deliverable"])
         self.assertFalse(list(c.stream(req("...")))[0]["deliverable"])
 
-    def test_llm_retry_then_fallback(self):
+    def test_llm_failure_says_again_without_a_retry(self):
+        # phase 1: one deadline per exchange, no outer retry (CodexLLM already falls back to the API model)
         calls = []
 
         def flaky(messages):
@@ -378,7 +379,8 @@ class ControllerTests(unittest.TestCase):
             return "Prometheus, Athena, copy."
         c = self.controller(flaky)
         said = c.exchange(req("radio check"))["speech"]
-        self.assertTrue(said.endswith("copy."), said)
+        self.assertTrue(said.endswith(FALLBACK.split("Athena, ", 1)[-1]), said)
+        self.assertEqual(len(calls), 1)
 
         def dead(messages):
             raise RuntimeError("down")

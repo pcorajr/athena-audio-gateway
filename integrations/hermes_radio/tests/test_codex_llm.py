@@ -1,5 +1,6 @@
 """Codex-subscription radio backend: request shape, streaming, 401 refresh, fallback, no token leaks."""
 import json
+import time
 import unittest
 
 from integrations.hermes_radio.codex_llm import CodexLLM, HermesCodexCredentials, to_responses
@@ -11,20 +12,23 @@ SECRET = "header.eyJleHAiOjQxMDI0NDQ4MDB9.sig-SECRET"  # exp 2100-01-01
 
 class FakeCreds:
     def __init__(self):
-        self.calls = []
+        self.calls, self.refreshes = [], []
 
-    def get(self, force=False):
-        self.calls.append(force)
+    def current(self):
+        self.calls.append(False)
         return {"token": SECRET, "base_url": "https://chatgpt.example/backend-api/codex",
                 "headers": {"ChatGPT-Account-ID": "acct"}}
+
+    def refresh(self, force=False):
+        self.refreshes.append(force)
 
 
 class Post:
     def __init__(self, *replies):
         self.replies, self.seen = list(replies), []
 
-    def __call__(self, url, headers, body, timeout):
-        self.seen.append((url, headers, json.loads(body), timeout))
+    def __call__(self, url, headers, body, deadline):
+        self.seen.append((url, headers, json.loads(body), deadline - time.monotonic()))
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -50,14 +54,16 @@ class CodexLLMTests(unittest.TestCase):
         self.assertEqual([i["role"] for i in body["input"]], ["user", "assistant", "user"])
         self.assertEqual(body["input"][1]["content"][0]["type"], "output_text")
         self.assertEqual(headers["ChatGPT-Account-ID"], "acct")
-        self.assertEqual(timeout, 6.0)
+        self.assertTrue(5.5 < timeout <= 6.0, timeout)  # wall-clock budget, not a per-read idle timeout
         self.assertEqual(llm.last["backend"], "openai-codex")
 
-    def test_401_refreshes_once(self):
+    def test_401_refreshes_in_the_background_and_falls_back(self):
+        # phase 1: the 20 s credential helper never runs inside a radio call
         creds = FakeCreds()
-        llm = CodexLLM(lambda m: "FALLBACK", credentials=creds, post=Post((401, "expired"), (200, "ok")))
-        self.assertEqual(llm(MESSAGES), "ok")
-        self.assertEqual(creds.calls, [False, True])
+        llm = CodexLLM(lambda m: "FALLBACK", credentials=creds, post=Post((401, "expired")))
+        self.assertEqual(llm(MESSAGES), "FALLBACK")
+        self.assertEqual(creds.refreshes, [True])
+        self.assertIn("codex_http_401", llm.last["fallback_reason"])
 
     def test_fallback_on_quota_timeout_empty_and_credentials(self):
         for reply in ((429, "usage limit reached"), TimeoutError("timed out"), (200, "  "), (502, "failed")):
@@ -67,7 +73,7 @@ class CodexLLMTests(unittest.TestCase):
             self.assertNotIn("SECRET", json.dumps(llm.last))
 
         class Broken:
-            def get(self, force=False):
+            def current(self):
                 raise RuntimeError("codex_credentials_unavailable: not logged in")
         llm = CodexLLM(lambda m: "FALLBACK", credentials=Broken(), post=Post())
         self.assertEqual(llm(MESSAGES), "FALLBACK")

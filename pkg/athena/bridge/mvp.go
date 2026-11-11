@@ -40,6 +40,9 @@ func (r Response) ValidateMVP(transmissionID string, maxSpeech int) error {
 	if !r.Deliverable && r.Speech != "" {
 		return fmt.Errorf("%w: suppressed speech must be empty", ErrInvalidResponse)
 	}
+	if !r.validLabels() {
+		return fmt.Errorf("%w: route or model label", ErrInvalidResponse)
+	}
 	return nil
 }
 
@@ -159,7 +162,7 @@ func validateMVPJSON(payload []byte) error {
 			if json.Unmarshal(value, &b) != nil {
 				return invalid()
 			}
-		case "transmission_id", "speech", "intent_class", "state", "suppression_reason":
+		case "transmission_id", "speech", "intent_class", "state", "suppression_reason", "route", "model":
 			var s string
 			if json.Unmarshal(value, &s) != nil || strings.ContainsRune(s, utf8.RuneError) {
 				return invalid()

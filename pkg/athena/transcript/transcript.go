@@ -23,6 +23,7 @@ type Record struct {
 	Text        string           `json:"text"`
 	Outcome     string           `json:"outcome"`
 	Route       string           `json:"route,omitempty"`
+	Model       string           `json:"model,omitempty"`
 	Part        int              `json:"part,omitempty"`
 	Timings     map[string]int64 `json:"timings_ms,omitempty"`
 }

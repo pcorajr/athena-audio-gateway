@@ -91,18 +91,28 @@ func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmiss
 }
 
 func (r *Runner) record(t simpleradio.Transmission, kind, text, outcome, route string, part int, timings map[string]int64) {
-	if kind == "inbound" && t.RecordReception(text, outcome, timings) {
+	r.log(t, transcript.Record{Kind: kind, Text: text, Outcome: outcome, Route: route, Part: part, Timings: timings})
+}
+
+// recordFrame records one reply frame with the adapter's labels (route, model).
+func (r *Runner) recordFrame(t simpleradio.Transmission, kind string, resp bridge.Response, outcome string, part int, timings map[string]int64) {
+	r.log(t, transcript.Record{Kind: kind, Text: resp.Speech, Outcome: outcome, Route: frameRoute(resp), Model: resp.Model, Part: part, Timings: timings})
+}
+
+func (r *Runner) log(t simpleradio.Transmission, rec transcript.Record) {
+	if rec.Kind == "inbound" && t.RecordReception(rec.Text, rec.Outcome, rec.Timings) {
 		return
 	}
-	mod := "AM"
+	rec.Modulation = "AM"
 	if t.Radio.Modulation == 1 {
-		mod = "FM"
+		rec.Modulation = "FM"
 	}
-	speaker := t.ClientName
-	if kind == "reply_intended" || kind == "delivery" {
-		speaker = "Athena"
+	rec.Speaker = t.ClientName
+	if rec.Kind == "reply_intended" || rec.Kind == "delivery" {
+		rec.Speaker = "Athena"
 	}
-	r.Transcript.Log(transcript.Record{Kind: kind, ID: t.TraceID, FrequencyHz: uint64(t.Radio.Frequency), Modulation: mod, Speaker: speaker, Text: text, Outcome: outcome, Route: route, Part: part, Timings: timings})
+	rec.ID, rec.FrequencyHz = t.TraceID, uint64(t.Radio.Frequency)
+	r.Transcript.Log(rec)
 }
 
 func (r *Runner) observe(ctx context.Context, t simpleradio.Transmission) (string, string) {
@@ -180,12 +190,13 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 		timing.Outcome = "suppressed"
 		return
 	}
+	timing.Route, timing.Model = frameRoute(parts[0]), parts[0].Model
 	for i, resp := range parts {
-		r.record(t, "reply_intended", resp.Speech, "generated", "LLM", i+1, nil)
+		r.recordFrame(t, "reply_intended", resp, "generated", i+1, map[string]int64{"reply_received": timing.ReplyReceived})
 	}
 	if !valid() {
 		for i, resp := range parts {
-			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, nil)
+			r.recordFrame(t, "delivery", resp, timing.Outcome, i+1, nil)
 		}
 		return
 	}
@@ -200,7 +211,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 				return
 			}
 			timing.Outcome = "tts_failed_or_empty"
-			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, nil)
+			r.recordFrame(t, "delivery", resp, timing.Outcome, i+1, nil)
 			r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing)
 			return
 		}
@@ -210,14 +221,14 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 	if samples > simpleradio.MaxMVPReplySamples {
 		timing.Outcome = "speech_duration_exceeded"
 		for i, resp := range parts {
-			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, map[string]int64{"audio_ms": int64(len(audios[i])) * 1000 / 16000})
+			r.recordFrame(t, "delivery", resp, timing.Outcome, i+1, map[string]int64{"audio_ms": int64(len(audios[i])) * 1000 / 16000})
 		}
 		r.fallback(ctx, t, send, expires, TooLongLine, "too_long_fallback", timing)
 		return
 	}
 	if !valid() {
 		for i, resp := range parts {
-			r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, nil)
+			r.recordFrame(t, "delivery", resp, timing.Outcome, i+1, nil)
 		}
 		return
 	}
@@ -229,11 +240,11 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 		d := send(ctx, audios[i], partExpires)
 		r.noteSend(t, d, timing)
 		timing.Outcome = deliveryOutcome(d)
-		r.record(t, "delivery", resp.Speech, timing.Outcome, "LLM", i+1, map[string]int64{"first_send": sinceMs(t, d.FirstSend), "last_send": sinceMs(t, d.LastSend)})
+		r.recordFrame(t, "delivery", resp, timing.Outcome, i+1, map[string]int64{"first_send": sinceMs(t, d.FirstSend), "last_send": sinceMs(t, d.LastSend)})
 		if d.Outcome != "sent" {
 			// The sender is closed after a failed write; nothing more can be keyed.
 			for j := i + 1; j < len(parts); j++ {
-				r.record(t, "delivery", parts[j].Speech, "not_sent_after_failure", "LLM", j+1, nil)
+				r.recordFrame(t, "delivery", parts[j], "not_sent_after_failure", j+1, nil)
 			}
 			return
 		}

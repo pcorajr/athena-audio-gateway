@@ -1,16 +1,17 @@
 """Radio LLM backend on the ChatGPT/Codex subscription (Responses API), with automatic API fallback.
 
-The controller calls ``llm(messages)`` with chat-style messages. ``CodexLLM`` sends them to
+The controller calls ``llm.answer_by(messages, deadline)`` with chat-style messages. ``CodexLLM`` sends them to
 ``<codex base>/responses`` (stream, store=false, reasoning effort configurable, default low) and returns the
 text. Any failure - no credentials, HTTP error (quota 429, 5xx), timeout, empty answer - falls back to
-``fallback(messages)`` (the OpenAI API mini model) so the radio never goes silent.
+``fallback(messages, deadline=...)`` (the OpenAI API mini model) inside the same exchange deadline.
 
 Credentials are NOT handled here: a small helper runs inside Hermes' own environment
 (``hermes_cli.auth.resolve_codex_runtime_credentials`` + ``agent.codex_headers``), which owns login refresh
-and locking. The token is cached in memory until shortly before its JWT expiry and re-fetched once on 401
-(with force_refresh). The token is never logged, printed or written to the transcript.
+and locking. The token is cached in memory and refreshed in the background ahead of its JWT expiry, and after
+a 401 (with force_refresh). The token is never logged, printed or written to the transcript.
 """
 import base64
+import inspect
 import http.client
 import json
 import os
@@ -45,13 +46,18 @@ def _jwt_exp(token):
 
 
 class HermesCodexCredentials:
-    """Fetch Codex credentials through Hermes; cache until 5 min before expiry (max 30 min)."""
+    """Codex credentials through Hermes, cached until shortly before expiry (max 30 min).
+
+    A radio call never waits for the Hermes helper (a subprocess that may take up to `timeout` s): current()
+    returns the cached token and starts a background refresh 5 min before it expires; with no usable token it
+    starts one and raises, so that call goes to the API fallback. get() is the blocking fetch the refresh uses."""
 
     def __init__(self, python=HERMES_PYTHON, cwd=HERMES_DIR, runner=None, clock=time.time, timeout=20.0):
         self.python, self.cwd, self.timeout, self.clock = python, cwd, timeout, clock
         self._runner = runner or self._run
         self._lock = threading.Lock()
-        self._cached, self._until = None, 0.0
+        self._cached, self._until, self._refresh_at, self._exp = None, 0.0, 0.0, 0.0
+        self._refreshing = False
 
     def _run(self, force):
         out = subprocess.run([self.python, "-c", _HELPER, "1" if force else "0"], cwd=self.cwd, capture_output=True,
@@ -61,27 +67,57 @@ class HermesCodexCredentials:
             raise RuntimeError("codex_credentials_unavailable: %s" % (out.stderr.strip().splitlines() or ["?"])[-1][:200])
         return json.loads(out.stdout)
 
+    def _fetch(self, force):
+        creds = self._runner(force)
+        if not creds.get("token"):
+            raise RuntimeError("codex_credentials_unavailable: empty token")
+        now, exp = self.clock(), _jwt_exp(creds["token"])
+        with self._lock:
+            self._cached, self._exp = creds, exp
+            self._until = min(now + 1800, exp - 60) if exp else now + 1800
+            self._refresh_at = min(now + 1500, exp - 300) if exp else now + 1500
+        return creds
+
     def get(self, force=False):
+        """Blocking: the cached credentials, else the helper's."""
+        with self._lock:
+            if not force and self._cached is not None and self.clock() < self._until:
+                return self._cached
+        return self._fetch(force)
+
+    def current(self):
+        """Never blocks: the cached credentials (refreshed ahead in the background), else RuntimeError."""
         with self._lock:
             now = self.clock()
-            if force or self._cached is None or now >= self._until:
-                creds = self._runner(force)
-                if not creds.get("token"):
-                    raise RuntimeError("codex_credentials_unavailable: empty token")
-                exp = _jwt_exp(creds["token"])
-                self._until = min(now + 1800, exp - 300) if exp else now + 1800
-                self._cached = creds
-            return self._cached
+            cached = self._cached if self._cached is not None and now < self._until else None
+            due = cached is None or now >= self._refresh_at
+            force = bool(self._exp) and now >= self._exp - 300  # the JWT itself is about to expire
+        if due:
+            self.refresh(force=force)
+        if cached is None:
+            raise RuntimeError("codex_credentials_unavailable: refreshing in the background")
+        return cached
+
+    def refresh(self, force=False):
+        """Fetch in the background, one at a time (start-up warm-up, ahead of expiry, after a 401)."""
+        with self._lock:
+            if self._refreshing:
+                return
+            self._refreshing = True
+
+        def run():
+            try:
+                self._fetch(force)
+            except Exception:  # noqa: BLE001 - the next call falls back and tries again
+                pass
+            finally:
+                with self._lock:
+                    self._refreshing = False
+        threading.Thread(target=run, daemon=True, name="codex-creds-refresh").start()
 
     def warm(self):
-        """Prefetch in the background so the first radio call does not pay the helper start-up."""
-        threading.Thread(target=lambda: self._safe_get(), daemon=True, name="codex-creds-warm").start()
-
-    def _safe_get(self):
-        try:
-            self.get()
-        except Exception:  # noqa: BLE001 - first real call reports it
-            pass
+        """Prefetch so the first radio call does not pay the helper start-up."""
+        self.refresh()
 
 
 def to_responses(messages):
@@ -133,29 +169,53 @@ def parse_sse(lines):
     return 200, "".join(deltas) or done or completed
 
 
-def _http_post(url, headers, body, timeout):
-    """POST and read a server-sent-event stream; returns (status, text_or_error)."""
+def _http_post(url, headers, body, deadline):
+    """POST and read a server-sent-event stream by `deadline` (time.monotonic(), a wall-clock limit: every
+    socket wait is bounded by the time left, not by a per-read idle timeout); returns (status, text_or_error)."""
     parts = urlsplit(url)
-    conn = http.client.HTTPSConnection(parts.netloc, timeout=timeout)
+
+    def left():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("codex_deadline")
+        return remaining
+    conn = http.client.HTTPSConnection(parts.netloc, timeout=left())
     try:
         conn.request("POST", parts.path, body=body, headers=headers)
+        conn.sock.settimeout(left())
         reply = conn.getresponse()
         if reply.status != 200:
             return reply.status, reply.read()[:300].decode("utf-8", "replace")
-        return parse_sse(raw.decode("utf-8", "replace") for raw in reply)
+
+        def lines():
+            while True:
+                conn.sock.settimeout(left())
+                raw = reply.readline()
+                if not raw:
+                    return
+                yield raw.decode("utf-8", "replace")
+        return parse_sse(lines())
     finally:
         conn.close()
 
 
 class CodexLLM:
-    """llm(messages) on the Codex subscription; falls back to ``fallback`` on any failure."""
+    """llm.answer_by(messages, deadline) on the Codex subscription, falling back to the API model ``fallback``.
+
+    Codex gets at most ``timeout`` s of wall-clock time and never the last ``fallback_reserve`` s before the
+    exchange deadline, which belong to the fallback. The credential helper never runs inside a call."""
 
     def __init__(self, fallback, *, model="gpt-6-luna", effort="low", timeout=6.0, credentials=None, post=None,
-                 fallback_label="openai-api"):
+                 fallback_label="openai-api", fallback_reserve=3.0):
         self.fallback, self.model, self.effort, self.timeout = fallback, model, effort, timeout
+        self.fallback_reserve = fallback_reserve
         self.credentials = credentials or HermesCodexCredentials()
         self._post = post or _http_post
         self.fallback_label = fallback_label
+        try:
+            self._fallback_deadline = "deadline" in inspect.signature(fallback).parameters
+        except (TypeError, ValueError):
+            self._fallback_deadline = False
         self.last = {"backend": "openai-codex", "model": model}
         self.counts = {"codex": 0, "fallback": 0}
 
@@ -163,29 +223,39 @@ class CodexLLM:
     def label(self):
         return "openai-codex:%s/%s" % (self.model, self.effort)
 
-    def _call(self, messages, force):
-        creds = self.credentials.get(force=force)
+    def _call(self, messages, creds, until):
         instructions, items = to_responses(messages)
         body = {"model": self.model, "instructions": instructions, "input": items, "store": False, "stream": True,
                 "reasoning": {"effort": self.effort}}
         headers = {"Authorization": "Bearer " + creds["token"], "Content-Type": "application/json",
                    "Accept": "text/event-stream"}
         headers.update(creds.get("headers") or {})
-        return self._post(creds["base_url"] + "/responses", headers, json.dumps(body).encode(), self.timeout)
+        return self._post(creds["base_url"] + "/responses", headers, json.dumps(body).encode(), until)
 
-    def __call__(self, messages):
+    def answer_by(self, messages, deadline):
+        """(text, meta) by `deadline` (time.monotonic()). meta = who answered THIS call, for the transcript."""
         reason = None
         try:
-            status, text = self._call(messages, force=False)
+            until = min(time.monotonic() + self.timeout, deadline - self.fallback_reserve)
+            if until - time.monotonic() < 1.0:
+                raise TimeoutError("no time left for codex")
+            status, text = self._call(messages, self.credentials.current(), until)
             if status == 401:
-                status, text = self._call(messages, force=True)
+                self.credentials.refresh(force=True)  # in the background; this call uses the fallback
             if status == 200 and text.strip():
                 self.counts["codex"] += 1
                 self.last = {"backend": "openai-codex", "model": self.model, "effort": self.effort}
-                return text.strip()
+                return text.strip(), dict(self.last)
             reason = "codex_http_%d: %s" % (status, (text or "empty answer")[:160])
         except Exception as error:  # noqa: BLE001 - timeouts, credentials, network: fall back
             reason = "%s: %s" % (type(error).__name__, str(error)[:160])
         self.counts["fallback"] += 1
-        self.last = {"backend": self.fallback_label, "fallback_reason": reason}
-        return self.fallback(messages)
+        backend, _, model = self.fallback_label.partition(":")
+        self.last = {"backend": backend, "model": model or None, "fallback_reason": reason}
+        meta = dict(self.last)
+        text = self.fallback(messages, deadline=deadline) if self._fallback_deadline else self.fallback(messages)
+        return text, meta
+
+    def __call__(self, messages):
+        """Without an exchange deadline: Codex for `timeout` s, then the fallback."""
+        return self.answer_by(messages, time.monotonic() + self.timeout + self.fallback_reserve + 12.0)[0]

@@ -717,6 +717,7 @@ class Eye:
     # -- lifecycle
     def reset(self, reason):
         with self.lock:
+            self._real_seen = self._stand_used = False  # test stand-in safety flags: per mission
             if self.memory is not None:
                 self.memory.invalidate()
                 self.cockpit = CockpitState(clock=self.clock)
@@ -911,11 +912,33 @@ class Eye:
             self.on_gone(msg["gone"].get("id", 0))
 
     def _own_locked(self):
-        """The pilot's unit: the unit named in the cockpit feed, else player name in the allowed list, else
-        the ONLY player unit (single player), else a pseudo unit built from the cockpit feed (gRPC down)."""
+        """The pilot's unit (see _resolve_own). Also keeps the two stand-in safety flags: once a real pilot has
+        been ownship in this mission the stand-in is never used again, and what the stand-in did is not his."""
         cached = getattr(self, "_own_cache", None)
         if cached is not None:
             return cached[0]  # picture() resolves ownship once per build (busy maps: thousands of _is_me calls)
+        own = self._resolve_own()
+        if own is not None:
+            if self._stand_in(own):
+                self._stand_used = True
+            elif not self._real_seen:
+                self._real_seen = True
+                if self._stand_used:
+                    self._drop_stand_in_work()
+        return own
+    def _drop_stand_in_work(self):
+        """A real pilot has shown up after the test stand-in was ownship: its kills stay as other pilots' kills
+        and its shots / weapons used are forgotten, so none of it is read back as the human's."""
+        self.other_kills = sorted(self.other_kills + self.my_kills, key=lambda k: k["seq"])
+        self.my_kills = []
+        self.shots.clear()
+        self.used_session.clear()
+        self.fired_events.clear()
+    def _resolve_own(self):
+        """The pilot's unit: the unit named in the cockpit feed, else player name in the allowed list, else
+        the ONLY player unit (single player), else a pseudo unit built from the cockpit feed (gRPC down).
+        The TEST stand-in only when there is no player unit at all, no fresh cockpit feed, and no real pilot
+        has been ownship in this mission."""
         players = []
         cockpit = getattr(self, "cockpit", None)
         cp_unit = None
@@ -934,7 +957,8 @@ class Eye:
             return players[0]
         own = cockpit.ownship() if cockpit is not None else None
         name = getattr(self, "test_ownship", None)
-        if own is None and name:  # test stand-in: only when no real pilot resolved; gone when the unit dies
+        cockpit_live = cockpit is not None and cockpit.latest is not None and cockpit.fresh()
+        if own is None and name and not players and not cockpit_live and not self._real_seen:
             return next((u for u in self.units.values() if u.get("name") == name and u.get("lat") is not None), None)
         return own
     def _stand_in(self, own):
@@ -1040,6 +1064,7 @@ class Eye:
                 # Without memory retain the early unit snapshot; with memory the
                 # full reset above fences old state. The feeder requests a full resend.
                 self.events.clear()
+                self._real_seen = self._stand_used = False
                 self.shots.clear()
                 self.vanished.clear()
                 self.stores.clear()
@@ -1880,6 +1905,8 @@ class Eye:
             out["sam_in_range"], out["missiles_inbound"] = None, None
             out["note"] = "no position for Prometheus: SAM range and missile checks are NOT running (not an all-clear)"
             return out, [], []
+        # "off" = the Eval missile scan is not answering (Eval disabled / stale): only shot events can show a missile
+        out["missile_scan"] = "on" if self._eval_scan_on(now) else "off"
         sams = self._sam_threats(own, now)
         out["sam_in_range"] = sams[:PICTURE_TOP]
         if len(sams) > PICTURE_TOP:
@@ -2709,9 +2736,17 @@ class Eye:
             rows.append((rng, dict({"name": ab["name"], "owner": ab["coalition"], "category": ab["category"],
                                    "_field": ab}, **where)))
         rows.sort(key=lambda r: r[0])
-        for rng, row in rows[:5]:
+        mine = []
+        if own is not None and own.get("lat") is not None:
+            # "Friendly" = the pilot's own coalition. Real airdromes first, then FARPs/helipads, then ships; the
+            # category says which. Neutral and enemy fields are never in this list.
+            tier = {"FARP/helipad": 1, "ship": 2}
+            mine = sorted(((tier.get(r["category"], 0), rng, r) for rng, r in rows
+                           if r.get("owner") == own.get("coalition") and r.get("range_nm") is not None),
+                          key=lambda m: m[:2])[:3]
+        for rng, row in rows[:5] + [(m[1], m[2]) for m in mine if m[1:] not in rows[:5]]:
             ab = row.get("_field")
-            if ab is not None:
+            if ab is not None and (rng, row) in rows[:5]:
                 row["traffic"] = self._field_traffic(own, ab)
             if row.get("clock") and (row.get("bearing_mag") or row.get("bearing_true")):
                 hour = int(row["clock"].split()[0])
@@ -2720,7 +2755,13 @@ class Eye:
                     words(hour))
         for _, row in rows:
             row.pop("_field", None)
-        out = {"count": len(rows), "nearest": [r[1] for r in rows[:5]]}
+        out = {"count": len(rows), "nearest": [r[1] for r in rows[:5]]}  # any owner: every row says its owner
+        if own is not None and own.get("lat") is not None:
+            out["nearest_friendly"] = [{k: r[k] for k in ("name", "owner", "category", "range_nm", "bearing_mag",
+                                                           "bearing_true", "clock", "call") if k in r}
+                                       for _, _, r in mine]
+            if not mine:
+                out["nearest_friendly_note"] = "no friendly airfield known; do not offer one"
         if own is not None and rows and rows[0][1].get("range_nm") is not None and rows[0][0] <= 5:
             on_ground = (own["speed_ms"] or 0) * MS_TO_KT < 50
             out["at_or_near"] = dict(rows[0][1], on_ground=on_ground)
@@ -3025,7 +3066,7 @@ class GrpcFeeder:
         """First message on a fresh call. After a failure (= reconnect), resubscribe every OTHER stream:
         after the 2026-11-07 DCS client reboot the unit streams recovered but StreamEvents stayed silent."""
         if name in self._errored:
-            self._errored.discard(name)
+            self._errored.clear()  # one round per outage: the others are about to resubscribe anyway
             LOG.info("eye: %s reconnected; resubscribing the other streams", name)
             self._resubscribe_others(call, "reconnect:" + name)
 

@@ -175,6 +175,26 @@ class PictureTests(unittest.TestCase):
         self.assertEqual(bases["at_or_near"]["name"], "Kutaisi")
         self.assertFalse(bases["at_or_near"]["on_ground"])
 
+    def test_nearest_friendly_airfield_is_the_pilots_coalition_airdromes_first(self):
+        eye, _ = loaded()
+        bases = eye.picture()["airbases"]
+        friendly = bases["nearest_friendly"]
+        self.assertEqual([b["name"] for b in friendly], ["Kutaisi", "Tbilisi-Lochini", "FARP London"])
+        self.assertEqual([b["category"] for b in friendly], ["airdrome", "airdrome", "FARP/helipad"])
+        self.assertTrue(all(b["owner"] == "blue" for b in friendly))
+        self.assertIn("call", friendly[0])
+        self.assertIn("owner", bases["nearest"][0])  # the any-owner list stays, labelled with its owner
+    def test_no_friendly_field_known_is_said_not_guessed(self):
+        eye, _ = loaded()
+        eye.set_airbases([dict(ab, coalition="COALITION_NEUTRAL") for ab in fx.AIRBASES])
+        bases = eye.picture()["airbases"]
+        self.assertEqual(bases["nearest_friendly"], [])
+        self.assertIn("no friendly", bases["nearest_friendly_note"].lower())
+        self.assertTrue(bases["nearest"])
+    def test_no_position_gives_no_friendly_list(self):
+        eye = Eye(clock=Clock())
+        eye.set_airbases(fx.AIRBASES)
+        self.assertNotIn("nearest_friendly", eye.picture()["airbases"])
     def test_no_ownship_still_reports_world(self):
         clock = Clock()
         eye = Eye(clock=clock)

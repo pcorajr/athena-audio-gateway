@@ -3064,6 +3064,8 @@ class GrpcFeeder:
                 self.eye.on_units_message(self._to_dict(resp))
         except grpc.RpcError as error:
             if error.code() == grpc.StatusCode.CANCELLED and not self.stop.is_set():
+                with self.eye.lock:  # the resend was cut short: no sweep on it, the next subscription starts one
+                    self.eye.unit_sync.pop(category, None)
                 return  # resubscribe requested (mission change): reconnect for a full unit snapshot
             raise
         finally:

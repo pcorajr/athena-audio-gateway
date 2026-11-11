@@ -2666,7 +2666,7 @@ class Eye:
             # No pilot position: nothing range/bearing-based can be answered, and an empty list is NOT an all-clear.
             pic["no_position_call"] = NO_POSITION
             pic["notes"].append("ownship is null: Athena has NO position for Prometheus. Anything needing range or "
-                                "bearing (picture, ground targets, SAMs, threats, traffic) = say no_position_call; "
+                                "bearing (picture, ground targets, SAMs, threats, traffic) = say you have no position; "
                                 "never 'no ... within N miles' or 'no SAMs in range'. Coalition-wide facts "
                                 "(alive_totals_by_coalition, kills) are still valid.")
         else:

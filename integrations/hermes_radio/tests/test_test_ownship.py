@@ -206,7 +206,7 @@ class NoPositionReplyTests(unittest.TestCase):
         self.assertIn("Su-27 two-ship, zero six zero, twenty", frames[0]["speech"])
 
     def test_prompt_tells_the_model_the_same(self):
-        self.assertIn("no_position_call", PROMPT)
+        self.assertIn("no position", PROMPT)
 
 
 class StandInSafetyTests(unittest.TestCase):

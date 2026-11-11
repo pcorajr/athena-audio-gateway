@@ -39,7 +39,9 @@ Phase 1 item 3 (2026-11-10): every earlier picture key keeps its name and meanin
   answered when BRIDGE_S ends (scan stalled), the shot event raises the launch alert itself; with the scan off
   (Eval disabled / stale) it alerts at once, as in r11. threats.missiles_inbound = the subset of the same rows aimed
   at Prometheus or closing (no second source). One launch alert per missile; an alert expires when its missile is
-  gone and its call is rebuilt from the live row.
+  gone and its call is rebuilt from the live row. Never fewer calls than r11: a missile whose shot event pointed at
+  Prometheus stays alertable in the scan; a salvo's scan row joins the shot whose flight time fits; a nil scan
+  reply (pilot's unit not found) is not an empty scan.
 - threats.sam_in_range rows gain "confidence": "DCS radar: tracking you" | "DCS radar: sees you" |
   "range only: could be tracking". DCS radar rows come from a 1 Hz read-only Eval of
   hostile radars (Unit:getRadar + group radar detection, threats.sam_radar) and only ADD confidence: a group whose
@@ -1566,7 +1568,9 @@ class Eye:
     def _match_bridge(self, r, now, launcher_group):
         """The shot-event bridge row of a missile the scan sees for the first time: same type and (launcher unit,
         launcher group, or close to the launch point). DCS reports the SA-2 radar as getLauncher() while the shot
-        event names the launcher, so the group and the launch point carry the match. Pops the bridge row."""
+        event names the launcher, so the group and the launch point carry the match. Pops the bridge row.
+        Ties (a salvo from one site) go to the shot whose distance flown best fits its time since launch, never to
+        the oldest: an older, already-called missile must not hand its alert to a new one (review P1b)."""
         rtype = _norm_weapon_name(r.get("type"))
         best = None
         for key, b in self.missile_shots.items():
@@ -1580,7 +1584,7 @@ class Eye:
             _, d = bearing_range(b["_launch"][0], b["_launch"][1], r["lat"], r["lon"])
             if not same and d > 3.0 + max(0.0, now - b["first_seen"]):
                 continue
-            score = (0 if same else 1, d)
+            score = (0 if same else 1, abs(d - 0.35 * max(0.0, now - b["first_seen"])))  # ~0.35 nm/s average
             if best is None or score < best[0]:
                 best = (score, key)
         return self.missile_shots.pop(best[1]) if best else None
@@ -1631,19 +1635,26 @@ class Eye:
                        else None, "speed_kt": int(round(speed * MS_TO_KT))}
                 row["call"] = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
                 alertable = at_me or (closing and rng <= MISSILE_ALERT_NM)
-                if not (alertable or rng <= MISSILE_PICTURE_NM):
-                    continue
                 prior = self.missiles_near.get(wid)
-                if prior is None:
+                if prior is None and (alertable or rng <= max(MISSILE_PICTURE_NM, MISSILE_ALERT_NM)):
                     if by_name is None:
                         by_name = {u.get("name"): u for u in self.units.values()}
                     bridge = self._match_bridge(r, now, (by_name.get(r.get("launcher")) or {}).get("group"))
-                    prior = {"first_seen": bridge["first_seen"], "_alert": bridge.get("_alert")} if bridge else {}
+                    prior = {"first_seen": bridge["first_seen"], "_alert": bridge.get("_alert"),
+                             "_shot_closing": bool(bridge.get("closing"))} if bridge else None
                     if bridge and bridge.get("_alert"):
                         for a in self.threat_alerts:  # the shot-event alert now follows the live missile
                             if a["key"] == bridge["_alert"]:
                                 a["id"] = wid
-                near[wid] = dict(row, first_seen=prior.get("first_seen", now), _alert=prior.get("_alert"))
+                prior = prior or {}
+                # Never worse than r11 (review P1b): r11 called a launch whose shot event pointed at the pilot (+-45
+                # deg, within MISSILE_ALERT_NM). The scan's own rule (target / +-30 deg) may not take that call
+                # away from a missile with no DCS target, so a shot-event "closing" missile stays alertable.
+                alertable = alertable or bool(prior.get("_shot_closing") and rng <= MISSILE_ALERT_NM)
+                if not (alertable or rng <= MISSILE_PICTURE_NM):
+                    continue
+                near[wid] = dict(row, first_seen=prior.get("first_seen", now), _alert=prior.get("_alert"),
+                                 _shot_closing=prior.get("_shot_closing", False))
                 if not alertable:
                     continue
                 current[wid] = row
@@ -3239,7 +3250,11 @@ class GrpcFeeder:
             custom = custom_pb2_grpc.CustomServiceStub(self._chan())
         asked = self.eye.clock()
         value = self._eval_json(custom, self.WEAPONS_LUA % json.dumps(own["name"]))
-        rows = value.get("weapons") if isinstance(value, dict) else None
+        if not isinstance(value, dict):
+            # nil: DCS could not find the pilot's unit, so nothing was searched. Not an empty scan (that would
+            # drop every shot-event row unannounced); the scan goes stale and shot events alert (review P1b).
+            return []
+        rows = value.get("weapons")
         if isinstance(rows, dict):  # an empty Lua table encodes as {}
             rows = list(rows.values())
         return self.eye.on_weapons(rows or [], asked_at=asked)

@@ -11,6 +11,7 @@ minors: Codex byte trickle past its 6 s limit, API body trickle past the deadlin
 import http.client
 import http.server
 import json
+import math
 import os
 import socket
 import threading
@@ -200,6 +201,100 @@ class LaunchWithoutScanTests(Isolated):
         clock.t += eye_mod.WEAPONS_FRESH_S + 1  # scan went stale
         eye.on_event(self.shot(4294967007))
         self.assertEqual(len(launch_alerts(eye)), 2)
+
+    # ------------------------------------------------------------------------- re-review P1b: never worse than r11
+    def heard_calls(self, eye):
+        """One radio exchange: the pending launch calls, marked announced (the pilot heard them)."""
+        pic = eye.picture()
+        calls = [c for c in pic.get("rwr_alert_to_announce", []) if c.startswith("Missile")]
+        if calls:
+            eye.mark_announced(pic.get("_rwr_keys") or [])
+        return calls
+
+    def test_salvo_second_missile_after_a_stall_is_called(self):
+        """REVIEW-P1b MAJOR (salvo.py): A fired while the scan stalls, called, then gone; B fired from the same site;
+        the scan comes back 3 s after B. B's scan row must not inherit A's announced alert. r11 called both."""
+        eye, clock = self.eye()
+        t0 = clock.t
+        heard = []
+        for s in range(30):
+            clock.t = t0 + s
+            if s == 5:
+                eye.on_event(self.shot(4294967101))  # missile A at the pilot
+            if s == 9:
+                eye.on_event(self.shot(4294967102))  # missile B, same launcher (A has hit/missed)
+            clock.t = t0 + s + 0.5
+            if s < 5 or s >= 12:  # scan stalls 5..11 s
+                rows = [self.scan_row(16786002, rng=10.0 - 0.3 * (s - 9))] if 9 <= s <= 39 else []
+                eye.on_weapons(rows, asked_at=clock.t - 0.3)
+            eye.tick()
+            heard += [(s, c) for c in self.heard_calls(eye)]
+        self.assertEqual(len(launch_alerts(eye)), 2, launch_alerts(eye))
+        self.assertEqual(len(heard), 2, heard)  # A from its shot event, B (the live missile) from the scan
+        self.assertGreaterEqual(heard[1][0], 12)
+
+    def test_matching_prefers_the_shot_whose_flight_time_fits(self):
+        """Two shot rows from the same group: the scan row goes to the one whose distance flown fits its age."""
+        eye, clock = self.eye()
+        eye.on_event(self.shot(4294967111))  # no scan: alert at once (A)
+        clock.t += 7
+        eye.on_event(self.shot(4294967112))  # B, also called at once (scan off)
+        clock.t += 1
+        eye.on_weapons([self.scan_row(16786010, rng=9.9)])  # B just after launch, near the launch point
+        alerts = {a["key"]: a.get("id") for a in launch_alerts(eye)}
+        self.assertEqual(alerts["launch-4294967112"], "16786010")
+        self.assertNotEqual(alerts["launch-4294967111"], "16786010")
+
+    def test_nil_scan_reply_is_not_an_empty_scan(self):
+        """REVIEW-P1b MINOR: DCS cannot find the pilot's unit -> WEAPONS_LUA returns nil. That must not count as a
+        complete scan that saw nothing (it dropped every shot row unannounced); the shot event alerts."""
+        eye, clock = self.eye()
+        eye.on_weapons([])  # the scan answered once: 'on'
+        feeder = eye_mod.GrpcFeeder.__new__(eye_mod.GrpcFeeder)
+        feeder.eye = eye
+        feeder._eval_json = lambda custom, lua: None
+        own = eye.ownship()
+        with patch.object(eye, "ownship", return_value=dict(own, name="Aerial-3-2", source="dcs")):
+            clock.t += 0.5
+            eye.on_event(self.shot(4294967121))
+            for _ in range(5):
+                clock.t += 1
+                self.assertEqual(feeder.poll_weapons(custom=object()), [])
+                eye.tick()
+        self.assertEqual(len(launch_alerts(eye)), 1)
+        self.assertEqual(launch_alerts(eye)[0]["source"], "shot event")
+
+    def untargeted_scan_row(self, wid, rng, hdg):
+        r = self.scan_row(wid, rng=rng)
+        r["target"] = None
+        r["vn"], r["ve"] = 600 * math.cos(math.radians(hdg)), 600 * math.sin(math.radians(hdg))
+        return r
+
+    def test_untargeted_missile_off_the_line_is_called_like_r11(self):
+        """REVIEW-P1b MINOR: no DCS target and 40 deg off the line to the pilot. The scan's rule says 'not at you',
+        the shot event's rule (r11: within 45 deg) said launch: it is called once."""
+        eye, clock = self.eye()
+        eye.on_weapons([])
+        eye.on_event(self.shot(4294967131))  # heading 281: straight at the pilot by the shot rule
+        for s in range(10):
+            clock.t += 1
+            eye.on_weapons([self.untargeted_scan_row(16786020, 9.5 - 0.3 * s, hdg=320.0)])
+            eye.tick()
+        alerts = launch_alerts(eye)
+        self.assertEqual(len(alerts), 1, alerts)
+        self.assertEqual(alerts[0]["id"], "16786020")
+        self.assertIn("16786020", [m["id"] for m in eye.picture()["threats"]["missiles_in_flight"]])
+
+    def test_untargeted_missile_flying_away_by_the_shot_rule_stays_silent(self):
+        """No more calls than r11: a shot flying away (r11: no call) whose scan row is not at the pilot."""
+        eye, clock = self.eye()
+        eye.on_weapons([])
+        eye.on_event(self.shot(4294967141, heading=101.0))
+        for s in range(10):
+            clock.t += 1
+            eye.on_weapons([self.untargeted_scan_row(16786030, 10.5 + 0.3 * s, hdg=100.0)])
+            eye.tick()
+        self.assertEqual(launch_alerts(eye), [])
 
 
 # ============================================================================= 3. cockpit allowlist

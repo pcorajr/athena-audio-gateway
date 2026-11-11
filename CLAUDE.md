@@ -1,4 +1,12 @@
-# SkyEye Development Guide for AI Assistants
+# Athena Audio Gateway Development Guide for AI Assistants
+
+## Athena fork context
+
+This repository is the Athena Audio Gateway fork of SkyEye. Its Athena role is to handle SRS radio audio, transcribe admitted pilot transmissions into text for Hermes, and synthesize radio replies. Hermes owns reasoning and tool orchestration; audio handling stays in the gateway.
+
+Start with [Athena gateway deployment and topology](deploy/README.md) for the fork's operating context. The upstream SkyEye GCI description and architecture below explain inherited components, not the complete Athena-to-Hermes flow. Preserve the build requirements and no-live-run safety rule below.
+
+## Upstream background
 
 SkyEye is an AI-powered GCI bot for DCS World that uses Whisper speech recognition, Tacview telemetry, and TTS to replace in-game AWACS with natural language command processing following real-world aviation brevity codes.
 

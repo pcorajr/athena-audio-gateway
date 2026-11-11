@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Modulation is the radio modulation a transmission arrived with.
@@ -113,6 +115,25 @@ type Response struct {
 	State State `json:"state"`
 	// SuppressionReason explains a non-deliverable response.
 	SuppressionReason string `json:"suppression_reason,omitempty"`
+	// Route optionally labels which adapter path wrote Speech: fixed, llm,
+	// debrief or fallback. The gateway copies it into its transcript records.
+	Route string `json:"route,omitempty"`
+	// Model optionally names the model that wrote Speech (route llm).
+	Model string `json:"model,omitempty"`
+}
+
+// MaxModelChars bounds the optional Response.Model label.
+const MaxModelChars = 64
+
+// validLabels checks the optional route/model labels of a reply frame.
+func (r Response) validLabels() bool {
+	switch r.Route {
+	case "", "fixed", "llm", "debrief", "fallback":
+	default:
+		return false
+	}
+	return utf8.RuneCountInString(r.Model) <= MaxModelChars && strings.IndexFunc(r.Model, unicode.IsControl) < 0 &&
+		(r.Model == "" || r.Route != "") && (r.Route == "" || r.Deliverable)
 }
 
 // ErrInvalidRequest and ErrInvalidResponse wrap all envelope validation

@@ -35,7 +35,7 @@ Facts that matter:
 - data_health.combat_events not "ok" = kills may be unconfirmed; mention it only when asked about kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 - cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
-- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. With threats.missile_scan off say missile tracking is limited instead of no missile."
+- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. With threats.missile_scan off say missile tracking is limited."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
 - Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
 - Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
@@ -43,7 +43,7 @@ Facts that matter:
 
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
-- If ownship is null you have NO position for Prometheus: for anything that needs a range or bearing from him (picture, bogey dope, ground targets, SAMs, threats, traffic, vectors) say no_position_call and nothing else. Never say "no ... within ... miles", "no SAMs in range" or "no missile inbound" without a position. Coalition-wide facts (alive totals, kills) are still fine.
+- If ownship is null you have no position for Prometheus, so nothing that needs a range or bearing from him can be answered; alive totals and kills are still fine.
 - Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
 - Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (read the picture_top3 calls verbatim, every call whole, nothing added between them); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts. Never cut a call mid-way: if the answer must be shorter, leave out whole calls from the end.
 - Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
@@ -63,7 +63,7 @@ How to talk:
 - Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
 - Follow-up questions refer to the previous exchanges.
 - Development notes: the pilot is also the developer of Athena. ONLY when a "DEV NOTE" system hint is present (explicit phrasing such as "feature request", "note for development", "bug report", "Athena should be able to ...", "add a feature"), reply briefly "Prometheus, Athena, copy, noted for development: <one-line restatement>." Without that hint it is a normal radio call: kill reports ("target destroyed", "splash", "armor dead") and chat ("switching missions") are acknowledged normally, never noted for development.
-- Basic ATC is fine: for takeoff, landing or approach requests at an airfield, check the picture for aircraft near that field (within about five miles and below about five thousand feet) and say "no traffic" or call the traffic with the same BRAA + clock format, then approve ("cleared for takeoff", "cleared to land"). Don't invent runway numbers, winds or other data that is not in the picture. A friendly airfield (nearest friendly, where to land, RTB) comes ONLY from airbases.nearest_friendly: say its call line; none there = "no friendly airfield showing". airbases.nearest lists every owner: never call a field friendly from it.
+- Basic ATC is fine: for takeoff, landing or approach requests at an airfield, check the picture for aircraft near that field (within about five miles and below about five thousand feet) and say "no traffic" or call the traffic with the same BRAA + clock format, then approve ("cleared for takeoff", "cleared to land"). Don't invent runway numbers, winds or other data that is not in the picture. A friendly airfield (nearest friendly, land, RTB) comes ONLY from airbases.nearest_friendly: its call line, else "no friendly airfield showing".
 """
 
 SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
@@ -497,6 +497,15 @@ def requested_calls(klass, text, pic):
                                           ", ".join("%s %s" % (words(n), t) for t, n in counts.items())))
         return lines
     return None
+
+
+# A spoken reply never carries a picture key name or the words of an old prompt rule (live 2026-11-11 11:19:
+# the model said "No position call." with a pilot position). Lower-case snake_case only: FA-18C_hornet stays.
+PARROT_KEY = re.compile(r"(?<![\w-])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![\w-])")
+
+
+def parroted(text):
+    return bool(re.search(r"no[ _-]position[ _-]call", text, re.I) or PARROT_KEY.search(text))
 
 
 def clean(text):
@@ -1362,6 +1371,10 @@ class SimpleController:
             answer, meta = self._call_model(messages, deadline)
             llm_ms = round((time.monotonic() - t_llm) * 1000)
             answer = clean(answer)
+            if parroted(answer):  # never speak a key name / "no position call": fixed sentence or say again
+                meta["fallback_reason"] = "parroted_picture_text"
+                route, answer = ("fixed", ADDRESS + NO_POSITION) if not pic.get("ownship") else ("fallback", FALLBACK)
+                self._log(request, "controller_error", outcome="parroted_picture_text", route=route, llm=meta)
             if answer:  # the model was given the splash / RWR calls to say first: marked only if it said them
                 for field, keys in (("splash_to_announce", splash_keys), ("rwr_alert_to_announce", rwr_keys)):
                     for alert, key in zip(pic.get(field) or [], keys or []):

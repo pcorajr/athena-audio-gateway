@@ -1905,6 +1905,8 @@ class Eye:
             out["sam_in_range"], out["missiles_inbound"] = None, None
             out["note"] = "no position for Prometheus: SAM range and missile checks are NOT running (not an all-clear)"
             return out, [], []
+        # "off" = the Eval missile scan is not answering (Eval disabled / stale): only shot events can show a missile
+        out["missile_scan"] = "on" if self._eval_scan_on(now) else "off"
         sams = self._sam_threats(own, now)
         out["sam_in_range"] = sams[:PICTURE_TOP]
         if len(sams) > PICTURE_TOP:
@@ -2734,9 +2736,17 @@ class Eye:
             rows.append((rng, dict({"name": ab["name"], "owner": ab["coalition"], "category": ab["category"],
                                    "_field": ab}, **where)))
         rows.sort(key=lambda r: r[0])
-        for rng, row in rows[:5]:
+        mine = []
+        if own is not None and own.get("lat") is not None:
+            # "Friendly" = the pilot's own coalition. Real airdromes first, then FARPs/helipads, then ships; the
+            # category says which. Neutral and enemy fields are never in this list.
+            tier = {"FARP/helipad": 1, "ship": 2}
+            mine = sorted(((tier.get(r["category"], 0), rng, r) for rng, r in rows
+                           if r.get("owner") == own.get("coalition") and r.get("range_nm") is not None),
+                          key=lambda m: m[:2])[:3]
+        for rng, row in rows[:5] + [(m[1], m[2]) for m in mine if m[1:] not in rows[:5]]:
             ab = row.get("_field")
-            if ab is not None:
+            if ab is not None and (rng, row) in rows[:5]:
                 row["traffic"] = self._field_traffic(own, ab)
             if row.get("clock") and (row.get("bearing_mag") or row.get("bearing_true")):
                 hour = int(row["clock"].split()[0])
@@ -2745,7 +2755,13 @@ class Eye:
                     words(hour))
         for _, row in rows:
             row.pop("_field", None)
-        out = {"count": len(rows), "nearest": [r[1] for r in rows[:5]]}
+        out = {"count": len(rows), "nearest": [r[1] for r in rows[:5]]}  # any owner: every row says its owner
+        if own is not None and own.get("lat") is not None:
+            out["nearest_friendly"] = [{k: r[k] for k in ("name", "owner", "category", "range_nm", "bearing_mag",
+                                                           "bearing_true", "clock", "call") if k in r}
+                                       for _, _, r in mine]
+            if not mine:
+                out["nearest_friendly_note"] = "no friendly airfield known; do not offer one"
         if own is not None and rows and rows[0][1].get("range_nm") is not None and rows[0][0] <= 5:
             on_ground = (own["speed_ms"] or 0) * MS_TO_KT < 50
             out["at_or_near"] = dict(rows[0][1], on_ground=on_ground)

@@ -35,7 +35,7 @@ Facts that matter:
 - data_health.combat_events not "ok" = kills may be unconfirmed; mention it only when asked about kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 - cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
-- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see."
+- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. With threats.missile_scan off say missile tracking is limited instead of no missile."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
 - Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
 - Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
@@ -63,7 +63,7 @@ How to talk:
 - Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
 - Follow-up questions refer to the previous exchanges.
 - Development notes: the pilot is also the developer of Athena. ONLY when a "DEV NOTE" system hint is present (explicit phrasing such as "feature request", "note for development", "bug report", "Athena should be able to ...", "add a feature"), reply briefly "Prometheus, Athena, copy, noted for development: <one-line restatement>." Without that hint it is a normal radio call: kill reports ("target destroyed", "splash", "armor dead") and chat ("switching missions") are acknowledged normally, never noted for development.
-- Basic ATC is fine: for takeoff, landing or approach requests at an airfield, check the picture for aircraft near that field (within about five miles and below about five thousand feet) and say "no traffic" or call the traffic with the same BRAA + clock format, then approve ("cleared for takeoff", "cleared to land"). Don't invent runway numbers, winds or other data that is not in the picture.
+- Basic ATC is fine: for takeoff, landing or approach requests at an airfield, check the picture for aircraft near that field (within about five miles and below about five thousand feet) and say "no traffic" or call the traffic with the same BRAA + clock format, then approve ("cleared for takeoff", "cleared to land"). Don't invent runway numbers, winds or other data that is not in the picture. A friendly airfield (nearest friendly, where to land, RTB) comes ONLY from airbases.nearest_friendly: say its call line; none there = "no friendly airfield showing". airbases.nearest lists every owner: never call a field friendly from it.
 """
 
 SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
@@ -205,7 +205,7 @@ CLASS_HINTS = {
     "impact": "IMPACT / RESULT CHECK: report the latest weapon's result only.",
     "loadout": "LOADOUT: remaining weapons and gun rounds only; if the pilot also asks what they are flying, name the aircraft type first.",
     "launch": "MISSILE LAUNCH REPORT: read EVERY missile in threats.missiles_in_flight (spoken_name, clock, range; one row per missile id; missiles_inbound only if absent), not only the named type; "
-              "none = no missile in the air that I can see.",
+              "none = no missile in the air that I can see, but threats.missile_scan off = say missile tracking is limited, never an all-clear.",
 }
 # Round 9: launch calls, aircraft questions, recent-release window
 THREAT_NAME = (r"(?:missiles?|sams?|stingers?|manpads?|igla|strela|sa-?\s?\d+|s-?(?:75|125|200)|patriot|rapier|roland|hawk|"
@@ -432,11 +432,17 @@ def debrief_summary(pic):
 
 # No pilot position (ownship null): these answers are a range/bearing from the pilot, so they cannot be given.
 POSITION_CLASSES = ("picture", "long_picture", "ground_picture", "traffic", "atc", "launch")
+TOTALS_ASK = re.compile(r"\b(how many|kill\w*|lost|left|alive|destroyed|dead|war)\b", re.I)
+NEEDS_POSITION = re.compile(r"\b(threats?|nearest|closest|nearby|near me|am i clear|rtb|vectors?|defending|sa-?\d+)\b", re.I)
+
+
 def requested_calls(klass, text, pic):
     """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
     if not pic.get("ownship"):
-        if "ownship" in pic and (klass in POSITION_CLASSES or (klass is None and (
-                GROUND_ASK.search(text) or BEARING_ASK.search(text) or "rwr" in focus_of(text)))):
+        totals = bool(TOTALS_ASK.search(text))  # kills / counts / coalition totals need no position
+        if "ownship" in pic and (klass in POSITION_CLASSES or (klass in (None, "ack") and not totals and (
+                NEEDS_POSITION.search(text) or (klass is None and (
+                    GROUND_ASK.search(text) or BEARING_ASK.search(text) or "rwr" in focus_of(text)))))):
             return [NO_POSITION]  # never an all-clear from an empty list (live 2026-11-11)
         return None
     if klass == "long_picture" and "picture_long_range_top3" in pic:
@@ -981,6 +987,8 @@ class SimpleController:
         missiles = sorted(rows, key=lambda m: m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else 1e9)
         self._last_launch_reply = now
         if not missiles:
+            if threats.get("missile_scan") == "off":  # the scan cannot run: never an all-clear
+                return ["No launch seen; missile tracking is limited, DCS Eval is off."]
             return ["No missile in the air that I can see."]
         def key(m):
             ident = m.get("id", m.get("missile_id", m.get("weapon_id")))

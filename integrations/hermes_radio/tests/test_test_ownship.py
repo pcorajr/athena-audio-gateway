@@ -166,7 +166,11 @@ class NoPositionReplyTests(unittest.TestCase):
         asks = self.FALSE_ALL_CLEARS + ("Athena, bogey dope", "Athena, long range picture", "Athena, any traffic",
                                         "Athena, bearing to the nearest tanker", "Athena, where is the nearest airfield",
                                         "Athena, launch, launch", "Athena, what's painting me",
-                                        "Athena, request landing at Incirlik")
+                                        "Athena, request landing at Incirlik",
+                                        "Athena, any threats", "Athena, nearest friendly airfield",
+                                        "Athena, what's the closest bandit", "Athena, am I clear", "Athena, RTB",
+                                        "Athena, vector to home plate", "Athena, anything near me",
+                                        "Athena, defending SA-2")
         for text in asks:
             with self.subTest(text=text):
                 llm = Stub(answer="Prometheus, Athena, no hostile air groups within fifty miles.")
@@ -179,7 +183,10 @@ class NoPositionReplyTests(unittest.TestCase):
     def test_questions_that_need_no_position_still_go_their_normal_way(self):
         for text in ("Athena, Prometheus, radio check", "Athena, Prometheus, how many friendly aircraft are airborne",
                      "Athena, Prometheus, confirm kills", "Athena, Prometheus, say my fuel state",
-                     "Athena, splash two tanks", "Athena, copy"):
+                     "Athena, splash two tanks", "Athena, copy",
+                     "Athena, did I kill that tank", "Athena, how many tanks are left",
+                     "Athena, how many enemy ground units are alive", "Athena, how many vehicles has red lost",
+                     "Athena, how's the ground war going"):
             with self.subTest(text=text):
                 llm = Stub(answer="Prometheus, Athena, copy.")
                 c, _ = controller(LIVE["picture"], llm)

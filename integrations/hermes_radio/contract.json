@@ -33,7 +33,9 @@
         "speech": {"type": "string", "maxLength": 350},
         "intent_class": {"enum": ["factual", "cue", "action_preview", "unrecognized"]},
         "state": {"enum": ["ok", "stale", "degraded", "unavailable", "ownship_ambiguous"]},
-        "suppression_reason": {"type": "string"}
+        "suppression_reason": {"type": "string"},
+        "route": {"enum": ["fixed", "llm", "debrief", "fallback"], "description": "Optional (phase 1): which path wrote the speech. Deliverable frames only."},
+        "model": {"type": "string", "minLength": 1, "maxLength": 64, "description": "Optional (phase 1): the model that wrote the speech; needs route."}
       },
       "if": {"properties": {"deliverable": {"const": true}}},
       "then": {"properties": {"speech": {"minLength": 1}, "intent_class": {"const": "factual"}, "suppression_reason": {"const": ""}}},

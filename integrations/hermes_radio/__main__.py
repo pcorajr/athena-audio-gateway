@@ -27,7 +27,8 @@ def main():
     parser.add_argument("--codex-effort", choices=("none", "minimal", "low", "medium", "high"),
                         default=os.environ.get("ATHENA_RADIO_CODEX_EFFORT", "low"))
     parser.add_argument("--codex-timeout", type=float, default=float(os.environ.get("ATHENA_RADIO_CODEX_TIMEOUT", "6")),
-                        help="seconds before the Codex call is abandoned for the API fallback")
+                        help="wall-clock seconds the Codex call may take before the API fallback answers (inside the 10 s "
+                             "exchange deadline)")
     parser.add_argument("--request-timeout", type=float, default=2.0, help="HTTP header/body deadline in seconds")
     parser.add_argument("--transcript-dir", default=os.environ.get("ATHENA_RADIO_TRANSCRIPT_DIR"))
     parser.add_argument("--speaker", default=os.environ.get("ATHENA_RADIO_SPEAKER", "Prometheus,Player,Client"),

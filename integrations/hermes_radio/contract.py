@@ -1,5 +1,9 @@
 """Strict native gateway bridge contract. Phase 1 adds two optional label fields to the response, route and
-model, which the gateway copies into its transcript records; frames without them stay valid."""
+model, which the gateway copies into its transcript records; frames without them stay valid.
+
+Deploy order (review P1, wire contract): the v12 Go gateway rejects any unknown response key, so this Python (which
+labels every frame with `route`) must never run against v12. Deploy the new Go binary first (or both in one
+stop/start); roll back in reverse (Python first, then Go). Old Python with the new Go is fine."""
 from dataclasses import dataclass
 from datetime import datetime
 import json

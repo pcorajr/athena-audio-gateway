@@ -15,6 +15,7 @@ import unicodedata
 
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
 from .cockpit import spoken_name
+from .codex_llm import read_chunks
 from .eye import KILL_REPORT, _QUESTION, domain, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
@@ -1026,9 +1027,12 @@ class SimpleController:
         try:
             conn.request("POST", self._path, body=body, headers={
                 "Authorization": "Bearer " + self._key, "Content-Type": "application/json"})
-            conn.sock.settimeout(time_left(deadline))
+            sock = conn.sock
+            sock.settimeout(time_left(deadline))
             reply = conn.getresponse()
-            raw = reply.read()
+            # chunked, every wait bounded by the time left: a trickling body ends at the deadline, so an abandoned
+            # radio-model thread closes its socket then instead of living as long as the peer keeps sending
+            raw = b"".join(read_chunks(reply, sock, lambda: time_left(deadline)))
         finally:
             conn.close()
         if reply.status != 200:
@@ -1038,7 +1042,8 @@ class SimpleController:
     def _call_model(self, messages, deadline):
         """(text or None, meta): the model's answer by `deadline`, whatever the backend does. meta says who
         answered THIS call (backend, model, fallback_reason) for the transcript. A backend that is still busy at
-        the deadline is abandoned (its thread ends on its own socket timeout) and the pilot hears FALLBACK."""
+        the deadline is abandoned (its reads are bounded by the same deadline, so it closes its socket and ends right
+        after) and the pilot hears FALLBACK."""
         llm = self._llm
         box = {}
 

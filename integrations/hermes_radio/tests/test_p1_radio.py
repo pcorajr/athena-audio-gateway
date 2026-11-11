@@ -197,7 +197,8 @@ class DeadlineTests(unittest.TestCase):
 
             def getresponse(self):
                 seen["read_timeout"] = self.sock.settimeout.call_args[0][0]
-                return mock.Mock(status=200, read=lambda: b'{"choices":[{"message":{"content":" ok "}}]}')
+                body = iter([b'{"choices":[{"message":{"content":" ok "}}]}', b""])
+                return mock.Mock(status=200, read1=lambda n: next(body))
 
             def close(self):
                 pass

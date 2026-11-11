@@ -31,18 +31,22 @@ Mission start/reset clears all tallies/history; sequence numbers never rewind.
 Phase 1 item 3 (2026-11-10): every earlier picture key keeps its name and meaning. New or changed keys:
 - Unit category (every `category`): classify() is the ONE labeller. Order: TYPE_OVERRIDES (types the 2026-11 review
   proved wrong) > aircraft type sets > DCS's own attributes (Unit.getDescByName(type).attributes, read once per type
-  over the Eval channel and cached in TYPE_INFO) > the old name patterns (only when DCS gave nothing).
-- threats.missiles_in_flight: the live Eval weapon scan is the only source. A shot event only bridges the first
-  BRIDGE_S seconds (row "from": "shot event, not yet in the live scan") and is merged into the scan row (by launcher
-  group + type + launch point); a missile that left the scan is gone. With the scan off (Eval disabled) shot rows
-  stay EVAL_OFF_KEEP_S with "from": "shot event (no live scan)". threats.missiles_inbound = the subset of the same
-  rows aimed at Prometheus or closing (no second source). One launch alert per missile; an alert expires when its
-  missile is gone and its call is rebuilt from the live row.
+  over the Eval channel and cached in TYPE_INFO) > the old name patterns. Fail safe: attributes never downgrade a
+  type the name patterns call SAM/AAA (only TYPE_OVERRIDES can).
+- threats.missiles_in_flight: the live Eval weapon scan is the main source. A shot-event row bridges until a scan
+  SENT after the shot has answered (at least BRIDGE_S, at most EVAL_OFF_KEEP_S) and is merged into the scan row (by
+  launcher group + type + launch point); a missile a newer scan did not report is gone. If no newer scan has
+  answered when BRIDGE_S ends (scan stalled), the shot event raises the launch alert itself; with the scan off
+  (Eval disabled / stale) it alerts at once, as in r11. threats.missiles_inbound = the subset of the same rows aimed
+  at Prometheus or closing (no second source). One launch alert per missile; an alert expires when its missile is
+  gone and its call is rebuilt from the live row.
 - threats.sam_in_range rows gain "confidence": "DCS radar: tracking you" | "DCS radar: sees you" |
-  "DCS radar: searching" | "range only: could be tracking". DCS radar rows come from a 1 Hz read-only Eval of
-  hostile radars (Unit:getRadar + group radar detection, threats.sam_radar) and win over the range table; a SAM
-  group whose radar DCS reports off or dead is not listed. The range table is the fallback, with RANGE_HYST_NM
-  hysteresis (no edge flicker). New: threats.sam_source ("dcs_radar" | "range_table"), threats.sam_radar
+  "range only: could be tracking". DCS radar rows come from a 1 Hz read-only Eval of
+  hostile radars (Unit:getRadar + group radar detection, threats.sam_radar) and only ADD confidence: a group whose
+  radar DCS reports off or searching keeps the range-table "could be tracking" row and alert (plus "radar": "off" |
+  "searching"), because a dark radar can ambush. Only labels (not air defence), dead units and command/comm
+  vehicles remove a range warning. Range table with RANGE_HYST_NM hysteresis (no edge flicker).
+  New: threats.sam_source ("dcs_radar" | "range_table"), threats.sam_radar
   {available, age_s, source, confidence, tracking_you[], radars_on}.
 - connected: True while ANY DCS-gRPC stream is up (one bad stream no longer reads as "DCS disconnected").
   New data_health: {connected, streams{name: up|down ...}, events, combat_events, unit_sync, note}.
@@ -215,7 +219,12 @@ def classify(type_name, group_category=None):
         return "train"
     if attrs:
         by_dcs = _attr_category(attrs)
-        if by_dcs:
+        if by_dcs in ("SAM", "AAA"):
+            return by_dcs
+        # Fail safe (review P1): attributes never downgrade a type the name patterns call air defence; only the
+        # explicit TYPE_OVERRIDES table can (KAMAZ Truck, generator). A truck shown as SAM is a false alarm; a SAM
+        # shown as a truck is a missed threat.
+        if not (AAA_PAT.search(t) or SAM_PAT.search(t)) and by_dcs:
             return by_dcs
     if AAA_PAT.search(t):
         return "AAA"
@@ -316,6 +325,7 @@ MISSILE_SHOT_KEEP_S = 60.0  # kept for compatibility; shot rows now live BRIDGE_
 BRIDGE_S = 2.5  # a shot-event row bridges only the first ~2 s before the 1 Hz Eval scan sees the missile
 EVAL_OFF_KEEP_S = 20.0  # no live scan (Eval disabled): a shot-event row is all we have, about one SAM flight time
 WEAPONS_FRESH_S = 10.0  # the live scan counts as "on" while its last reply is this recent
+WEAPONS_SCAN_CAP = 20  # WEAPONS_LUA returns at most this many missiles (a full reply may have missed one)
 MISSILE_ALERT_NM = 25.0  # a hostile missile shot (event) within this range of Prometheus and closing -> launch alert
 THREAT_ANNOUNCE_S = 90.0
 RANGE_HYST_NM = 2.0  # range-table fallback: once inside, a SAM stays listed until this far past its nominal range
@@ -335,6 +345,20 @@ def sam_profile(type_name):
         if pattern.search(type_name or ""):
             return rng, label, label == "EWR"
     return SAM_DEFAULT_NM, None, False
+
+
+# DCS attributes of air-defence support vehicles (command post, comm, auxiliaries): no range warning on their own.
+AIR_DEFENCE_SUPPORT_ATTRS = frozenset(("SAM CC", "SAM AUX", "MANPADS AUX"))
+
+
+def _air_defence_support(type_name):
+    """True for a command/comm/generator vehicle of an air-defence site: by name, or DCS attributes that name only a
+    support role (never for a type the range table knows as a radar or launcher)."""
+    if SAM_SUPPORT_PAT.search(type_name or ""):
+        return True
+    attrs = type_attributes(type_name)
+    return bool(attrs & AIR_DEFENCE_SUPPORT_ATTRS) and not attrs & AIR_DEFENCE_THREAT_ATTRS and \
+        sam_profile(type_name)[1] is None
 
 
 # ----------------------------------------------------------------------------- geometry
@@ -711,6 +735,7 @@ class Eye:
             # Round 4: threats from DCS-gRPC when the cockpit has no RWR (missiles in flight via Eval, shot events).
             self.weapons_in_flight = {}  # weapon id -> row (Eval world.searchObjects around ownship)
             self.weapons_at = None
+            self.weapons_asked_at = None  # when the last completed scan was SENT (a scan sent after a shot sees it)
             self.missiles_near = {}  # weapon id -> row: every hostile missile within MISSILE_PICTURE_NM or aimed at me
             self.missile_shots = {}  # weapon id -> bridge row from the shot event (until the live scan sees it)
             self.threat_alerts = deque(maxlen=50)
@@ -1516,13 +1541,27 @@ class Eye:
         if not closing:
             return None  # flying away from Prometheus
         if self._eval_scan_on(ev["t"]):
-            return None  # the scan sees it within a second and raises the ONE alert, with the real id
-        a = self._threat_alert("launch-%s" % wid, call, "missile launch", ev["t"], source="shot event", type=wtype,
-                               launcher=spoken_type(ini.get("type")), range_nm=round(rng, 1), clock=hour, id=wid,
-                               raw_type=ev["weapon"])
-        if a is not None and wid in self.missile_shots:
-            self.missile_shots[wid]["_alert"] = a["key"]
+            return None  # the scan normally sees it within a second; _prune_missiles alerts if it does not
+        return self._shot_alert(self.missile_shots[wid], ev["t"])
+
+    def _shot_alert(self, b, now):
+        """The launch alert from a shot-event row (scan off, or the scan did not report in time). Once per row."""
+        a = self._threat_alert("launch-%s" % b["id"], b["call"], "missile launch", now, source="shot event",
+                               type=b["type"], launcher=b["launcher"], range_nm=b["range_nm"], clock=b["clock"],
+                               id=b["id"], raw_type=b["raw_type"])
+        if a is not None:
+            b["_alert"] = a["key"]
         return a
+
+    def _newer_scan(self, b):
+        """A scan SENT after this shot has completed (it would have seen the missile)."""
+        return self.weapons_asked_at is not None and self.weapons_asked_at > b["first_seen"]
+
+    def _shot_live(self, b, now):
+        """A shot-event row lives until a scan newer than the shot has run (that scan merged it or did not see
+        it), at least BRIDGE_S and at most EVAL_OFF_KEEP_S (the old shot-event timeout, about one SAM flight)."""
+        age = now - b["first_seen"]
+        return age <= BRIDGE_S or (age <= EVAL_OFF_KEEP_S and not self._newer_scan(b))
 
     def _match_bridge(self, r, now, launcher_group):
         """The shot-event bridge row of a missile the scan sees for the first time: same type and (launcher unit,
@@ -1531,7 +1570,7 @@ class Eye:
         rtype = _norm_weapon_name(r.get("type"))
         best = None
         for key, b in self.missile_shots.items():
-            if now - b["first_seen"] > 10.0:
+            if now - b["first_seen"] > EVAL_OFF_KEEP_S:
                 continue
             btype = _norm_weapon_name(b.get("raw_type"))
             if rtype and btype and btype != rtype:
@@ -1546,12 +1585,15 @@ class Eye:
                 best = (score, key)
         return self.missile_shots.pop(best[1]) if best else None
 
-    def on_weapons(self, rows):
+    def on_weapons(self, rows, asked_at=None):
         """Missiles in flight near Prometheus (Eval world.searchObjects): rows {id, type, lat, lon, alt, vn, ve,
-        target, launcher, launcher_type, coal}. THE source of threats.missiles_in_flight (real DCS weapon ids)."""
+        target, launcher, launcher_type, coal}. THE source of threats.missiles_in_flight (real DCS weapon ids).
+        asked_at = when this scan was sent (eye clock; default now): only a scan sent after a shot can clear it."""
         now = self.clock()
         with self.lock:
             own = self._own_locked()
+            if rows is None or len(rows) < WEAPONS_SCAN_CAP:  # a full scan may have left a missile out
+                self.weapons_asked_at = now if asked_at is None else asked_at
             if own is None or own.get("lat") is None:
                 self.weapons_in_flight, self.weapons_at = {}, now
                 self.missiles_near = {}
@@ -1617,10 +1659,13 @@ class Eye:
             return new
 
     def _prune_missiles(self, now):
-        keep = BRIDGE_S if self._eval_scan_on(now) else EVAL_OFF_KEEP_S
+        """tick(): a shot-event row whose bridge time is over and that no newer scan has reported raises its launch
+        alert now (once; review P1: a stalled scan must never swallow a launch); rows end per _shot_live."""
         for wid, b in list(self.missile_shots.items()):
-            if now - b["first_seen"] > keep:
+            if not self._shot_live(b, now):
                 del self.missile_shots[wid]
+            elif now - b["first_seen"] > BRIDGE_S and b.get("closing") and not b.get("_alert"):
+                self._shot_alert(b, now)
 
     def radar_candidates(self, limit=RADAR_POLL_MAX):
         """Names of hostile SAM/AAA/EWR units to ask DCS 'is your radar on / tracking Prometheus' (nearest first,
@@ -1680,9 +1725,12 @@ class Eye:
         return out
 
     def _sam_threats(self, own, now):
-        """Hostile SAM/AAA/EWR threats, one row per group, nearest first. DCS radar state (sam_radar) wins: tracking
-        you at any polled range, else listed only inside the nominal range and never when DCS says its radar is
-        off. Groups without radar data use the range table (with RANGE_HYST_NM hysteresis). Pure read."""
+        """Hostile SAM/AAA/EWR threats, one row per group, nearest first. Never hides a site (review P1): every
+        live air-defence group inside its nominal range is listed with the range-table "could be tracking" call
+        (RANGE_HYST_NM hysteresis), whatever DCS says about its radar -- a radar reported off or only searching can
+        light up seconds before a launch. DCS radar data only ADDS: "sees you" / "tracking you" upgrade the call,
+        and "tracking you" lists the group at any polled range. Only non-air-defence types (labels), dead units
+        and command/comm vehicles are left out. Pure read."""
         best = {}
         own_alt = own.get("alt_m") or 0.0
         radar = self._radar_groups(now)
@@ -1691,16 +1739,13 @@ class Eye:
                 continue
             if not self._hostile_to(u["coalition"], own):
                 continue
-            attrs = type_attributes(u["type"])
-            if attrs and not attrs & AIR_DEFENCE_THREAT_ATTRS or not attrs and SAM_SUPPORT_PAT.search(u["type"]):
-                continue  # neither emits nor launches (command post, generator, ...): DCS attributes, else name
+            if _air_defence_support(u["type"]):
+                continue  # command post, comm, generator: neither emits nor launches
             nominal, label, ewr = sam_profile(u["type"])
             if u["category"] == "AAA" and label is None:
                 continue  # optical triple A: not a radar threat
             key = u.get("group") or str(u["id"])
             state = radar.get(key)
-            if state == "off":
-                continue  # DCS: this group's radar is off or gone
             limit = nominal + (RANGE_HYST_NM if key in self._sam_listed else 0.0)
             _, rng = bearing_range(own["lat"], own["lon"], u["lat"], u["lon"])
             slant = math.hypot(rng, (own_alt - (u.get("alt_m") or 0.0)) / NM)
@@ -1718,11 +1763,13 @@ class Eye:
             hour = clock_of(brg - (own.get("heading") or 0.0))
             name = label or spoken_type(u["type"])
             where = "your %s o'clock, %s." % (words(hour), range_words(slant))
+            radar_state = state
+            if state in ("off", "searching"):
+                state = None  # no tracking data: the range-table warning stands
             if state is not None:
                 what = "Early warning radar %s" % spoken_type(u["type"]) if ewr else \
                     "Radar triple A %s" % spoken_type(u["type"]) if label == "radar triple A" else "SAM %s" % name
-                verb = {"tracking you": "tracking you", "sees you": "radar sees you",
-                        "searching": "radar searching"}[state]
+                verb = {"tracking you": "tracking you", "sees you": "radar sees you"}[state]
                 call, confidence = "%s %s, %s" % (what, verb, where), "DCS radar: " + state
             elif ewr:
                 call = "Early warning radar %s could be watching you, %s" % (spoken_type(u["type"]), where)
@@ -1733,8 +1780,11 @@ class Eye:
             else:
                 call = "SAM %s could be tracking you, %s" % (name, where)
                 confidence = "range only: could be tracking"
-            rows.append({"group": key, "type": u["type"], "sam": name, "ewr": ewr, "range_nm": round(slant, 1),
-                         "nominal_range_nm": nominal, "clock": hour, "call": call, "confidence": confidence})
+            row = {"group": key, "type": u["type"], "sam": name, "ewr": ewr, "range_nm": round(slant, 1),
+                   "nominal_range_nm": nominal, "clock": hour, "call": call, "confidence": confidence}
+            if radar_state in ("off", "searching"):
+                row["radar"] = radar_state  # DCS's word, shown; a dark radar can still ambush
+            rows.append(row)
         rows.sort(key=lambda r: (r["ewr"], r["confidence"] != "DCS radar: tracking you", r["range_nm"]))
         return rows
 
@@ -1750,8 +1800,9 @@ class Eye:
             if r["ewr"]:
                 continue
             tracking = r["confidence"] == "DCS radar: tracking you"
-            if not tracking and r["confidence"] != "DCS radar: sees you" and not r["confidence"].startswith("range"):
-                continue  # radar only searching: listed, not announced
+            # Range alerts also fire when the cockpit exports an RWR (review P1, minor c): an RWR cannot see a
+            # radar that is off, so it cannot replace the range warning for a dark site; a duplicate call next to
+            # an RWR spike is the accepted false-alarm cost.
             prev = self._sam_alerted.get(g)
             if prev is not None and (prev[1] or not tracking):
                 continue
@@ -1808,16 +1859,15 @@ class Eye:
         return out, sams, flight
 
     def _missiles_in_flight(self, now, fresh_weapons=None):
-        """One row per missile: the live scan's rows (real DCS weapon ids), plus shot-event rows only while they
-        bridge the first BRIDGE_S seconds (EVAL_OFF_KEEP_S when there is no live scan). Pure read, all rows."""
+        """One row per missile: the live scan's rows (real DCS weapon ids), plus shot-event rows while they bridge
+        (_shot_live: until a scan sent after the shot has answered, BRIDGE_S..EVAL_OFF_KEEP_S). Pure read."""
         scan = self._eval_scan_on(now)
         rows = {}
         if scan:
             for wid, a in self.missiles_near.items():
                 rows[wid] = dict({k: v for k, v in a.items() if not k.startswith("_")}, age_s=int(now - a["first_seen"]))
-        keep = BRIDGE_S if scan else EVAL_OFF_KEEP_S
         for wid, a in self.missile_shots.items():
-            if now - a["first_seen"] <= keep and wid not in rows:
+            if self._shot_live(a, now) and wid not in rows:
                 rows[wid] = dict({k: v for k, v in a.items() if not k.startswith("_")},
                                  age_s=int(now - a["first_seen"]),
                                  scan="not yet in the live scan" if scan else "no live scan (Eval off)")
@@ -3187,11 +3237,12 @@ class GrpcFeeder:
         if custom is None:
             from dcs.custom.v0 import custom_pb2_grpc
             custom = custom_pb2_grpc.CustomServiceStub(self._chan())
+        asked = self.eye.clock()
         value = self._eval_json(custom, self.WEAPONS_LUA % json.dumps(own["name"]))
         rows = value.get("weapons") if isinstance(value, dict) else None
         if isinstance(rows, dict):  # an empty Lua table encodes as {}
             rows = list(rows.values())
-        return self.eye.on_weapons(rows or [])
+        return self.eye.on_weapons(rows or [], asked_at=asked)
 
     def poll_types(self, custom=None):
         """Describe unit types DCS has not described yet (once per type). Returns how many were cached."""

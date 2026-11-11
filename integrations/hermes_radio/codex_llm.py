@@ -169,6 +169,19 @@ def parse_sse(lines):
     return 200, "".join(deltas) or done or completed
 
 
+def read_chunks(reply, sock, left):
+    """Body bytes of an http.client reply, chunk by chunk, each socket wait bounded by left() (seconds still allowed;
+    raises TimeoutError at the limit). A peer that trickles bytes is cut at the limit, not at its own pace (review P1:
+    readline()/read() bound each recv, not the total). `sock` is the connection's socket taken BEFORE getresponse():
+    http.client sets conn.sock = None for a "Connection: close" or unchunked HTTP/1.0 reply."""
+    while True:
+        sock.settimeout(left())
+        piece = reply.read1(16384)
+        if not piece:
+            return
+        yield piece
+
+
 def _http_post(url, headers, body, deadline):
     """POST and read a server-sent-event stream by `deadline` (time.monotonic(), a wall-clock limit: every
     socket wait is bounded by the time left, not by a per-read idle timeout); returns (status, text_or_error)."""
@@ -182,18 +195,26 @@ def _http_post(url, headers, body, deadline):
     conn = http.client.HTTPSConnection(parts.netloc, timeout=left())
     try:
         conn.request("POST", parts.path, body=body, headers=headers)
-        conn.sock.settimeout(left())
+        sock = conn.sock
+        sock.settimeout(left())
         reply = conn.getresponse()
         if reply.status != 200:
-            return reply.status, reply.read()[:300].decode("utf-8", "replace")
+            out = b""
+            for piece in read_chunks(reply, sock, left):
+                out += piece
+                if len(out) >= 300:
+                    break
+            return reply.status, out[:300].decode("utf-8", "replace")
 
         def lines():
-            while True:
-                conn.sock.settimeout(left())
-                raw = reply.readline()
-                if not raw:
-                    return
-                yield raw.decode("utf-8", "replace")
+            buf = b""
+            for piece in read_chunks(reply, sock, left):
+                buf += piece
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    yield line.decode("utf-8", "replace")
+            if buf:
+                yield buf.decode("utf-8", "replace")
         return parse_sse(lines())
     finally:
         conn.close()

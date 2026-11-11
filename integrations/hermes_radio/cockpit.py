@@ -299,6 +299,7 @@ class CockpitState:
         self.latest, self.at, self.src = None, None, None
         self.packets, self.bad, self.started_at, self.stopped_at = 0, 0, None, None
         self.rejected = 0  # UDP packets from a source other than the DCS PC (dropped)
+        self.rejected_from = {}  # sender address -> dropped packets (bounded), shown in the picture
         self.slow = {}       # key -> (value, t) for pay/mech/warn/tgt
         self.emitters = {}   # emitter key -> highest signal level seen while it stays on the RWR
         self.alerts = deque(maxlen=50)
@@ -425,17 +426,21 @@ class CockpitState:
         with self.lock:
             now = self.clock() if now is None else now
             p = self.latest
+            dropped = {"rejected_packets_other_source": self.rejected,
+                       "rejected_senders": dict(self.rejected_from)} if self.rejected else {}
             if p is None:
-                return {"available": False, "reason": "no cockpit feed yet: AthenaExport.lua on the DCS PC sends "
-                        "UDP %d (Export.lua loader line + Athena firewall)" % COCKPIT_PORT,
-                        "packets": self.packets, "status": self.status,
-                        **({"rejected_packets_other_source": self.rejected} if self.rejected else {})}
+                reason = ("no cockpit feed yet: AthenaExport.lua on the DCS PC sends UDP %d (Export.lua loader line + "
+                          "Athena firewall)" % COCKPIT_PORT)
+                if self.rejected_from:
+                    reason = ("dropping cockpit packets from %s (not an allowed sender; set ATHENA_COCKPIT_ALLOWED or "
+                              "ATHENA_DCS_CLIENT_HOST)" % ", ".join(sorted(self.rejected_from)))
+                return {"available": False, "reason": reason, "packets": self.packets, "status": self.status,
+                        **dropped}
             age = now - self.at
             out = {"available": True, "fresh": age <= FRESH_S and self.stopped_at is None, "age_s": round(age, 1),
                    "aircraft": p.get("ac"),
                    "pilot": clean_name(p.get("pilot")) or None}
-            if self.rejected:
-                out["rejected_packets_other_source"] = self.rejected
+            out.update(dropped)
             if self.stopped_at is not None:
                 out["note"] = self.status
             if age > 60:
@@ -540,28 +545,33 @@ class CockpitState:
         return out
 
 
-COCKPIT_SOURCE_DEFAULT = "10.90.10.113"  # the DCS PC (same host as the DCS-gRPC source)
+COCKPIT_SOURCE_DEFAULT = "10.90.10.113"  # the pilot's client PC, where AthenaExport.lua always runs
+_IPV4 = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 
 def allowed_sources(eye=None):
-    """Who may send cockpit packets (R3 T14): ATHENA_COCKPIT_ALLOWED (comma list, "*" = anyone) > the host of
-    the existing DCS source setting (ATHENA_DCS_SOURCE / the Eye's "host:port") > the DCS PC default."""
+    """Who may send cockpit packets (R3 T14). ATHENA_COCKPIT_ALLOWED (comma list, "*" = anyone) if set. Else the
+    pilot's client PC -- ATHENA_DCS_CLIENT_HOST (the launcher's client host), default 10.90.10.113 -- WHATEVER the
+    DCS source: the cockpit export runs on the client PC even when the Eye reads the server (review P1). The Eye's
+    own DCS host is allowed too (harmless; covers a client PC reached by --eye-host)."""
     import os
     raw = os.environ.get("ATHENA_COCKPIT_ALLOWED", "").strip()
-    if not raw:
-        for candidate in (os.environ.get("ATHENA_DCS_SOURCE", ""), getattr(eye, "source", "") or ""):
-            host = candidate.strip().rsplit(":", 1)[0] if candidate.count(":") <= 1 else candidate.strip()
-            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
-                raw = host
-                break
     if raw == "*":
         return None
-    return {h.strip() for h in (raw or COCKPIT_SOURCE_DEFAULT).split(",") if h.strip()}
+    if raw:
+        return {h.strip() for h in raw.split(",") if h.strip()}
+    client = os.environ.get("ATHENA_DCS_CLIENT_HOST", "").strip()
+    allowed = {client if _IPV4.match(client) else COCKPIT_SOURCE_DEFAULT}
+    source = (getattr(eye, "source", "") or "").strip()
+    host = source.rsplit(":", 1)[0] if source.count(":") <= 1 else source
+    if _IPV4.match(host):
+        allowed.add(host)
+    return allowed
 
 
 class CockpitListener:
-    """UDP listener thread: AthenaExport packets -> eye.on_cockpit_packet(pkt, src). Only the configured DCS PC
-    may send (others are dropped and counted in cockpit.rejected)."""
+    """UDP listener thread: AthenaExport packets -> eye.on_cockpit_packet(pkt, src). Only allowed_sources()
+    may send (the client PC by default); others are dropped, counted and named per sender in the picture."""
 
     def __init__(self, eye, host="0.0.0.0", port=COCKPIT_PORT, allowed=False):
         self.eye, self.host, self.port = eye, host, port
@@ -601,10 +611,15 @@ class CockpitListener:
                 continue
             if self.allowed is not None and addr[0] not in self.allowed:
                 with self.eye.cockpit.lock:
-                    self.eye.cockpit.rejected += 1
-                    if self.eye.cockpit.rejected == 1:
-                        LOG.warning("cockpit: dropping UDP packets from %s (allowed: %s)", addr[0],
-                                    ",".join(sorted(self.allowed)))
+                    state = self.eye.cockpit
+                    state.rejected += 1
+                    first = addr[0] not in state.rejected_from
+                    if first and len(state.rejected_from) >= 8:
+                        continue  # counted; the first 8 senders are named
+                    state.rejected_from[addr[0]] = state.rejected_from.get(addr[0], 0) + 1
+                if first:  # once per sender, not once per process
+                    LOG.warning("cockpit: dropping UDP packets from %s (allowed: %s; set ATHENA_COCKPIT_ALLOWED)",
+                                addr[0], ",".join(sorted(self.allowed)))
                 continue
             pkt = parse_packet(data)
             if pkt is None:

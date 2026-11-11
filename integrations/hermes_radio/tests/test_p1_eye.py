@@ -75,8 +75,14 @@ class LabelTests(TypeInfoIsolation):
         self.assertEqual(eye.units[700]["category"], "SAM")
         self.assertEqual(eye.types_to_describe(), ["Mystery tr"])
         eye.note_type_info({"Mystery tr": {"attributes": ["Trucks", "Vehicles", "Ground Units"]}})
-        self.assertEqual(eye.units[700]["category"], "ground vehicle")  # existing unit relabelled
+        # review P1 fail safe: attributes never downgrade a name the patterns call SAM (only TYPE_OVERRIDES can)
+        self.assertEqual(eye.units[700]["category"], "SAM")
         self.assertEqual(eye.types_to_describe(), [])  # asked once per type
+        truck2 = ground(703, "T2", "Mystery Hauler", "Convoy", 90, 2)  # no SAM pattern: DCS attributes decide
+        eye.on_units_message(fx.units_message(truck2))
+        self.assertEqual(eye.units[703]["category"], "ground vehicle")
+        eye.note_type_info({"Mystery Hauler": {"attributes": ["Artillery"]}})
+        self.assertEqual(eye.units[703]["category"], "artillery")  # existing unit relabelled
         eye.note_type_info({"Odd Thing": False})  # DCS gave nothing: patterns decide
         self.assertEqual(classify("Odd Thing", GROUND), "ground vehicle")
         eye.note_type_info({"Shilka-like": {"attributes": {"AA_flak": True, "SAM TR": True, "Mobile AAA": True}}})
@@ -214,18 +220,21 @@ class RadarTests(TypeInfoIsolation):
         self.assertTrue(row["call"].startswith("SAM SA-11 tracking you, your twelve o'clock"), row["call"])
         self.assertEqual(pic["rwr_alert_to_announce"], [row["call"]])
 
-    def test_radar_off_means_no_warning_and_searching_is_not_announced(self):
+    def test_radar_off_or_searching_keeps_the_range_warning(self):
+        # review P1 (MAJOR): a dark or searching radar can ambush; it keeps the range-table warning, once
         eye, clock = self.eye()
         eye.on_radars([{"name": "SAM SR", "has_radar": True, "on": False}])
         eye.tick()
         pic = eye.picture()
-        self.assertEqual(pic["threats"]["sam_in_range"], [])
-        self.assertNotIn("rwr_alert_to_announce", pic)
+        row = pic["threats"]["sam_in_range"][0]
+        self.assertEqual((row["confidence"], row["radar"]), ("range only: could be tracking", "off"))
+        self.assertEqual(pic["rwr_alert_to_announce"], [row["call"]])
+        eye.mark_announced([a["key"] for a in eye.threat_alerts])
         eye.on_radars([{"name": "SAM SR", "has_radar": True, "on": True, "detected": False}])
         eye.tick()
         pic = eye.picture()
-        self.assertEqual(pic["threats"]["sam_in_range"][0]["confidence"], "DCS radar: searching")
-        self.assertNotIn("rwr_alert_to_announce", pic)
+        self.assertEqual(pic["threats"]["sam_in_range"][0]["radar"], "searching")
+        self.assertNotIn("rwr_alert_to_announce", pic)  # same group, same warning: not again
         eye.on_radars([{"name": "SAM SR", "has_radar": True, "on": True, "tracking_me": True}])
         eye.tick()
         self.assertEqual(eye.picture()["rwr_alert_to_announce"][0][:24], "SAM SA-11 tracking you, ")
@@ -468,9 +477,11 @@ class NumberTests(TypeInfoIsolation):
 # ============================================================================= 7. UDP allowlist
 class AllowlistTests(unittest.TestCase):
     def test_sources(self):
-        with patch.dict(os.environ, {"ATHENA_COCKPIT_ALLOWED": "", "ATHENA_DCS_SOURCE": ""}):
+        with patch.dict(os.environ, {"ATHENA_COCKPIT_ALLOWED": "", "ATHENA_DCS_SOURCE": "", "ATHENA_DCS_CLIENT_HOST": ""}):
             self.assertEqual(cp.allowed_sources(None), {"10.90.10.113"})
-            self.assertEqual(cp.allowed_sources(type("E", (), {"source": "10.1.2.3:50051"})()), {"10.1.2.3"})
+            # review P1: the client PC (where the export runs) stays allowed whatever the Eye's DCS host
+            self.assertEqual(cp.allowed_sources(type("E", (), {"source": "10.1.2.3:50051"})()),
+                             {"10.90.10.113", "10.1.2.3"})
         with patch.dict(os.environ, {"ATHENA_COCKPIT_ALLOWED": "10.0.0.5, 10.0.0.6"}):
             self.assertEqual(cp.allowed_sources(None), {"10.0.0.5", "10.0.0.6"})
         with patch.dict(os.environ, {"ATHENA_COCKPIT_ALLOWED": "*"}):

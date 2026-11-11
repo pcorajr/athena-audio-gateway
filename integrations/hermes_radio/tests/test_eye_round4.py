@@ -210,16 +210,16 @@ class KillConfirmationTests(unittest.TestCase):
         self.assertEqual(pic["my_kills_this_mission"][0]["confidence"], "confirmed")
         self.assertEqual(pic["splash_to_announce"], ["Splash one T-55"])
 
-    def test_pilot_report_without_vanish_records_kill_on_last_attack(self):
+    def test_pilot_report_without_dcs_evidence_records_no_kill(self):
+        # phase 1: the pilot's word alone never creates a kill (was: "pilot report on my last attack")
         eye, clock = a10_eye()
         eye.on_event(fx.shot(A10, 0, "GAU_8"))
         clock.t += 5
         out = eye.pilot_report("Athena, splash one T-55")
-        self.assertEqual(out["how"], "pilot report on my last attack")
+        self.assertEqual(out, {"confirmed": None, "how": "not recorded: no DCS kill to confirm"})
         pic = eye.picture()
-        self.assertEqual(pic["my_kills_this_mission"][0]["how"], "pilot report")
-        self.assertEqual(pic["my_shots_last_15_min"]["shots"][0]["result"], "kill")
-        self.assertEqual(eye.pilot_report("target destroyed")["how"], "already confirmed")
+        self.assertEqual(pic["my_kills_this_mission"], [])
+        self.assertNotEqual(pic["my_shots_last_15_min"]["shots"][0]["result"], "kill")
 
     def test_controller_routes_kill_report_to_eye_and_hint(self):
         eye, clock = a10_eye()
@@ -353,6 +353,7 @@ class GrpcThreatTests(unittest.TestCase):
     def test_sam_in_range_without_cockpit_rwr(self):
         eye, clock = f4e_eye()
         eye.on_cockpit_packet(f4e_packet())
+        eye.tick()  # phase 1: SAM alerts are raised by the feeder's tick, not by drawing the picture
         pic = eye.picture()
         th = pic["threats"]
         self.assertEqual(th["rwr_source"], "grpc_inferred")

@@ -55,8 +55,10 @@ class Transcript:
                     fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
 
-    def log(self, *, kind, request=None, text="", outcome="", route="LLM", **metadata):
-        record = dict(kind=kind, text=text, outcome=outcome, route=route, **metadata)
+    def log(self, *, kind, request=None, text="", outcome="", route=None, **metadata):
+        record = dict(kind=kind, text=text, outcome=outcome, **metadata)
+        if route:  # only records that belong to a route carry one (no default "LLM" label)
+            record["route"] = route
         if request is not None:
             # Request identity routes the exchange; it is not the author of
             # Athena's generated words (including words never sent on radio).
@@ -71,6 +73,28 @@ class Transcript:
             # Never include exception bodies: provider errors may contain secrets.
             print("athena_radio_transcript_write_failed", file=sys.stderr, flush=True)
             return False
+
+    def outcome_of(self, transmission_id, tail_bytes=262144):
+        """The gateway's exchange_outcome for one transmission ("sent", "say_again_fallback_sent:...", ...), or
+        None when today's transcript has none in its last `tail_bytes` (no gateway, or not written yet)."""
+        path = self.root / f"transcript-{self.clock().astimezone():%Y%m%d}.jsonl"
+        needle = json.dumps(transmission_id)
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(max(0, fh.seek(0, os.SEEK_END) - tail_bytes))
+                lines = fh.read().decode("utf-8", "replace").splitlines()
+        except OSError:
+            return None
+        for line in reversed(lines):
+            if '"exchange_outcome"' not in line or needle not in line:
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if record.get("kind") == "exchange_outcome" and record.get("transmission_id") == transmission_id:
+                return str(record.get("outcome") or "")
+        return None
 
     def append(self, record):
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)

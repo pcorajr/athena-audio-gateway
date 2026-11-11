@@ -50,7 +50,7 @@ def packet(seq=1, **over):
     p = {"v": 1, "seq": seq, "t": 100.0 + seq * 0.2, "ac": "F-16C_50", "unit": "Prometheus-1", "group": "Viper 1",
          "coal": 2, "pilot": "Prometheus", "lat": fx.LAT0, "lon": fx.LON0, "alt": 6096.0, "hdg": 90.0,
          "hdg_mag": 84.0, "pitch": 2.0, "bank": -10.0, "ias": 180.0, "tas": 230.0, "gs": 250.0, "mach": 0.72,
-         "alt_msl": 6096.0, "agl": 5900.0, "vs": -5.08, "aoa": 4.6, "g": 4.5, "fuel_int": 2500, "fuel_ext": 1200,
+         "alt_msl": 6096.0, "agl": 5900.0, "vs": -5.08, "aoa": 4.6 * 57.29578, "g": 4.5, "fuel_int": 2500, "fuel_ext": 1200,
          "rpm": [88.5, 0],
          "rwr": {"mode": 0, "e": []},
          "pay": {"cur": 3, "gun": 510, "st": [station(1, "AIM-120C", 1, AMRAAM), station(2, "AIM-120C", 1, AMRAAM),
@@ -164,7 +164,7 @@ class CockpitStateTests(unittest.TestCase):
         self.assertEqual(f["alt_msl_ft"], 20000)
         self.assertEqual(f["vs_fpm"], -1000)
         self.assertEqual(f["g"], 4.5)
-        self.assertEqual(f["aoa_deg"], 4.6)
+        self.assertEqual(f["aoa_deg"], 4.6)  # the export sends deg(degrees): R3 T11
         self.assertEqual(f["heading_mag"], 84)
         self.assertEqual(pic["fuel"], {"internal_lb": 5510, "external_lb": 2650, "total_lb": 8160, "total_kg": 3700})
         self.assertEqual(pic["payload"]["by_weapon"], {"AIM-120C": 2, "GBU-12": 2})
@@ -442,8 +442,12 @@ class PromptRoutingTests(unittest.TestCase):
         list(c.stream(req("Athena, fuel state", tid="t2")))
         pic1 = json.loads([m for m in seen[0] if m["content"].startswith("PICTURE ")][0]["content"][8:])
         pic2 = json.loads([m for m in seen[1] if m["content"].startswith("PICTURE ")][0]["content"][8:])
+        # phase 1: the controller ticks the Eye, so the SA-11 range alert is raised too, after the launch. Kept
+        # with a cockpit RWR on purpose (review P1): an RWR cannot see a radar that is off, so the range warning
+        # for a dark site stays; the exact list pins both calls and their order.
         self.assertEqual([a for a in pic1["rwr_alert_to_announce"] if not a.startswith("Bandit")],
-                         ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock."])
+                         ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock.",
+                          "SAM SA-11 could be tracking you, your three o'clock, ten miles."])
         self.assertNotIn("_rwr_keys", pic1)
         self.assertFalse([a for a in pic2.get("rwr_alert_to_announce", []) if not a.startswith("Bandit")])  # announced once
         self.assertEqual(pic1["cockpit"]["rwr"]["threats"][0]["signal"], "launch")
@@ -455,14 +459,16 @@ class PromptRoutingTests(unittest.TestCase):
         tool = [r for r in c.transcript.records if r["kind"] == "tool"][0]
         summary = tool["result"]["summary"]
         self.assertEqual(summary["cockpit"]["rwr_highest"], "launch")
-        self.assertEqual([a for a in summary["rwr_alert"] if not a.startswith("Bandit")], ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock."])
+        self.assertEqual([a for a in summary["rwr_alert"] if not a.startswith("Bandit")],
+                         ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock.",
+                          "SAM SA-11 could be tracking you, your three o'clock, ten miles."])
 
 
 # ----------------------------------------------------------------------------- UDP listener
 class ListenerTests(unittest.TestCase):
     def test_udp_packets_reach_the_eye(self):
         eye = Eye("Prometheus", source="fixture")
-        listener = cp.CockpitListener(eye, host="127.0.0.1", port=0).start()
+        listener = cp.CockpitListener(eye, host="127.0.0.1", port=0, allowed={"127.0.0.1"}).start()
         self.assertIsNone(listener.error)
         try:
             tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -481,9 +487,9 @@ class ListenerTests(unittest.TestCase):
 
     def test_bind_failure_is_reported_not_raised(self):
         eye = Eye("Prometheus", source="fixture")
-        first = cp.CockpitListener(eye, host="127.0.0.1", port=0).start()
+        first = cp.CockpitListener(eye, host="127.0.0.1", port=0, allowed={"127.0.0.1"}).start()
         try:
-            second = cp.CockpitListener(eye, host="127.0.0.1", port=first.port).start()  # port taken
+            second = cp.CockpitListener(eye, host="127.0.0.1", port=first.port, allowed={"127.0.0.1"}).start()  # port taken
             self.assertIsNotNone(second.error)
             self.assertIsNone(second.thread)
             self.assertIn("listener failed", eye.cockpit.status)

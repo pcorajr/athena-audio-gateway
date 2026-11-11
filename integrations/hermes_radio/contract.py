@@ -1,4 +1,9 @@
-"""Strict native gateway bridge contract; no new wire fields."""
+"""Strict native gateway bridge contract. Phase 1 adds two optional label fields to the response, route and
+model, which the gateway copies into its transcript records; frames without them stay valid.
+
+Deploy order (review P1, wire contract): the v12 Go gateway rejects any unknown response key, so this Python (which
+labels every frame with `route`) must never run against v12. Deploy the new Go binary first (or both in one
+stop/start); roll back in reverse (Python first, then Go). Old Python with the new Go is fine."""
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -15,6 +20,8 @@ REQUEST_KEYS = frozenset({
 })
 STATES = frozenset({"ok", "stale", "degraded", "unavailable", "ownship_ambiguous"})
 INTENT_CLASSES = frozenset({"factual", "cue", "action_preview", "unrecognized"})
+ROUTES = frozenset({"fixed", "llm", "debrief", "fallback"})  # optional response label (phase 1)
+MAX_MODEL_CHARS = 64
 _UNSAFE = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp"})
 _UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|\+00:00)\Z")
 
@@ -117,18 +124,27 @@ def parse_request(raw, *, speaker="Prometheus"):
     return Request(**data)
 
 
-def response(request, *, speech="", state="unavailable", reason="", intent="factual"):
+def response(request, *, speech="", state="unavailable", reason="", intent="factual", route=None, model=None):
     value = {"transmission_id": request.transmission_id, "deliverable": bool(speech),
              "speech": speech, "intent_class": intent, "state": state}
     if not speech:
         value["suppression_reason"] = reason or "not_deliverable"
+    elif route:
+        value["route"] = route  # which path wrote the words; model = which model, when one did
+        if model:
+            value["model"] = model
     return value
 
 
 def encode_response(value):
     required = {"transmission_id", "deliverable", "speech", "intent_class", "state"}
-    if type(value) is not dict or set(value) not in (required, required | {"suppression_reason"}):
+    if type(value) is not dict or not required <= set(value) <= required | {"suppression_reason", "route", "model"}:
         raise ContractError()
+    if "route" in value or "model" in value:  # optional labels: only on a deliverable frame, model needs a route
+        if value.get("deliverable") is not True or value.get("route") not in ROUTES:
+            raise ContractError()
+        if "model" in value and len(safe_text(value["model"])) > MAX_MODEL_CHARS:
+            raise ContractError()
     safe_text(value["transmission_id"])
     safe_text(value["speech"], nonempty=False)
     safe_text(value.get("suppression_reason", ""), nonempty=False)

@@ -15,6 +15,7 @@ import unicodedata
 
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
 from .cockpit import spoken_name
+from .codex_llm import read_chunks
 from .eye import KILL_REPORT, _QUESTION, domain, words
 
 PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
@@ -31,10 +32,10 @@ Facts that matter:
 - ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words.
 - ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
 - Damage / "I'm hit": ownship.damage hit events and getLife/getLife0 drops are primary evidence. Read the damage call. Cockpit warning lights, engine RPM changes and fuel-loss trend are secondary clues only. No warnings NEVER means no damage; acknowledge the pilot even if telemetry is unavailable. A fuel loss trend alone is not proof of a leak.
-- event_stream.state other than "live" means shot and kill reports may be missing; mention it only when asked about shots or kills.
+- data_health.combat_events not "ok" = kills may be unconfirmed; mention it only when asked about kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 - cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
-- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls instead ("SAM SA-11 could be tracking you, ..."); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see."
+- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
 - Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
 - Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
@@ -74,7 +75,13 @@ _JUNK = re.compile(r"^[\W_]*$")
 MAX_REPLY_CHARS = 280
 DEBRIEF_CHARS = 150  # the spoken debrief; the details are in the written report
 assert MAX_REPLY_CHARS <= MAX_SPEECH_CHARS
-FALLBACK = "Prometheus, Athena, say again, I had a problem on my end."
+# ONE deadline per exchange (phase 1), from the moment the request reaches the adapter. The gateway gives the
+# whole bridge call 20 s. Measured 11-07..09: Codex p50 1.7 s, p90 3.2 s, p99 7.7 s, max 8.2 s; API mini p99
+# 1.5 s, max 1.9 s. Codex gets at most 6 s of wall-clock time, the API fallback the rest, and at 10 s Athena
+# says FALLBACK: never silence, never a guess, and 10 s of margin to the gateway's own "say again".
+EXCHANGE_DEADLINE_S = 10.0
+MIN_MODEL_S = 2.0  # less than this left (the request waited behind another one): no model call, say again
+FALLBACK = "Prometheus, Athena, say again."
 
 # Question focus (round 3): a one-line hint telling the model which picture section answers the question.
 FOCUS_RULES = (
@@ -85,7 +92,7 @@ FOCUS_RULES = (
                        r"(locking|locked on|lock on|tracking|targeting|looking at) me\b|am i (being )?locked\b(?! on)|"
                        r"anyone locking|launch|missile inbound|threats? on me)", re.I),
      "cockpit.rwr.threats (type, signal, clock); empty with fresh cockpit = RWR clean; when threats.rwr_source is "
-     "grpc_inferred use threats.missiles_in_flight (else missiles_inbound) and threats.sam_in_range"),
+     "grpc_inferred use threats.missiles_in_flight and threats.sam_in_range (DCS radar: tracking; range only: could be)"),
     ("fuel", re.compile(r"\b(fuel|bingo|joker|gas)\b", re.I),
      "ownship.fuel (total_lb pounds, else internal_pct percent; known false = fuel unknown)"),
     ("gear", re.compile(r"\b(gear|wheels|flaps|speed ?brakes?|hook|configured|configuration)\b", re.I),
@@ -550,6 +557,42 @@ def _fit_calls(klass, calls, room):
     return kept or None, len(kept) < len(calls)
 
 
+IMPACT_KILL_LINES = ("Good hit, splash", "Likely kill on")  # impact_calls lines that report a kill
+
+
+def _alert_rows(alerts, keys, field):
+    """[(alert ending in '.', [keys])] in order. Identical splash calls are merged with their count
+    ('Splash two Container 40Ft.'): two kills of one type are two kills, never one call (live 11-09 20:09)."""
+    texts, keyed, counts = [], {}, Counter()
+    for i, alert in enumerate(alerts or []):
+        alert = (alert or "").strip()
+        if not alert:
+            continue
+        if alert[-1] not in ".!?":
+            alert += "."
+        if alert not in keyed:
+            texts.append(alert)
+            keyed[alert] = []
+        counts[alert] += 1
+        if keys and i < len(keys) and keys[i] is not None:
+            keyed[alert].append(keys[i])
+    rows = []
+    for alert in texts:
+        said = alert
+        if field == "splash_to_announce" and counts[alert] > 1:
+            said = re.sub(r"^splash one\b", "Splash " + words(counts[alert]), alert, flags=re.I)
+        rows.append((said, keyed[alert]))
+    return rows
+
+
+def time_left(deadline):
+    """Seconds until `deadline` (time.monotonic()); TimeoutError when it has passed."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError("exchange_deadline")
+    return left
+
+
 def _named_missile(text):
     m = NAMED_MISSILE.search(text or "")
     if not m:
@@ -567,12 +610,13 @@ class SimpleController:
     queues = True
 
     def __init__(self, tools, transcript, *, model, api_key, base_url="https://api.openai.com/v1",
-                 timeout=12.0, radius_nm=200.0, eye=None, llm=None, speaker="Prometheus,Player,Client"):
-        self.tools, self.transcript, self.eye = tools, transcript, eye
+                 timeout=12.0, eye=None, llm=None, speaker="Prometheus,Player,Client"):
+        # tools: unused (legacy call signature); the Eye is the only source of the picture
+        self.transcript, self.eye = transcript, eye
         self.model, self._key = model, api_key
         self._host = base_url.split("//", 1)[1].split("/", 1)[0]
         self._path = "/" + base_url.split("//", 1)[1].split("/", 1)[1].rstrip("/") + "/chat/completions"
-        self.timeout, self.radius_nm = timeout, radius_nm
+        self.timeout = timeout
         self.history = deque(maxlen=8)
         self.speaker = speaker
         self._llm = llm or self.ask
@@ -582,28 +626,28 @@ class SimpleController:
         self.empty_transcripts = 0  # whisper returned nothing usable (suppressed, counted)
         self._confirmed_kills = []
         self._pending_ack = None  # round 6: (abs_time, target) already read back to the pilot
+        self._launch_undo = None  # phase 1: missiles-called state before this reply's launch call
         self._reported_missiles = {}  # round 9: missile key -> (range_nm, time) already called to the pilot
         self._last_launch_reply = 0.0
+        self._last_exchange = None  # phase 1: what the previous reply marked said, undone if it was not sent
+        self._mission = None  # phase 1: (eye reset time, DCS session); a change clears the controller's memory
         self.transmissions = 0
-        # Duck-typed for server code that may consult a provider attribute.
-        self.provider = self
 
     # ---------------------------------------------------------------- picture
     def picture(self):
-        if self.eye is not None:
-            pic = self.eye.picture()
-            # memory6: optional light enrichment; the link owns a <=120 ms whole-exchange deadline.
-            memory = getattr(self.eye, "memory", None)
-            if memory is not None:
-                section = memory.summary()
-                if section is not None:
-                    pic["memory"] = section
-            return pic
-        return self._state_service_picture()
-
-    def _state_service_picture(self):
-        # Legacy state-service picture lives in legacy/integrations/hermes_radio_legacy/simple_legacy.py
-        return {"available": False, "reason": "no Athena Eye configured"}
+        if self.eye is None:
+            return {"available": False, "reason": "no Athena Eye configured"}
+        tick = getattr(self.eye, "tick", None)
+        if tick is not None:  # phase 1: picture() is a pure read; raise alerts / settle shots now, feeder or not
+            tick()
+        pic = self.eye.picture()
+        # memory6: optional light enrichment; the link owns a <=120 ms whole-exchange deadline.
+        memory = getattr(self.eye, "memory", None)
+        if memory is not None:
+            section = memory.summary()
+            if section is not None:
+                pic["memory"] = section
+        return pic
 
     def _picture_with_retry(self):
         last = None
@@ -764,12 +808,23 @@ class SimpleController:
         return new, upgraded
 
     def _remember(self, owner, rows, upgraded):
+        """Record kills as read back; returns what to undo if that reply is never transmitted."""
+        added, restored = [], []
         for row in rows:
-            self._confirmed_kills.append({"owner": owner, "key": row[0], "target": row[1], "weapon": row[3],
-                                          "t": row[5], "confidence": row[4]})
+            added.append({"owner": owner, "key": row[0], "target": row[1], "weapon": row[3],
+                          "t": row[5], "confidence": row[4]})
+        self._confirmed_kills.extend(added)
         for row, c in upgraded:
+            restored.append((c, c["confidence"]))
             c["confidence"] = row[4]
         del self._confirmed_kills[:-1000]
+        return added, restored
+
+    def _forget(self, undo):
+        added, restored = undo or ((), ())
+        self._confirmed_kills = [c for c in self._confirmed_kills if not any(c is a for a in added)]
+        for c, confidence in restored:
+            c["confidence"] = confidence
 
     @staticmethod
     def _count_line(rows, label, grouped=False):
@@ -795,6 +850,8 @@ class SimpleController:
         if cats:
             rows = [r for r in rows if r[2] in cats]
         new, upgraded = self._split_new(rows, owner)
+        health = pic.get("data_health")
+        unconfirmed = isinstance(health, dict) and health.get("combat_events", "ok") != "ok"
 
         def build(grouped):
             lines = []
@@ -820,6 +877,9 @@ class SimpleController:
                 lines.append(self._count_line([r for r, _ in upgraded], "Now confirmed, earlier likely:", grouped))
             if not new and not upgraded and not wingman and self.recent_release(pic, cats):
                 lines.append("Not confirmed yet, checking.")
+            elif not new and not upgraded and unconfirmed:
+                lines.append("No new %skills showing, but DCS kill reports are missing: kills may be unconfirmed."
+                             % prefix)
             elif not new and not upgraded:
                 lines.append("No new %skills since your last check." % prefix if rows
                              else "No %skills showing." % prefix)
@@ -875,6 +935,7 @@ class SimpleController:
         if source not in threats:
             return None
         now = time.time()
+        self._launch_undo = (dict(self._reported_missiles), self._last_launch_reply)  # restored if never sent
         self._reported_missiles = {k: v for k, v in self._reported_missiles.items() if now - v[1] <= 180}
         rows, ids = [], set()
         for m in threats.get(source) or []:
@@ -957,33 +1018,64 @@ class SimpleController:
         return "Remaining: %s." % ", ".join(parts)
 
     # ---------------------------------------------------------------- llm
-    def ask(self, messages):
+    def ask(self, messages, deadline=None):
+        """The OpenAI API model. `deadline` (time.monotonic()) bounds connect and every read."""
+        deadline = time.monotonic() + self.timeout if deadline is None else deadline
         body = json.dumps({"model": self.model, "messages": messages, "max_completion_tokens": 400,
                            "store": False}).encode()
-        conn = http.client.HTTPSConnection(self._host, timeout=self.timeout)
+        conn = http.client.HTTPSConnection(self._host, timeout=time_left(deadline))
         try:
             conn.request("POST", self._path, body=body, headers={
                 "Authorization": "Bearer " + self._key, "Content-Type": "application/json"})
+            sock = conn.sock
+            sock.settimeout(time_left(deadline))
             reply = conn.getresponse()
-            raw = reply.read()
+            # chunked, every wait bounded by the time left: a trickling body ends at the deadline, so an abandoned
+            # radio-model thread closes its socket then instead of living as long as the peer keeps sending
+            raw = b"".join(read_chunks(reply, sock, lambda: time_left(deadline)))
         finally:
             conn.close()
         if reply.status != 200:
             raise RuntimeError("openai_http_%d: %s" % (reply.status, raw[:300].decode("utf-8", "replace")))
         return json.loads(raw)["choices"][0]["message"]["content"].strip()
 
+    def _call_model(self, messages, deadline):
+        """(text or None, meta): the model's answer by `deadline`, whatever the backend does. meta says who
+        answered THIS call (backend, model, fallback_reason) for the transcript. A backend that is still busy at
+        the deadline is abandoned (its reads are bounded by the same deadline, so it closes its socket and ends right
+        after) and the pilot hears FALLBACK."""
+        llm = self._llm
+        box = {}
+
+        def run():
+            try:
+                if hasattr(llm, "answer_by"):  # CodexLLM: Codex, then the API fallback, inside the deadline
+                    box["text"], box["meta"] = llm.answer_by(messages, deadline)
+                elif llm == self.ask:
+                    box["text"] = self.ask(messages, deadline)
+                else:  # injected callable (tests, replay)
+                    box["text"] = llm(messages)
+            except Exception as error:  # noqa: BLE001 - every failure becomes the spoken fallback
+                box["error"] = error
+        worker = threading.Thread(target=run, daemon=True, name="radio-model")
+        worker.start()
+        worker.join(max(0.0, deadline - time.monotonic()))
+        meta = box.get("meta") or {"backend": getattr(llm, "label", "openai-api"),
+                                   "model": getattr(llm, "model", self.model)}
+        if worker.is_alive():
+            return None, dict(meta, fallback_reason="exchange_deadline")
+        if "error" in box:
+            failure = box["error"]
+            return None, dict(meta, fallback_reason=type(failure).__name__ + ": " + str(failure)[:300])
+        return box.get("text"), meta
+
     # ---------------------------------------------------------------- radio
     def _log(self, request, kind, **values):
-        last = getattr(self._llm, "last", None)  # CodexLLM: which backend answered the latest call
-        # only records of a model exchange carry the backend (fixed replies never called it)
-        if last is not None and "llm" not in values and values.get("route") == "llm":
-            values["llm"] = dict(last)
-        provider = "openai-codex" if getattr(self._llm, "label", "").startswith("openai-codex") else "openai-api"
-        model = getattr(self._llm, "model", self.model) if provider == "openai-codex" else self.model
-        self.transcript.log(request=request, kind=kind, provider=provider, model=model, **values)
+        self.transcript.log(request=request, kind=kind, **values)
 
     def stream(self, request):
         """Answer EVERY transmission from the pilot on the command frequency (no 'Athena' prefix needed)."""
+        arrived = time.monotonic()  # the exchange deadline counts from here, queue wait included
         text = request.transcript.strip()
         self._log(request, "adapter_ingress", text=text, outcome="received")
         if not speaker_matches(request.speaker, self.speaker):
@@ -1001,27 +1093,31 @@ class SimpleController:
             self._waiting += 1  # in flight: answering or waiting
             queued = self._waiting > 1
         if queued:
-            self._log(request, "route", route="LLM", outcome="queued_behind_previous")
+            self._log(request, "route", route="pending", outcome="queued_behind_previous")
         try:
             with self._turn:
-                yield from self._answer(request, text)
+                yield from self._answer(request, text, arrived)
         finally:
             with self._waiting_lock:
                 self._waiting -= 1
 
-    def _say(self, request, answer, route, start, llm_ms=0, trimmed=False):
-        """Log and send the reply as ONE frame (it already fits MAX_REPLY_CHARS)."""
-        self._log(request, "reply_generated", text=answer, outcome="intended", part=1, route=route,
-                  **({"trimmed": True} if trimmed else {}),
+    def _say(self, request, answer, route, start, llm_ms=0, trimmed=False, meta=None):
+        """Log and send the reply as ONE frame (it already fits MAX_REPLY_CHARS). Every reply record and frame
+        carries its route (fixed | llm | debrief | fallback), the model that answered, if any, and latency."""
+        model = (meta or {}).get("model") if route == "llm" else None  # a fallback line has no author model
+        model = str(model) if model else None
+        values = {"llm": dict(meta), "provider": meta.get("backend")} if meta else {}
+        self._log(request, "reply_generated", text=answer, outcome="intended", part=1, route=route, model=model,
+                  **values, **({"trimmed": True} if trimmed else {}),
                   timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
-        return response(request, speech=answer, state="ok")
+        return response(request, speech=answer, state="ok", route=route, model=model)
 
     def _mark_said(self, marks, answer):
         """Splash / threat / close-bandit keys are announced only when their call is in the final, fitted
-        reply (needle None = the model was asked to say it and answered)."""
-        if self.eye is None or not hasattr(self.eye, "mark_announced"):
-            return
+        reply (needle None = the model was asked to say it and answered). Returns the keys marked."""
         flat = []
+        if self.eye is None or not hasattr(self.eye, "mark_announced"):
+            return flat
         low = answer.lower()
         for key, needle in marks:
             needles = needle if isinstance(needle, tuple) else (needle,)
@@ -1029,9 +1125,54 @@ class SimpleController:
                 flat.extend(key if isinstance(key, list) else [key])
         if flat:
             self.eye.mark_announced(flat)
+        return flat
 
-    def _answer(self, request, text):
-        start = time.monotonic()
+    def _rearm(self, keys):
+        """Make announced calls pending again (their reply never went out)."""
+        if hasattr(self.eye, "unmark_announced"):
+            self.eye.unmark_announced(keys)
+
+    def _settle_previous(self, request):
+        """Phase 1, 'said only when delivered': the gateway is serial, so by the time the next request arrives it
+        has written the previous exchange's outcome to the shared transcript. A reply that was not transmitted
+        (say again, too long, expired) un-says its splash / threat / close-bandit calls and kill read-backs,
+        and leaves the chat history. No record (no gateway, other transcript dir) = assumed delivered."""
+        last, self._last_exchange = self._last_exchange, None
+        outcome_of = getattr(self.transcript, "outcome_of", None)
+        if not last or outcome_of is None:
+            return
+        outcome = outcome_of(last["id"])
+        if outcome is None or outcome == "sent":
+            return
+        if last["keys"]:
+            self._rearm(last["keys"])
+        self._forget(last["kills"])
+        if last.get("missiles") is not None:  # 'same missile' bookkeeping of a launch call nobody heard
+            self._reported_missiles, self._last_launch_reply = last["missiles"]
+        if last["history"] is not None and self.history and self.history[-1] is last["history"]:
+            self.history.pop()
+        self._log(request, "route", route="rearm", outcome="previous_reply_not_sent", previous=last["id"],
+                  previous_outcome=outcome, rearmed=len(last["keys"]))
+
+    def _check_mission(self, request):
+        """A new mission or DCS session clears the controller's own memory: chat history, kills read back, missiles
+        called. Eye.reset_at changes on mission_start and on a new DCS session id (the feeder resets the Eye); a
+        stream reconnect or unit sweep in the same session does not change it."""
+        marker = getattr(self.eye, "reset_at", None)
+        if self._mission is not None and marker != self._mission:
+            self.history.clear()
+            self._confirmed_kills = []
+            self._reported_missiles = {}
+            self._last_launch_reply = 0.0
+            self._last_exchange = None
+            self._log(request, "route", route="reset", outcome="new_mission_controller_memory_cleared")
+        self._mission = marker
+
+    def _answer(self, request, text, arrived=None):
+        start = time.monotonic() if arrived is None else arrived
+        deadline = start + EXCHANGE_DEADLINE_S
+        self._check_mission(request)
+        self._settle_previous(request)
         # memory6: owner's immediate acknowledgement; report I/O runs off-turn.
         memory = getattr(self.eye, "memory", None)
         if DEBRIEF_ASK.search(text) and not re.search(r"\bstatus\b", text, re.I):
@@ -1052,7 +1193,8 @@ class SimpleController:
             if trimmed:
                 self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
                           trimmed=True, route="debrief")
-            self._mark_said(marks, answer)
+            keys = self._mark_said(marks, answer)
+            self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": None, "history": None}
             if memory is not None:
                 memory.publish("radio_call", {"request": text, "reply": answer, "report_status": "queued" if queued else "unavailable"},
                                generation=generation)
@@ -1061,7 +1203,7 @@ class SimpleController:
         klass = call_class(text)
         report = None
         if klass == "kill_report" and self.eye is not None and hasattr(self.eye, "pilot_report"):
-            try:
+            try:  # the Eye decides: never a kill on the pilot's word alone
                 report = self.eye.pilot_report(text)  # before the picture: the confirmed kill is in it
             except Exception:  # noqa: BLE001 - never block the answer on bookkeeping
                 report = None
@@ -1075,6 +1217,7 @@ class SimpleController:
         close_bandits = pic.pop("_close_bandits", None) if isinstance(pic, dict) else None
         # Phase 0: the deterministic answer comes FIRST; the model is called only when there is none.
         self._pending_ack = None
+        self._launch_undo = None
         self._confirm_covers_own_splashes = False
         self._confirm_is_own = False
         prefix = "Prometheus, Athena, "
@@ -1105,6 +1248,7 @@ class SimpleController:
         marks = []  # (key, needle): announced only if the needle is in the final reply
         trimmed = False
         llm_ms = 0
+        meta = None
         if calls is not None:
             lead = []  # one not-yet-called bandit inside 20 nm goes first; the requested lines fill the rest
             for row in close_bandits or []:
@@ -1134,21 +1278,16 @@ class SimpleController:
                 alerts = []
                 remaining = MAX_REPLY_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
-                    for i, alert in enumerate(pic.get(field) or []):
-                        key = keys[i] if keys and i < len(keys) else None
+                    rows = _alert_rows(pic.get(field), keys, field)
+                    for alert, key in rows:
                         if field == "splash_to_announce" and klass == "kill_confirm" and self._pending_ack and (
                                 self._confirm_covers_own_splashes
                                 or (self._confirm_is_own and _splash_target(alert) in " ".join(calls).lower())):
                             # the confirmation itself reads the kill: said when its lines are in the reply
-                            if key is not None:
+                            if key:
                                 marks.append((key, self._pending_ack[3][0] if self._pending_ack[3] else None))
                             continue
-                        alert = alert.strip()
-                        if alert and alert[-1] not in ".!?":
-                            alert += "."
-                        if not alert:
-                            continue
-                        if key is not None:
+                        if key:
                             marks.append((key, alert))
                         if alert in alerts or alert in " ".join(calls):
                             continue  # already said in this reply
@@ -1156,7 +1295,17 @@ class SimpleController:
                             continue  # keep this alert pending for a later transmission
                         remaining -= len(alert) + 1
                         alerts.append(alert)
+                if klass == "impact" and any(a.lower().startswith("splash") for a in alerts):
+                    # "any hits?" with a splash pending: the splash call IS the result; never read the kill
+                    # twice under two names (live 11-09 20:09)
+                    calls = [c for c in calls if not c.startswith(IMPACT_KILL_LINES)]
                 answer = prefix + " ".join(stale + alerts + calls)
+        elif deadline - time.monotonic() < MIN_MODEL_S:
+            # too old to answer usefully (it waited behind a slow exchange): no model call, an honest say again
+            route, answer, meta = "fallback", FALLBACK, {"backend": None, "fallback_reason": "request_too_old"}
+            self._log(request, "controller_error", outcome="request_too_old_no_model_call", route=route,
+                      timings_ms={"total": round((time.monotonic() - start) * 1000)})
+            answer = self._with_close_bandits(answer, close_bandits, marks, MAX_SPEECH_CHARS)
         else:
             messages = [{"role": "system", "content": PROMPT}]
             for q, a in self.history:
@@ -1170,15 +1319,7 @@ class SimpleController:
                 messages.append({"role": "system", "content": CLASS_HINTS[klass]})
             messages.append({"role": "user", "content": text})
             t_llm = time.monotonic()
-            answer = None
-            for attempt in (1, 2):
-                try:
-                    answer = self._llm(messages)
-                    break
-                except Exception as failure:  # noqa: BLE001 - one retry, then a spoken fallback
-                    self._log(request, "controller_error", outcome=type(failure).__name__ + ": " + str(failure)[:300],
-                              attempt=attempt, route=route,
-                              timings_ms={"total": round((time.monotonic() - start) * 1000)})
+            answer, meta = self._call_model(messages, deadline)
             llm_ms = round((time.monotonic() - t_llm) * 1000)
             answer = clean(answer)
             if answer:  # the model was given the splash / RWR calls to say first: marked only if it said them
@@ -1186,7 +1327,10 @@ class SimpleController:
                     for alert, key in zip(pic.get(field) or [], keys or []):
                         marks.append((key, _alert_needle(alert, field)))
             else:
-                answer = FALLBACK
+                route, answer = "fallback", FALLBACK
+                meta.setdefault("fallback_reason", "empty answer")
+                self._log(request, "controller_error", outcome=meta["fallback_reason"], route=route,
+                          llm=meta, timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
             # a close bandit goes first; fit_reply trims the model's tail to make room
             answer = self._with_close_bandits(answer, close_bandits, marks, MAX_SPEECH_CHARS)
         answer, net_trimmed = fit_reply(answer)
@@ -1194,18 +1338,25 @@ class SimpleController:
         if trimmed:
             self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
                       trimmed=True, route=route)
+        kills = None
         if self._pending_ack and all(line in answer for line in self._pending_ack[3]):
-            self._remember(*self._pending_ack[:3])  # kills read back only when every kill line was said
+            kills = self._remember(*self._pending_ack[:3])  # kills read back only when every kill line was said
         self._pending_ack = None
-        self._mark_said(marks, answer)
-        self.history.append((text, answer))
+        keys = self._mark_said(marks, answer)
+        said = None
+        if route != "fallback":  # a "say again" is never chat history
+            said = (text, answer)
+            self.history.append(said)
+        self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": kills, "history": said,
+                               "missiles": self._launch_undo}
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
             memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"},
                            generation=pic.get("_memory_generation") if isinstance(pic, dict) else None)
-        yield self._say(request, answer, route, start, llm_ms=llm_ms, trimmed=trimmed)
+        yield self._say(request, answer, route, start, llm_ms=llm_ms, trimmed=trimmed, meta=meta)
 
     def exchange(self, request):
         parts = list(self.stream(request))
         if not parts[0]["deliverable"]:
             return parts[0]
-        return response(request, speech=" ".join(p["speech"] for p in parts), state="ok")
+        return response(request, speech=" ".join(p["speech"] for p in parts), state="ok",
+                        route=parts[0].get("route"), model=parts[0].get("model"))

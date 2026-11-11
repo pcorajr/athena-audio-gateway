@@ -403,7 +403,7 @@ class ReadableFactsTests(unittest.TestCase):
         eye, clock = scenario()
         eye.on_event(fx.shot(PILOT, 16785664, "AGR_20A"))
         clock.t += 3601
-        eye.picture()
+        eye.tick()  # phase 1: picture() is a pure read; pruning happens in tick()
         self.assertFalse(eye.shots)
         eye.on_event(event(target(12, "Paratrooper AKS-74"), wid=16785664, wtype="16785664", name=""))
         self.assertEqual(eye.picture()["my_kills_this_mission"][0]["weapon"], "AGR-20A")

@@ -1906,7 +1906,9 @@ class Eye:
             out["note"] = "no position for Prometheus: SAM range and missile checks are NOT running (not an all-clear)"
             return out, [], []
         # "off" = the Eval missile scan is not answering (Eval disabled / stale): only shot events can show a missile
-        out["missile_scan"] = "on" if self._eval_scan_on(now) else "off"
+        # not "on": the picture says why (read aloud as the reason missile tracking is limited)
+        out["missile_scan"] = "on" if self._eval_scan_on(now) else (
+            "off: DCS Eval is off" if str(self.stores_status).startswith("unavailable") else "off: missile scan is not answering")
         sams = self._sam_threats(own, now)
         out["sam_in_range"] = sams[:PICTURE_TOP]
         if len(sams) > PICTURE_TOP:

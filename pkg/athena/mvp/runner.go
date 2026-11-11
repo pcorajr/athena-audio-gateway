@@ -57,6 +57,9 @@ type Runner struct {
 	Transcript         *transcript.Writer
 	busy               atomic.Bool
 	lastTransmissionID string // guarded by busy; transport also consumes its route token
+	// testPilotAt is when the last deliverable adapter frame said test_pilot
+	// (unix nanoseconds); 0 = the last frame did not say so, or none was seen.
+	testPilotAt atomic.Int64
 }
 
 func (r *Runner) Run(ctx context.Context, in <-chan simpleradio.Transmission) {

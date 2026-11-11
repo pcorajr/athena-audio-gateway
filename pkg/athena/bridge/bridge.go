@@ -120,6 +120,10 @@ type Response struct {
 	Route string `json:"route,omitempty"`
 	// Model optionally names the model that wrote Speech (route llm).
 	Model string `json:"model,omitempty"`
+	// TestPilot optionally says the TEST stand-in aircraft is the pilot for this
+	// reply (the adapter already spoke the marker). The gateway only uses it to
+	// mark its own "say again" the same way. Deliverable frames only.
+	TestPilot bool `json:"test_pilot,omitempty"`
 }
 
 // MaxModelChars bounds the optional Response.Model label.
@@ -133,7 +137,7 @@ func (r Response) validLabels() bool {
 		return false
 	}
 	return utf8.RuneCountInString(r.Model) <= MaxModelChars && strings.IndexFunc(r.Model, unicode.IsControl) < 0 &&
-		(r.Model == "" || r.Route != "") && (r.Route == "" || r.Deliverable)
+		(r.Model == "" || r.Route != "") && (r.Route == "" || r.Deliverable) && (!r.TestPilot || r.Deliverable)
 }
 
 // ErrInvalidRequest and ErrInvalidResponse wrap all envelope validation

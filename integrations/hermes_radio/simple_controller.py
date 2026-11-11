@@ -517,6 +517,31 @@ def _word_cut(sentence, cap):
     if not sentence[cap - 1:cap - 0].isspace() and " " in cut:
         cut = cut[:cut.rindex(" ")]
     return cut.rstrip(" ,;:-.") + "."
+TEST_PILOT = "Test pilot."
+ADDRESS = "Prometheus, Athena, "
+
+
+def with_test_marker(answer, test):
+    """While the TEST stand-in is ownship every spoken reply says so right after the address, so an AI jet can
+    never pass for the pilot. fit_reply trims from the end, so the marker is never the part that is cut."""
+    answer = (answer or "").strip()
+    if not test or answer[len(ADDRESS):].startswith(TEST_PILOT):
+        return answer
+    if answer.startswith(ADDRESS):
+        return ADDRESS + TEST_PILOT + " " + answer[len(ADDRESS):]
+    return ADDRESS + TEST_PILOT + " " + answer
+
+
+def fit_marked(answer, test):
+    """fit_reply for a spoken reply, with the stand-in marker added: the rest is shortened to make room for it
+    (never the marker, never by dropping the address)."""
+    answer = (answer or "").strip()
+    if not test or answer[len(ADDRESS):].startswith(TEST_PILOT):
+        return fit_reply(answer)
+    fitted, trimmed = fit_reply(answer, MAX_REPLY_CHARS - len(TEST_PILOT) - 1)
+    return with_test_marker(fitted, True), trimmed
+
+
 def fit_reply(answer, limit=MAX_REPLY_CHARS, word_trim=True):
     """The one reply budget: trim whole sentences from the end (the callsign / close-bandit / alert sentences
     stay first) until the reply fits `limit`. Returns (text, trimmed); text is None when word_trim=False
@@ -1194,7 +1219,7 @@ class SimpleController:
             answer, trimmed = fit_reply(answer, DEBRIEF_CHARS)
             marks = []  # a close bandit still goes first; the debrief tail is trimmed to make room
             answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), marks, MAX_SPEECH_CHARS)
-            answer, net_trimmed = fit_reply(answer)
+            answer, net_trimmed = fit_marked(answer, isinstance(dpic, dict) and dpic.get("test_ownship"))
             trimmed = trimmed or net_trimmed
             if trimmed:
                 self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
@@ -1226,7 +1251,8 @@ class SimpleController:
         self._launch_undo = None
         self._confirm_covers_own_splashes = False
         self._confirm_is_own = False
-        prefix = "Prometheus, Athena, "
+        test = bool(isinstance(pic, dict) and pic.get("test_ownship"))
+        prefix = ADDRESS + (TEST_PILOT + " " if test else "")  # fixed replies budget their room after the marker
         age = (pic.get("data_age_s") or {}).get("units")
         stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
         if age is not None and age > 60:
@@ -1339,7 +1365,7 @@ class SimpleController:
                           llm=meta, timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
             # a close bandit goes first; fit_reply trims the model's tail to make room
             answer = self._with_close_bandits(answer, close_bandits, marks, MAX_SPEECH_CHARS)
-        answer, net_trimmed = fit_reply(answer)
+        answer, net_trimmed = fit_marked(answer, test)  # fixed replies already carry it; model / fallback get it here
         trimmed = trimmed or net_trimmed
         if trimmed:
             self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},

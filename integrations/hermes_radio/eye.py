@@ -717,6 +717,7 @@ class Eye:
     # -- lifecycle
     def reset(self, reason):
         with self.lock:
+            self._real_seen = self._stand_used = False  # test stand-in safety flags: per mission
             if self.memory is not None:
                 self.memory.invalidate()
                 self.cockpit = CockpitState(clock=self.clock)
@@ -911,11 +912,33 @@ class Eye:
             self.on_gone(msg["gone"].get("id", 0))
 
     def _own_locked(self):
-        """The pilot's unit: the unit named in the cockpit feed, else player name in the allowed list, else
-        the ONLY player unit (single player), else a pseudo unit built from the cockpit feed (gRPC down)."""
+        """The pilot's unit (see _resolve_own). Also keeps the two stand-in safety flags: once a real pilot has
+        been ownship in this mission the stand-in is never used again, and what the stand-in did is not his."""
         cached = getattr(self, "_own_cache", None)
         if cached is not None:
             return cached[0]  # picture() resolves ownship once per build (busy maps: thousands of _is_me calls)
+        own = self._resolve_own()
+        if own is not None:
+            if self._stand_in(own):
+                self._stand_used = True
+            elif not self._real_seen:
+                self._real_seen = True
+                if self._stand_used:
+                    self._drop_stand_in_work()
+        return own
+    def _drop_stand_in_work(self):
+        """A real pilot has shown up after the test stand-in was ownship: its kills stay as other pilots' kills
+        and its shots / weapons used are forgotten, so none of it is read back as the human's."""
+        self.other_kills = sorted(self.other_kills + self.my_kills, key=lambda k: k["seq"])
+        self.my_kills = []
+        self.shots.clear()
+        self.used_session.clear()
+        self.fired_events.clear()
+    def _resolve_own(self):
+        """The pilot's unit: the unit named in the cockpit feed, else player name in the allowed list, else
+        the ONLY player unit (single player), else a pseudo unit built from the cockpit feed (gRPC down).
+        The TEST stand-in only when there is no player unit at all, no fresh cockpit feed, and no real pilot
+        has been ownship in this mission."""
         players = []
         cockpit = getattr(self, "cockpit", None)
         cp_unit = None
@@ -934,7 +957,8 @@ class Eye:
             return players[0]
         own = cockpit.ownship() if cockpit is not None else None
         name = getattr(self, "test_ownship", None)
-        if own is None and name:  # test stand-in: only when no real pilot resolved; gone when the unit dies
+        cockpit_live = cockpit is not None and cockpit.latest is not None and cockpit.fresh()
+        if own is None and name and not players and not cockpit_live and not self._real_seen:
             return next((u for u in self.units.values() if u.get("name") == name and u.get("lat") is not None), None)
         return own
     def _stand_in(self, own):
@@ -1040,6 +1064,7 @@ class Eye:
                 # Without memory retain the early unit snapshot; with memory the
                 # full reset above fences old state. The feeder requests a full resend.
                 self.events.clear()
+                self._real_seen = self._stand_used = False
                 self.shots.clear()
                 self.vanished.clear()
                 self.stores.clear()

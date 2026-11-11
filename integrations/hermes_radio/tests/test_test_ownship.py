@@ -202,5 +202,102 @@ class NoPositionReplyTests(unittest.TestCase):
         self.assertIn("no_position_call", PROMPT)
 
 
+class StandInSafetyTests(unittest.TestCase):
+    """Review 2026-11-11: the stand-in must never pass for the pilot (a test aid is not a person)."""
+    def player(self, uid, name):
+        return fx.unit(uid, name + "-1", "F-16C_50", "blue", name, "AIRPLANE", *fx.offset(300, 30), 5000.0, player=name)
+    def test_any_player_unit_in_the_mission_disables_the_stand_in(self):
+        eye = ai_eye(STAND_IN)
+        self.assertIsNotNone(eye.picture()["ownship"])
+        for other in (self.player(701, "Alice"), self.player(702, "Bob")):
+            eye.on_units_message(fx.units_message(other))
+        pic = eye.picture()  # two unknown players: r12 had no ownship, the stand-in must not step in
+        self.assertIsNone(pic["ownship"])
+        self.assertNotIn("test_ownship", pic)
+    def test_a_single_unknown_player_is_the_pilot_not_the_stand_in(self):
+        eye = ai_eye(STAND_IN)
+        eye.on_units_message(fx.units_message(self.player(701, "Alice")))
+        pic = eye.picture()
+        self.assertEqual(pic["ownship"]["player_name"], "Alice")
+        self.assertNotIn("test_ownship", pic)
+    def test_once_a_real_pilot_was_ownship_the_stand_in_never_comes_back_until_a_new_mission(self):
+        eye = ai_eye(STAND_IN, fx.UNITS)
+        self.assertEqual(eye.picture()["ownship"]["player_name"], "Prometheus")
+        eye.on_units_message(fx.gone_message(100, "Prometheus-1"))  # crash / slot change
+        pic = eye.picture()
+        self.assertIsNone(pic["ownship"])
+        self.assertNotIn("test_ownship", pic)
+        eye.reset("mission_start")
+        for u in fx.UNITS[1:]:
+            eye.on_units_message(fx.units_message(u))
+        self.assertIn("test_ownship", eye.picture())  # a new mission: the stand-in is available again
+    def test_a_fresh_cockpit_feed_disables_the_stand_in(self):
+        eye = ai_eye(STAND_IN)
+        eye.on_cockpit_packet({"v": 1, "ac": "A-10C_2", "unit": "Not in gRPC", "lat": fx.LAT0, "lon": fx.LON0,
+                               "alt": 914, "hdg": 90, "coal": 2, "fu": 2, "fuel_int": 0.9, "warn": []})
+        pic = eye.picture()
+        self.assertEqual(pic["ownship"]["source"], "cockpit feed only (DCS-gRPC has no unit for Prometheus)")
+        self.assertNotIn("test_ownship", pic)
+    def test_the_stand_ins_kills_are_never_the_humans_after_he_appears(self):
+        eye = ai_eye(STAND_IN)
+        eye.tick()
+        eye.on_event(fx.shot(fx.UNITS[-1], 9001, "AIM-120C", t=100.0))
+        eye.on_event(fx.kill(fx.UNITS[-1], 9001, "AIM-120C", fx.UNITS[1], t=111.0))
+        pic = eye.picture()
+        self.assertEqual(len(pic["my_kills_this_mission"]), 1)  # while it is ownship it is labelled as the test
+        self.assertIn("test_ownship", pic)
+        eye.on_units_message(fx.units_message(fx.PROMETHEUS))
+        pic = eye.picture()
+        self.assertEqual(pic["ownship"]["player_name"], "Prometheus")
+        self.assertEqual(pic["my_kills_this_mission"], [])
+        self.assertEqual(pic["my_kills_recent"], [])
+        c, _ = controller(None, Stub(answer="Prometheus, Athena, copy."), eye=eye)
+        frames, _ = say(c, "Athena, confirm kills")
+        self.assertNotIn("Su-27", frames[0]["speech"])
+        self.assertNotIn("Test pilot", frames[0]["speech"])
+class StandInMarkerTests(unittest.TestCase):
+    START = "Prometheus, Athena, Test pilot. "
+    def eye_and_controller(self, answer="Prometheus, Athena, copy.", name=STAND_IN, units=None):
+        eye = ai_eye(name, units)
+        eye.tick()
+        llm = Stub(answer=answer)
+        c, _ = controller(None, llm, eye=eye)
+        return c, llm
+    def test_fixed_replies_start_with_the_marker_and_still_fit(self):
+        c, llm = self.eye_and_controller()
+        for text in ("Athena, picture", "Athena, bogey dope", "Athena, any SAM threats", "Athena, nearest tanker",
+                     "Athena, what ground targets are near me", "Athena, long range picture", "Athena, any traffic"):
+            with self.subTest(text=text):
+                frames, _ = say(c, text)
+                speech = frames[0]["speech"]
+                self.assertTrue(speech.startswith(self.START), speech)
+                self.assertLessEqual(len(speech), 280)
+    def test_model_replies_get_the_marker_and_keep_the_limit_and_the_first_sentence(self):
+        long = "Prometheus, Athena, " + "bandits at one two zero for thirty miles, " * 12 + "end."
+        c, llm = self.eye_and_controller(long)
+        frames, _ = say(c, "Athena, tell me a story about the fight")
+        speech = frames[0]["speech"]
+        self.assertEqual(llm.calls, 1)
+        self.assertTrue(speech.startswith(self.START), speech)
+        self.assertLessEqual(len(speech), 280)
+        c, llm = self.eye_and_controller("Prometheus, copy.")
+        speech = say(c, "Athena, radio check")[0][0]["speech"]
+        self.assertTrue(speech.startswith(self.START), speech)
+    def test_a_close_threat_line_is_never_cut_for_the_marker(self):
+        eye = ai_eye(STAND_IN)
+        eye.tick()
+        close = fx.unit(800, "Fox", "MiG-29S", "red", "Fox", "AIRPLANE", *fx.offset(30, 8, *fx.offset(200, 40)), 7000.0, 210.0, 250.0)
+        eye.on_units_message(fx.units_message(close))
+        eye.tick()
+        long = "Prometheus, Athena, " + "bandits at one two zero for thirty miles, " * 12 + "end."
+        c, _ = controller(None, Stub(answer=long), eye=eye)
+        speech = say(c, "Athena, tell me a story about the fight")[0][0]["speech"]
+        self.assertTrue(speech.startswith(self.START), speech)
+        self.assertRegex(speech, r"(?i)MiG-29")
+        self.assertLessEqual(len(speech), 280)
+    def test_no_marker_for_a_real_pilot(self):
+        c, _ = self.eye_and_controller(name=STAND_IN, units=fx.UNITS)
+        for text in ("Athena, picture", "Athena, radio check"):
+            self.assertNotIn("Test pilot", say(c, text)[0][0]["speech"])
 if __name__ == "__main__":
     unittest.main()

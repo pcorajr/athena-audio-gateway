@@ -353,6 +353,7 @@ class GrpcThreatTests(unittest.TestCase):
     def test_sam_in_range_without_cockpit_rwr(self):
         eye, clock = f4e_eye()
         eye.on_cockpit_packet(f4e_packet())
+        eye.tick()  # phase 1: SAM alerts are raised by the feeder's tick, not by drawing the picture
         pic = eye.picture()
         th = pic["threats"]
         self.assertEqual(th["rwr_source"], "grpc_inferred")

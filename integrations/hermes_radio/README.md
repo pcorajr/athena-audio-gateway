@@ -37,6 +37,7 @@ Key options (flag, or environment variable):
 | `--port` | | 8650 |
 | `--eye-host`, `--eye-port` | `ATHENA_EYE_HOST`, `ATHENA_EYE_PORT` | overridden by `ATHENA_DCS_SOURCE` (`client` = 10.90.10.113:50051, `server` = 10.90.10.78:50051) |
 | `--cockpit-port`, `--cockpit-host` | `ATHENA_COCKPIT_PORT`, `ATHENA_COCKPIT_HOST` | 7778 (0 = off), 0.0.0.0 |
+| cockpit sender allowlist | `ATHENA_COCKPIT_ALLOWED` (comma list, `*` = anyone) | the DCS source host (`ATHENA_DCS_SOURCE` / `--eye-host`), else 10.90.10.113; other senders are dropped and counted (`cockpit.rejected_packets_other_source`) |
 | `--llm-backend` | `ATHENA_RADIO_BACKEND` | `openai`; the launcher sets `codex` |
 | `--codex-model`, `--codex-effort`, `--codex-timeout` | `ATHENA_RADIO_CODEX_*` | `gpt-6-luna`, `low`, 6 s (wall clock) |
 | `--model` (API fallback) | `ATHENA_RADIO_MODEL` | `gpt-5.4-mini` |

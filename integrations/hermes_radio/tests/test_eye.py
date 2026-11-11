@@ -211,7 +211,7 @@ class PictureTests(unittest.TestCase):
         self.assertEqual(eye.picture()["recent_events_last_10_min"], [])
         self.assertEqual(len(eye.events), 1)
         clock.t += 20 * 60
-        eye.picture()
+        eye.tick()  # phase 1: picture() is a pure read; pruning happens in tick()
         self.assertEqual(len(eye.events), 0)
 
 

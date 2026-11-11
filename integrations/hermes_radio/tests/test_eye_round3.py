@@ -442,8 +442,9 @@ class PromptRoutingTests(unittest.TestCase):
         list(c.stream(req("Athena, fuel state", tid="t2")))
         pic1 = json.loads([m for m in seen[0] if m["content"].startswith("PICTURE ")][0]["content"][8:])
         pic2 = json.loads([m for m in seen[1] if m["content"].startswith("PICTURE ")][0]["content"][8:])
-        self.assertEqual([a for a in pic1["rwr_alert_to_announce"] if not a.startswith("Bandit")],
-                         ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock."])
+        # phase 1: the controller ticks the Eye, so the SA-11 range alert is raised too (the launch goes first)
+        self.assertEqual([a for a in pic1["rwr_alert_to_announce"] if not a.startswith("Bandit")][0],
+                         "Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock.")
         self.assertNotIn("_rwr_keys", pic1)
         self.assertFalse([a for a in pic2.get("rwr_alert_to_announce", []) if not a.startswith("Bandit")])  # announced once
         self.assertEqual(pic1["cockpit"]["rwr"]["threats"][0]["signal"], "launch")
@@ -455,7 +456,7 @@ class PromptRoutingTests(unittest.TestCase):
         tool = [r for r in c.transcript.records if r["kind"] == "tool"][0]
         summary = tool["result"]["summary"]
         self.assertEqual(summary["cockpit"]["rwr_highest"], "launch")
-        self.assertEqual([a for a in summary["rwr_alert"] if not a.startswith("Bandit")], ["Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock."])
+        self.assertEqual([a for a in summary["rwr_alert"] if not a.startswith("Bandit")][0], "Missile launch, SA-11 Buk SR 9S18M1 at your nine o'clock.")
 
 
 # ----------------------------------------------------------------------------- UDP listener

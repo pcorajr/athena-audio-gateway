@@ -31,10 +31,10 @@ Facts that matter:
 - ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words.
 - ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
 - Damage / "I'm hit": ownship.damage hit events and getLife/getLife0 drops are primary evidence. Read the damage call. Cockpit warning lights, engine RPM changes and fuel-loss trend are secondary clues only. No warnings NEVER means no damage; acknowledge the pilot even if telemetry is unavailable. A fuel loss trend alone is not proof of a leak.
-- event_stream.state other than "live" means shot and kill reports may be missing; mention it only when asked about shots or kills.
+- data_health.combat_events not "ok" = kills may be unconfirmed; mention it only when asked about kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 - cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
-- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls instead ("SAM SA-11 could be tracking you, ..."); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see."
+- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
 - Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
 - Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
@@ -91,7 +91,7 @@ FOCUS_RULES = (
                        r"(locking|locked on|lock on|tracking|targeting|looking at) me\b|am i (being )?locked\b(?! on)|"
                        r"anyone locking|launch|missile inbound|threats? on me)", re.I),
      "cockpit.rwr.threats (type, signal, clock); empty with fresh cockpit = RWR clean; when threats.rwr_source is "
-     "grpc_inferred use threats.missiles_in_flight (else missiles_inbound) and threats.sam_in_range"),
+     "grpc_inferred use threats.missiles_in_flight and threats.sam_in_range (DCS radar: tracking; range only: could be)"),
     ("fuel", re.compile(r"\b(fuel|bingo|joker|gas)\b", re.I),
      "ownship.fuel (total_lb pounds, else internal_pct percent; known false = fuel unknown)"),
     ("gear", re.compile(r"\b(gear|wheels|flaps|speed ?brakes?|hook|configured|configuration)\b", re.I),
@@ -625,6 +625,7 @@ class SimpleController:
         self.empty_transcripts = 0  # whisper returned nothing usable (suppressed, counted)
         self._confirmed_kills = []
         self._pending_ack = None  # round 6: (abs_time, target) already read back to the pilot
+        self._launch_undo = None  # phase 1: missiles-called state before this reply's launch call
         self._reported_missiles = {}  # round 9: missile key -> (range_nm, time) already called to the pilot
         self._last_launch_reply = 0.0
         self._last_exchange = None  # phase 1: what the previous reply marked said, undone if it was not sent
@@ -635,6 +636,9 @@ class SimpleController:
     def picture(self):
         if self.eye is None:
             return {"available": False, "reason": "no Athena Eye configured"}
+        tick = getattr(self.eye, "tick", None)
+        if tick is not None:  # phase 1: picture() is a pure read; raise alerts / settle shots now, feeder or not
+            tick()
         pic = self.eye.picture()
         # memory6: optional light enrichment; the link owns a <=120 ms whole-exchange deadline.
         memory = getattr(self.eye, "memory", None)
@@ -845,6 +849,8 @@ class SimpleController:
         if cats:
             rows = [r for r in rows if r[2] in cats]
         new, upgraded = self._split_new(rows, owner)
+        health = pic.get("data_health")
+        unconfirmed = isinstance(health, dict) and health.get("combat_events", "ok") != "ok"
 
         def build(grouped):
             lines = []
@@ -870,6 +876,9 @@ class SimpleController:
                 lines.append(self._count_line([r for r, _ in upgraded], "Now confirmed, earlier likely:", grouped))
             if not new and not upgraded and not wingman and self.recent_release(pic, cats):
                 lines.append("Not confirmed yet, checking.")
+            elif not new and not upgraded and unconfirmed:
+                lines.append("No new %skills showing, but DCS kill reports are missing: kills may be unconfirmed."
+                             % prefix)
             elif not new and not upgraded:
                 lines.append("No new %skills since your last check." % prefix if rows
                              else "No %skills showing." % prefix)
@@ -925,6 +934,7 @@ class SimpleController:
         if source not in threats:
             return None
         now = time.time()
+        self._launch_undo = (dict(self._reported_missiles), self._last_launch_reply)  # restored if never sent
         self._reported_missiles = {k: v for k, v in self._reported_missiles.items() if now - v[1] <= 180}
         rows, ids = [], set()
         for m in threats.get(source) or []:
@@ -1113,16 +1123,9 @@ class SimpleController:
         return flat
 
     def _rearm(self, keys):
-        """Make announced calls pending again (their reply never went out). Uses the Eye's unmark_announced
-        when it has one, else its announced set under its lock."""
-        unmark = getattr(self.eye, "unmark_announced", None)
-        if unmark is not None:
-            unmark(keys)
-            return
-        announced, lock = getattr(self.eye, "announced", None), getattr(self.eye, "lock", None)
-        if isinstance(announced, set) and lock is not None:
-            with lock:
-                announced.difference_update(keys)
+        """Make announced calls pending again (their reply never went out)."""
+        if hasattr(self.eye, "unmark_announced"):
+            self.eye.unmark_announced(keys)
 
     def _settle_previous(self, request):
         """Phase 1, 'said only when delivered': the gateway is serial, so by the time the next request arrives it
@@ -1139,15 +1142,18 @@ class SimpleController:
         if last["keys"]:
             self._rearm(last["keys"])
         self._forget(last["kills"])
+        if last.get("missiles") is not None:  # 'same missile' bookkeeping of a launch call nobody heard
+            self._reported_missiles, self._last_launch_reply = last["missiles"]
         if last["history"] is not None and self.history and self.history[-1] is last["history"]:
             self.history.pop()
         self._log(request, "route", route="rearm", outcome="previous_reply_not_sent", previous=last["id"],
                   previous_outcome=outcome, rearmed=len(last["keys"]))
 
     def _check_mission(self, request):
-        """A new mission or DCS session (the Eye was reset) clears the controller's own memory: chat history,
-        kills read back, missiles called."""
-        marker = (getattr(self.eye, "reset_at", None), getattr(self.eye, "session_id", None))
+        """A new mission or DCS session clears the controller's own memory: chat history, kills read back, missiles
+        called. Eye.reset_at changes on mission_start and on a new DCS session id (the feeder resets the Eye); a
+        stream reconnect or unit sweep in the same session does not change it."""
+        marker = getattr(self.eye, "reset_at", None)
         if self._mission is not None and marker != self._mission:
             self.history.clear()
             self._confirmed_kills = []
@@ -1156,17 +1162,6 @@ class SimpleController:
             self._last_exchange = None
             self._log(request, "route", route="reset", outcome="new_mission_controller_memory_cleared")
         self._mission = marker
-
-    @staticmethod
-    def _kill_evidence(pic):
-        """Eye.pilot_report may only upgrade a DCS-seen kill: a likely kill within 10 min (or a kill within
-        2 min, which it just acknowledges). Without one it would turn the last shot into a confirmed kill on
-        the pilot's word alone, so it is not called."""
-        for k in (pic or {}).get("my_kills_this_mission") or []:
-            age = k.get("age_s")
-            if isinstance(age, (int, float)) and (age <= 120 or (k.get("confidence") == "likely" and age <= 600)):
-                return True
-        return False
 
     def _answer(self, request, text, arrived=None):
         start = time.monotonic() if arrived is None else arrived
@@ -1203,11 +1198,8 @@ class SimpleController:
         klass = call_class(text)
         report = None
         if klass == "kill_report" and self.eye is not None and hasattr(self.eye, "pilot_report"):
-            try:
-                if self._kill_evidence(self.picture()):
-                    report = self.eye.pilot_report(text)  # before the picture: the confirmed kill is in it
-                else:
-                    report = {"confirmed": None, "how": "not recorded: no DCS kill to confirm"}
+            try:  # the Eye decides: never a kill on the pilot's word alone
+                report = self.eye.pilot_report(text)  # before the picture: the confirmed kill is in it
             except Exception:  # noqa: BLE001 - never block the answer on bookkeeping
                 report = None
         pic, error = self._picture_with_retry()
@@ -1220,6 +1212,7 @@ class SimpleController:
         close_bandits = pic.pop("_close_bandits", None) if isinstance(pic, dict) else None
         # Phase 0: the deterministic answer comes FIRST; the model is called only when there is none.
         self._pending_ack = None
+        self._launch_undo = None
         self._confirm_covers_own_splashes = False
         self._confirm_is_own = False
         prefix = "Prometheus, Athena, "
@@ -1349,7 +1342,8 @@ class SimpleController:
         if route != "fallback":  # a "say again" is never chat history
             said = (text, answer)
             self.history.append(said)
-        self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": kills, "history": said}
+        self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": kills, "history": said,
+                               "missiles": self._launch_undo}
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
             memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"},
                            generation=pic.get("_memory_generation") if isinstance(pic, dict) else None)

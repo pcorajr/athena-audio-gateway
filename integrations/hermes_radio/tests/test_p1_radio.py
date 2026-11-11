@@ -62,6 +62,10 @@ class Eye:
         with self.lock:
             self.announced.update(keys)
 
+    def unmark_announced(self, keys):
+        with self.lock:
+            self.announced.difference_update(keys)
+
 
 class Stub:
     """Model stubs for an outage: ok, sleep past the deadline, empty answer, raise."""
@@ -419,7 +423,7 @@ class MissionResetTests(unittest.TestCase):
         seen = []
         c, eye = controller(LIVE["loadout_2035"], lambda m: seen.append(m) or "Prometheus, Athena, copy.")
         say(c, "Athena, radio check", "s-1")
-        eye.session_id = "s2"
+        eye.session_id, eye.reset_at = "s2", 2.0  # the feeder resets the Eye on a new DCS session id
         say(c, "Athena, how is it looking", "s-2")
         self.assertEqual([m["role"] for m in seen[1] if m["role"] in ("user", "assistant")], ["user"])
 

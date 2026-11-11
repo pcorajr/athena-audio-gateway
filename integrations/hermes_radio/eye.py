@@ -1011,6 +1011,7 @@ class Eye:
                 self._sam_alerted = {}
                 self._sam_inside, self._sam_listed = {}, set()
                 self.radars, self.radars_at = {}, None
+                self.reset_reason, self.reset_at = "mission_start", now  # the controller's new-mission marker
                 if self.on_mission_start is not None:
                     self.on_mission_start()
             ev["initiator"] = self._enrich_object(ev["initiator"])
@@ -1442,8 +1443,10 @@ class Eye:
         self._record_my_kill(unit, s["weapon"], how, now, inferred=True, likely=not confirmed)
 
     def pilot_report(self, text):
-        """The pilot says "splash" / "target destroyed" / "armor dead": confirm the most recent pending kill.
-        Returns what happened (for the tool log) or None when the text is not a kill report."""
+        """The pilot says "splash" / "target destroyed" / "armor dead". The ONE rule for pilot kill reports (phase 1):
+        the pilot's words only upgrade a kill DCS already saw (a likely kill within 10 min) or acknowledge a kill
+        within 2 min; they never create a kill without DCS evidence. Returns what happened (for the tool log) or
+        None when the text is not a kill report."""
         text = (text or "").strip()
         if not KILL_REPORT.search(text) or _QUESTION.search(text):
             return None
@@ -1459,24 +1462,7 @@ class Eye:
                     return {"confirmed": spoken_type(k["type"]), "how": "pilot report upgraded a likely kill"}
                 if now - k["t"] <= 120:
                     return {"confirmed": spoken_type(k["type"]), "how": "already confirmed"}
-            for s in reversed(self.shots):
-                if now - s["t"] > CREDIT_WINDOW_S:
-                    break
-                target = s["hit_target"] or s["intended_target"]
-                if s["result"] == "kill" or not target or not target.get("type"):
-                    continue
-                if any(k["target_id"] == target.get("id") and
-                       k["target_kind"] == target.get("kind", "unit") for k in self.other_kills):
-                    continue
-                target = dict(target, id=target.get("id") or "pilot-%d" % int(now))
-                self._set_shot_kill(s, target, "kill")
-                s["resolved_t"] = now
-                s["kill_evidence"] = "pilot report"
-                self._record_my_kill(target, s["weapon"], "pilot report", now)
-                self._log_store({"kind": "kill_confirmed_by_pilot", "target_type": target.get("type"),
-                                 "text": text[:120]})
-                return {"confirmed": spoken_type(target.get("type")), "how": "pilot report on my last attack"}
-            return {"confirmed": None, "how": "pilot report, no recent attack known"}
+            return {"confirmed": None, "how": "not recorded: no DCS kill to confirm"}
 
     # -- threats without a cockpit RWR (DCS-gRPC sensor fallback)
     def _hostile_to(self, coalition, own):
@@ -2278,6 +2264,11 @@ class Eye:
         """The controller gave these splash calls to the model; don't ask for them again."""
         with self.lock:
             self.announced.update(keys)
+
+    def unmark_announced(self, keys):
+        """The reply carrying these calls was never transmitted: make them pending again."""
+        with self.lock:
+            self.announced.difference_update(keys)
 
     def _loadout_json(self, own, now):
         snap = self.stores.get(own["id"]) if own else None

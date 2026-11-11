@@ -3066,7 +3066,7 @@ class GrpcFeeder:
         """First message on a fresh call. After a failure (= reconnect), resubscribe every OTHER stream:
         after the 2026-11-07 DCS client reboot the unit streams recovered but StreamEvents stayed silent."""
         if name in self._errored:
-            self._errored.discard(name)
+            self._errored.clear()  # one round per outage: the others are about to resubscribe anyway
             LOG.info("eye: %s reconnected; resubscribing the other streams", name)
             self._resubscribe_others(call, "reconnect:" + name)
 

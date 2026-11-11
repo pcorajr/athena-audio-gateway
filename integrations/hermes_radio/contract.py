@@ -3,7 +3,14 @@ model, which the gateway copies into its transcript records; frames without them
 
 Deploy order (review P1, wire contract): the v12 Go gateway rejects any unknown response key, so this Python (which
 labels every frame with `route`) must never run against v12. Deploy the new Go binary first (or both in one
-stop/start); roll back in reverse (Python first, then Go). Old Python with the new Go is fine."""
+stop/start); roll back in reverse (Python first, then Go). Old Python with the new Go is fine.
+
+Optional `test_pilot` (boolean, deliverable frames only): the TEST stand-in is the pilot for this reply. The Go
+gateway remembers it to mark its own "say again" "Test pilot." too. The Go gateway built before it (v13) rejects
+the key like any unknown key, so the new Go binary must be running BEFORE a Python that sends it: new Go + old
+Python is fine (no flag, no marker on the gateway line), old Go + new Python drops every reply (silent) as soon
+as ATHENA_TEST_OWNSHIP is set. With ATHENA_TEST_OWNSHIP unset this Python never sends the key, so it also runs
+against old Go. Roll back in reverse: Python first, then Go."""
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -124,7 +131,8 @@ def parse_request(raw, *, speaker="Prometheus"):
     return Request(**data)
 
 
-def response(request, *, speech="", state="unavailable", reason="", intent="factual", route=None, model=None):
+def response(request, *, speech="", state="unavailable", reason="", intent="factual", route=None, model=None,
+             test_pilot=None):
     value = {"transmission_id": request.transmission_id, "deliverable": bool(speech),
              "speech": speech, "intent_class": intent, "state": state}
     if not speech:
@@ -133,12 +141,17 @@ def response(request, *, speech="", state="unavailable", reason="", intent="fact
         value["route"] = route  # which path wrote the words; model = which model, when one did
         if model:
             value["model"] = model
+        if test_pilot is not None:  # only while the TEST stand-in setting is configured
+            value["test_pilot"] = bool(test_pilot)
     return value
 
 
 def encode_response(value):
     required = {"transmission_id", "deliverable", "speech", "intent_class", "state"}
-    if type(value) is not dict or not required <= set(value) <= required | {"suppression_reason", "route", "model"}:
+    if type(value) is not dict or not required <= set(value) <= required | {"suppression_reason", "route", "model", "test_pilot"}:
+        raise ContractError()
+    if "test_pilot" in value and (value["test_pilot"] is not True and value["test_pilot"] is not False or
+                                  value.get("deliverable") is not True):
         raise ContractError()
     if "route" in value or "model" in value:  # optional labels: only on a deliverable frame, model needs a route
         if value.get("deliverable") is not True or value.get("route") not in ROUTES:

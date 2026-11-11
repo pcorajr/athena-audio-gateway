@@ -35,7 +35,7 @@ Facts that matter:
 - data_health.combat_events not "ok" = kills may be unconfirmed; mention it only when asked about kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
 - cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
-- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. With threats.missile_scan off say missile tracking is limited."
+- RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. missile_scan not on: say missile tracking is limited and why."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
 - Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
 - Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
@@ -205,7 +205,7 @@ CLASS_HINTS = {
     "impact": "IMPACT / RESULT CHECK: report the latest weapon's result only.",
     "loadout": "LOADOUT: remaining weapons and gun rounds only; if the pilot also asks what they are flying, name the aircraft type first.",
     "launch": "MISSILE LAUNCH REPORT: read EVERY missile in threats.missiles_in_flight (spoken_name, clock, range; one row per missile id; missiles_inbound only if absent), not only the named type; "
-              "none = no missile in the air that I can see, but threats.missile_scan off = say missile tracking is limited, never an all-clear.",
+              "none = no missile in the air that I can see, but threats.missile_scan not on = \"missile tracking is limited\" and why, never an all-clear.",
 }
 # Round 9: launch calls, aircraft questions, recent-release window
 THREAT_NAME = (r"(?:missiles?|sams?|stingers?|manpads?|igla|strela|sa-?\s?\d+|s-?(?:75|125|200)|patriot|rapier|roland|hawk|"
@@ -433,13 +433,17 @@ def debrief_summary(pic):
 # No pilot position (ownship null): these answers are a range/bearing from the pilot, so they cannot be given.
 POSITION_CLASSES = ("picture", "long_picture", "ground_picture", "traffic", "atc", "launch")
 TOTALS_ASK = re.compile(r"\b(how many|kill\w*|lost|left|alive|destroyed|dead|war)\b", re.I)
+# Kill reports and status asks ("SA-2 is down", "tally SA-2", "mission status threats") need no position, unless
+# they also ask for a range or bearing ("nearest", "where").
+REPORT_ASK = re.compile(r"\b(down|shack|tally|neutrali[sz]ed|suppress\w*|splash|hits?|status)\b", re.I)
+RANGE_ASK = re.compile(r"\b(nearest|closest|nearby|near me|am i clear|vectors?|rtb|where|bearing|braa)\b", re.I)
 NEEDS_POSITION = re.compile(r"\b(threats?|nearest|closest|nearby|near me|am i clear|rtb|vectors?|defending|sa-?\d+)\b", re.I)
 
 
 def requested_calls(klass, text, pic):
     """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
     if not pic.get("ownship"):
-        totals = bool(TOTALS_ASK.search(text))  # kills / counts / coalition totals need no position
+        totals = bool(TOTALS_ASK.search(text) or (REPORT_ASK.search(text) and not RANGE_ASK.search(text)))  # kills / counts / reports need no position
         if "ownship" in pic and (klass in POSITION_CLASSES or (klass in (None, "ack") and not totals and (
                 NEEDS_POSITION.search(text) or (klass is None and (
                     GROUND_ASK.search(text) or BEARING_ASK.search(text) or "rwr" in focus_of(text)))))):
@@ -996,8 +1000,9 @@ class SimpleController:
         missiles = sorted(rows, key=lambda m: m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else 1e9)
         self._last_launch_reply = now
         if not missiles:
-            if threats.get("missile_scan") == "off":  # the scan cannot run: never an all-clear
-                return ["No launch seen; missile tracking is limited, DCS Eval is off."]
+            scan = str(threats.get("missile_scan"))
+            if scan.startswith("off"):  # the scan cannot run: never an all-clear; the picture says why
+                return ["No launch seen; missile tracking is limited, %s." % (scan[5:] or "missile scan is not answering")]
             return ["No missile in the air that I can see."]
         def key(m):
             ident = m.get("id", m.get("missile_id", m.get("weapon_id")))
@@ -1158,7 +1163,10 @@ class SimpleController:
         self._log(request, "reply_generated", text=answer, outcome="intended", part=1, route=route, model=model,
                   **values, **({"trimmed": True} if trimmed else {}),
                   timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
-        return response(request, speech=answer, state="ok", route=route, model=model)
+        stand_in = None  # the flag is sent only while the TEST stand-in setting is configured
+        if getattr(self.eye, "test_ownship", None):
+            stand_in = answer[len(ADDRESS):].startswith(TEST_PILOT)  # the marker is on every stand-in reply
+        return response(request, speech=answer, state="ok", route=route, model=model, test_pilot=stand_in)
 
     def _mark_said(self, marks, answer):
         """Splash / threat / close-bandit keys are announced only when their call is in the final, fitted
@@ -1412,4 +1420,5 @@ class SimpleController:
         if not parts[0]["deliverable"]:
             return parts[0]
         return response(request, speech=" ".join(p["speech"] for p in parts), state="ok",
-                        route=parts[0].get("route"), model=parts[0].get("model"))
+                        route=parts[0].get("route"), model=parts[0].get("model"),
+                        test_pilot=parts[0].get("test_pilot"))

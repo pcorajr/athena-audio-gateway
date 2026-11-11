@@ -36,7 +36,7 @@
         "suppression_reason": {"type": "string"},
         "route": {"enum": ["fixed", "llm", "debrief", "fallback"], "description": "Optional (phase 1): which path wrote the speech. Deliverable frames only."},
         "model": {"type": "string", "minLength": 1, "maxLength": 64, "description": "Optional (phase 1): the model that wrote the speech; needs route."},
-        "test_pilot": {"type": "boolean", "description": "Optional: the TEST stand-in aircraft is the pilot for this reply; deliverable frames only. Sent only while ATHENA_TEST_OWNSHIP is set. The Go gateway built before it (v13) rejects it: deploy the new Go first."}
+        "test_pilot": {"type": "boolean", "description": "Optional: the TEST stand-in aircraft is the pilot for this reply; deliverable frames only. Sent only while ATHENA_TEST_OWNSHIP is set. The Go gateway built before it (v13) rejects it, so the pilot hears the gateway's \"say again\" instead of the reply (not silence): deploy the new Go first."}
       },
       "if": {"properties": {"deliverable": {"const": true}}},
       "then": {"properties": {"speech": {"minLength": 1}, "intent_class": {"const": "factual"}, "suppression_reason": {"const": ""}}},

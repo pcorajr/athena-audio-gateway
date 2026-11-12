@@ -759,12 +759,19 @@ class Eye:
             self.events_at = None
             self.reset_reason, self.reset_at = reason, self.clock()
 
-    def set_connected(self, ok, error=None, stream=None, idle=False):
+    def set_connected(self, ok, error=None, stream=None, idle=False, alive=None):
         """Per-stream connection state (R2 F5). `connected` is True while ANY stream is up, so one failing stream
         never reads as "DCS disconnected" (Memory ends a mission after 60 s of that). stream=None = all streams.
-        idle=True: subscribed and open, but nothing of that kind sent yet (a mission with no ships or helicopters)."""
+        idle=True: subscribed and open, but nothing of that kind sent yet (a mission with no ships or helicopters).
+        alive: for an idle stream, a callable that is False once the subscription call has ended.
+
+        What an idle stream's label can and cannot tell (review A 11-11): it reads "up, no units for Ns" only while
+        the subscription call is open (alive); a call that ends or fails reads "down". A dead connection is found by
+        the channel keepalive (about 30 s) and then reads "down". A server that keeps the call open but stops sending
+        (a hang) cannot be told apart from a mission with none of that unit kind: the growing N is the only sign."""
         with self.lock:
-            self.streams[stream or "_all"] = {"up": bool(ok), "t": self.clock(), "error": error, "idle": idle}
+            self.streams[stream or "_all"] = {"up": bool(ok), "t": self.clock(), "error": error, "idle": idle,
+                                              "alive": alive if idle else None}
             if stream is None:
                 for s in self.streams.values():
                     s["up"] = bool(ok)
@@ -773,12 +780,23 @@ class Eye:
                 self.last_error = error
 
     def streams_json(self, now):
+        def _alive(check):
+            try:
+                return bool(check())
+            except Exception:  # noqa: BLE001 - a call that cannot say is not shown as up
+                return False
+
         out = {}
         for name, s in sorted(self.streams.items()):
             if name == "_all":
                 continue
-            out[name] = ("up (no units)" if s.get("idle") else "up") if s["up"] else "down %ds (%s)" % (
-                int(now - s["t"]), s["error"] or "error")
+            alive = s.get("alive")
+            if s["up"] and s.get("idle") and alive is not None and not _alive(alive):
+                out[name] = "down %ds (subscription ended)" % int(now - s["t"])
+            elif s["up"] and s.get("idle"):
+                out[name] = "up, no units for %ds" % int(now - s["t"])
+            else:
+                out[name] = "up" if s["up"] else "down %ds (%s)" % (int(now - s["t"]), s["error"] or "error")
         return out
 
     def note_type_info(self, rows):
@@ -3115,7 +3133,7 @@ class GrpcFeeder:
             # 11-11: units-helo/units-ship read "down 2306s" all flight: subscribed fine, but a mission with no
             # helicopters or ships never sends a message. The server's response headers prove the subscription.
             if self._opened(call):
-                self.eye.set_connected(True, stream=name, idle=True)
+                self.eye.set_connected(True, stream=name, idle=True, alive=lambda: not call.done())
             for resp in call:
                 if self.stop.is_set():
                     return

@@ -291,13 +291,14 @@ class ClearanceGuardTests(unittest.TestCase):
     def test_a_model_clearance_is_never_spoken(self):
         pic = live("19:01:46")
         pic.pop("rwr_alert_to_announce", None)
+        # review A: a clearance in a reply to an ATC-type ask is replaced by the fixed field + traffic answer
+        fixed = "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic."
         cases = {
             "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. Cleared to land, "
-            "no traffic.": "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No "
-                           "traffic.",
-            "Prometheus, Athena, no traffic, cleared for takeoff runway two seven.": "Prometheus, Athena, no traffic.",
-            "Prometheus, Athena, permission granted, cleared to land.": FALLBACK,
-            "Prometheus, Athena, you're cleared for the approach, no traffic.": "Prometheus, Athena, no traffic.",
+            "no traffic.": fixed,
+            "Prometheus, Athena, no traffic, cleared for takeoff runway two seven.": fixed,
+            "Prometheus, Athena, permission granted, cleared to land.": fixed,
+            "Prometheus, Athena, you're cleared for the approach, no traffic.": fixed,
             "Prometheus, Athena, cleared hot.": "Prometheus, Athena, cleared hot.",  # an attack call, not ATC
         }
         for said, want in cases.items():
@@ -314,7 +315,7 @@ class StreamHealthTests(unittest.TestCase):
         eye.set_connected(True, stream="units-air")
         eye.set_connected(True, stream="units-helo", idle=True)
         streams = eye.picture()["data_health"]["streams"]
-        self.assertEqual(streams["units-helo"], "up (no units)")
+        self.assertEqual(streams["units-helo"], "up, no units for 0s")
         self.assertTrue(streams["units-ship"].startswith("down 0s (units-ship"))  # truly failing: still down
         self.assertEqual(streams["units-air"], "up")
         eye.set_connected(True, stream="units-helo")  # a message arrived
@@ -353,7 +354,7 @@ class StreamHealthTests(unittest.TestCase):
         return seen["during"]
 
     def test_the_feeder_marks_an_open_subscription_up_before_any_unit_arrives(self):
-        self.assertEqual(self.feed(done=False), "up (no units)")
+        self.assertEqual(self.feed(done=False), "up, no units for 0s")
         self.assertIsNone(self.feed(done=True))  # the call already ended (failed): nothing marked up
 
 

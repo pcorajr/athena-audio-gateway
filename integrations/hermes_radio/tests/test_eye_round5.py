@@ -132,17 +132,20 @@ class AirPictureTests(unittest.TestCase):
                 self.assertLessEqual(len(speech), MAX_REPLY_CHARS)
                 kept = [call for call in base["picture_top3"] if call in speech]
                 self.assertEqual(kept, base["picture_top3"][:len(kept)])  # nearest first, whole calls
-                self.assertGreaterEqual(len(kept), 1)
+                # review A (11-11): pending threat alerts go out whole first; the picture gets the room left
+                self.assertGreaterEqual(len(kept), 0 if count else 1)
                 for call in base["picture_top3"][len(kept):]:
                     self.assertNotIn(call.split(", angels")[0], speech)  # dropped whole, not half
-                if len(kept) < 3:
+                if not kept:
+                    self.assertTrue(speech.endswith("Ask again for the picture."))
+                elif len(kept) < 3:
                     self.assertIn("Plus %s more." % ("two" if len(kept) == 1 else "one"), speech)
                 rwr_said = [k for i, k in enumerate(rwr_keys) if "contact number %d." % i in speech]
                 splash_said = [k for i, k in enumerate(splash_keys) if "target number %d." % i in speech]
                 marked = [k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')]
                 self.assertEqual(marked, rwr_said + splash_said)  # only what was actually said is announced
                 if count:
-                    self.assertTrue(rwr_said)  # alerts ride in the room left by the picture
+                    self.assertTrue(rwr_said)  # alerts first; the picture rides in the room they leave
                     self.assertLess(len(rwr_said) + len(splash_said), count * 2)  # the rest stay pending
 
     def test_oversize_requested_calls_are_reported_not_silently_truncated(self):

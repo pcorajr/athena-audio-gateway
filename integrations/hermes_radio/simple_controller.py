@@ -244,29 +244,116 @@ VECTOR_ASK = re.compile(r"\b(vectors?|steer|heading to|bearing to|direct(ions)? 
                         r"point me|get me)\b", re.I)
 FIELD_WORD = re.compile(r"\b%s\b" % FIELD_WORDS, re.I)
 NOT_FIELD = re.compile(r"\b(sams?|bandits?|threats?|armou?r|tanks?|trucks?|targets?|enemy|hostiles?|triple a|aaa|"
-                       r"missiles?|red|how many|captured)\b", re.I)
+                       r"missiles?|red|how many|captured|attack\w*|under fire|safe|secure|bomb\w*|shell\w*)\b", re.I)
+# "Bingo fuel, RTB" / "joker, heading home": fuel plus the nearest friendly field (live 11-11: the model said
+# "fuel unknown" twice).
+BINGO_RTB = re.compile(r"\b(bingo|joker)\b.{0,30}\b(rtb|home|returning|divert\w*|recover\w*|heading back)\b|"
+                       r"\b(rtb|returning)\b.{0,20}\b(bingo|joker)\b", re.I)
 LANDING_ASK = re.compile(r"(\b(request\w*|permission|clearance|ready)\b[^.?!]{0,25}\b(land(ing)?|approach|recovery|"
                          r"take ?off|takeoff|depart\w*)\b(?![^.?!]{0,12}\btarget)|"
                          r"\b(inbound|coming in|returning)\s+(for|to)\s+(land(ing)?|recovery)\b|"
                          r"\b(starting|commencing|beginning|on)\s+(my |the |an |final )?approach\b|\b(on|short) final\b|"
                          r"\bcan i (land|take ?off)\b|\b(am i )?clear(ed)? (to land|for (landing|take ?off|takeoff))\b)",
                          re.I)
+# Review A (11-11): an attack run is not a landing ("on approach to the target", "on final to the target"): target,
+# attack, weapon or unit words veto the landing answer. A bare "starting approach" / "on final" (nothing that says
+# airfield) is a landing only in a landing context (an RTB/field exchange just before, or a friendly field within
+# LANDING_CONTEXT_NM); otherwise it is acknowledged. "commencing" counts as attack wording unless a landing cue is said.
+ATTACK_RUN = re.compile(r"\b(targets?|runs?|running|run in|attack\w*|sites?|sams?|sa-?\s?\d+|ip|egress\w*|bomb\w*|"
+                        r"rockets?|guns?|strafe|strafing|mavericks?|weapons?|missiles?|armou?r|tanks?|trucks?|convoy|"
+                        r"bridge|bunker|enemy|hostiles?|bandits?|triple a|aaa|radar|launcher|objective)\b", re.I)
+LANDING_CUE = re.compile(r"\b(land|landing|lands|pattern|overhead|initial|base leg|downwind|gear|field|airfield|air ?base|"
+                         r"airport|tower|runway|recovery|home ?plate|rtb|take ?off|takeoff|depart\w*|request\w*|"
+                         r"permission|clearance|ready|can i|straight[- ]in)\b", re.I)
+LANDING_CONTEXT = re.compile(r"\b(rtb|home ?plate|divert|recovery|returning|land\w*|air ?fields?|air ?bases?|"
+                             r"airports?|nearest (friendly )?(field|base))\b", re.I)
+LANDING_CONTEXT_NM = 15
+BARE_APPROACH = re.compile(r"\b(starting|commencing|beginning|on)\s+(my |the |an |final )?approach\b|\b(on|short) final\b",
+                           re.I)
+# "any friendlies hit", "any friendlies near the target / in the area", "blue on blue": a fratricide or deconfliction
+# question, never answered from the air-traffic list ("No blue aircraft showing" is a false all-clear near a target).
+FRIENDLY_FIRE = re.compile(r"\b(hit|hits|fire|fired|shot|struck|targets?|area|ground|blue on blue|fratricide|bomb\w*|"
+                           r"kill\w*|danger close)\b", re.I)
 FRIENDLY_AIR_ASK = re.compile(r"(\b(any|where are|where's|wheres|show me|see any|got any|are there( any)?|is there( any)?)"
                               r"\s+(the |my )?(friendl(ies|y)|blues?)\b(?!\s+(fire|kills?))|"
                               r"\bfriendl(ies|y)\s+(in the air|airborne|aloft|up)\b|"
                               r"\bfriendly\s+(aircraft|air|planes?|jets?|fighters?|flights?|helos?|helicopters?)\b)", re.I)
-# A spoken reply never clears or approves anything (live 11-11 19:01: "Cleared to land, no traffic.").
-CLEARANCE = re.compile(r"\b((you('re| are)\s+)?clear(ed)?\s+(to land|to take ?off|for (the )?(landing|take ?off|takeoff|"
-                       r"departure|approach|option|straight[- ]in( approach)?|(visual|ils) approach))(,?\s+(on\s+)?runway[^.,;!?]*)?|"
-                       r"permission (granted|approved))\b[,;.!]?\s*", re.I)
+# A spoken reply never clears or approves anything, and never gives airfield data Athena does not have (live 11-11
+# 19:01: "Cleared to land, no traffic."; review A: "approved", "you may land", "runway two one", "wind calm").
+_NUM = (r"(\d+|zero|one|two|three|four|five|six|seven|eight|nine|niner|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+        r"sixteen|seventeen|eighteen|nineteen|twenty|thirty)")
+_ATC_ACT = (r"(land|landing|take ?off|takeoff|depart\w*|approach|(the )?(ils|visual|straight[- ]in|option|low|"
+            r"overhead|missed)( approach)?|taxi|touch[- ]and[- ]go|the option|runway|pattern|circuit|final|break|"
+            r"immediate|ils|visual)")
+CLEARANCE = re.compile(
+    r"\bclear(ed)?\s+((to|for)\s+(the\s+)?)?%s\b|\b(approved|approval granted)\b|\bpermission\s+(is\s+)?"
+    r"(granted|approved|given)\b|\b(may|can)\s+(now\s+)?(land|take ?off|depart|taxi)\b|"
+    r"\b(good|ok|okay|free|safe|go ahead|you'?re fine)\s+to\s+(land|take ?off|depart|taxi)\b|\bland at will\b|"
+    r"\brunways?\s+(%s|in use|heading|left|right|center|cent(er|re)line)\b|\baltimeter\b|\bq(nh|fe)\b|\bsquawk\w*\b|"
+    r"\bwinds?\s+(is\s+|are\s+)?(calm|variable|light|from|at|%s)\b|"
+    r"\b(contact|switch to|monitor)\s+(the\s+)?(tower|ground|approach|departure|atis)\b|\bhold short\b|"
+    r"\bline up( and wait)?\b|\btaxi (to|via|into)\b|\breport (base|final|downwind|initial|short final|the break)\b|"
+    r"\benter (the )?(left |right )?(downwind|base|pattern)\b|\bmake (left|right) traffic\b|\bextend\w* (your )?downwind\b|"
+    r"\b(you('?re| are) )?number (one|two|three|\d) (for|to) (land|landing|take ?off|takeoff|departure)\b" % (_ATC_ACT, _NUM, _NUM),
+    re.I)
+# An ATC-type ask (landing, takeoff, runway, tower) also never gets a generic go-ahead from the model.
+ATC_GO = re.compile(r"\b(good to go|go ahead|you('?re| are) (good|fine|ok|okay)|all yours|proceed)\b", re.I)
+ATC_TYPE_ASK = re.compile(r"\b(take ?off|landing|land|approach|taxi\w*|runway|tower|clearance|cleared|permission|"
+                          r"altimeter|wind|final|pattern|depart\w*)\b", re.I)
+
+
+def clearance_in(reply, atc=False):
+    """True when a reply clears or approves anything, or gives a runway, wind or altimeter (Athena has none)."""
+    return bool(CLEARANCE.search(reply or "") or (atc and ATC_GO.search(reply or "")))
+
+
+def strip_clearance(reply, atc=False):
+    """The reply without every sentence that clears, approves or gives airfield data; '' when nothing is left."""
+    body = (reply or "").strip()
+    address = body.startswith(ADDRESS)
+    if address:
+        body = body[len(ADDRESS):]
+    sentences = _sentences(body)
+    kept = [s for s in sentences if not clearance_in(s, atc)]
+    if len(kept) == len(sentences):
+        return (reply or "").strip()
+    text = " ".join(kept).strip()
+    if not text.rstrip(" ,.") or text.rstrip(" ,.") in ("Prometheus", "Prometheus, Athena", "Athena"):
+        return ""
+    text = text[0].upper() + text[1:] if address and text[0].islower() else text
+    return (ADDRESS + text) if address else text
 
 
 def _plain_call(call):
     """The close-bandit warning is the compact call plus "Bandit "; the same call in a picture counts as said."""
     return call[len("Bandit "):] if call.startswith("Bandit ") else call
 
-def call_class(text, pic=None):
-    """dev_note | kill_report | ack | picture | kill_confirm | ... | None for one pilot transmission."""
+def landing_context(pic, recent=()):
+    """A bare 'starting approach' is a landing call: an RTB/field exchange just before it, or a friendly field close."""
+    if any(LANDING_CONTEXT.search(q or "") for q in recent or ()):
+        return True
+    if "ownship" in (pic or {}) and not pic["ownship"]:
+        return True  # no pilot position: no distance to judge by; the no-position answer is the honest one
+    friendly = ((pic or {}).get("airbases") or {}).get("nearest_friendly") or []
+    rng = friendly[0].get("range_nm") if friendly and isinstance(friendly[0], dict) else None
+    return isinstance(rng, (int, float)) and rng <= LANDING_CONTEXT_NM
+
+
+def _landing_class(t, pic, recent):
+    """'landing', 'ack', None (model) or False (not an approach/landing call) for one transmission."""
+    if not LANDING_ASK.search(t):
+        return False
+    if ATTACK_RUN.search(t):  # an attack run: acknowledged as before (a question goes to the model)
+        return None if _QUESTION.search(t) else "ack"
+    cue = LANDING_CUE.search(t) or named_field(t, pic)[0] is not None
+    if cue or (BARE_APPROACH.search(t) and not re.search(r"\bcommenc\w*", t, re.I) and landing_context(pic, recent)):
+        return "landing"
+    return "ack"
+
+
+def call_class(text, pic=None, recent=()):
+    """dev_note | kill_report | ack | picture | kill_confirm | ... | None for one pilot transmission.
+    recent = the pilot's previous transmissions (newest last), for a bare 'starting approach'."""
     t = (text or "").strip()
     if DEV_NOTE.search(t):
         return "dev_note"
@@ -288,16 +375,20 @@ def call_class(text, pic=None):
         return "loadout"  # "how much fuel do I have left" is fuel
     if LAUNCH_ASK.search(t) and not OWN_LAUNCH.search(t):
         return "launch"
-    if LANDING_ASK.search(t):
-        return "landing"
+    landing = _landing_class(t, pic, recent)
+    if landing is not False:
+        return landing
+    if BINGO_RTB.search(t):
+        return "airfield"  # "Bingo fuel, RTB": fuel and the nearest friendly field
     if not NOT_FIELD.search(t) and (NEAREST_FIELD.search(t) or VECTOR_ASK.search(t) and (
-            FIELD_WORD.search(t) or named_field(t, pic)[0] is not None)):
+            FIELD_WORD.search(t) or _field_said(t, pic))):
         return "airfield"
     if ATC_ASK.search(t):
         return "atc"
     if TRAFFIC_ASK.search(t) and not GROUND_ASK.search(t):
         return "traffic"
-    if FRIENDLY_AIR_ASK.search(t) and not (GROUND_ASK.search(t) or KILL_ASK.search(t) or TOTALS_ASK.search(t)):
+    if FRIENDLY_AIR_ASK.search(t) and not (GROUND_ASK.search(t) or KILL_ASK.search(t) or TOTALS_ASK.search(t)
+                                           or FRIENDLY_FIRE.search(t)):
         return "traffic"  # "how many friendly aircraft" is a count, not a traffic call
     if FUEL_ASK.search(t) and not KILL_ASK.search(t):
         return "fuel"
@@ -390,10 +481,15 @@ def fuel_calls(fuel):
     """ownship.fuel as one sentence (flight 11-11: the model said "fuel unknown" with 3,640 lb in the picture)."""
     if not isinstance(fuel, dict):
         return None
-    if fuel.get("known") is False or not (fuel.get("total_lb") or fuel.get("internal_pct")):
+    def real(v):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0
+    lb, pct = fuel.get("total_lb"), fuel.get("internal_pct")
+    if fuel.get("known") is False or not (real(lb) or real(pct)):
         reason = fuel.get("reason")
         return ["Fuel unknown, %s." % reason if reason else "Fuel unknown."]
-    if fuel.get("total_lb"):
+    if (real(lb) and lb == 0) or (not real(lb) and pct == 0):
+        amount = "zero"  # a real reading of zero is zero, never "unknown"
+    elif real(lb):
         amount = fuel.get("spoken") or "%s pounds" % format(int(fuel["total_lb"]), ",")
     else:
         amount = "%s percent" % words(fuel.get("total_pct") or fuel["internal_pct"])
@@ -445,29 +541,106 @@ def airfields_of(pic):
     return list(out.values())
 
 
+_NUMBER_WORDS = {"zero": "0", "oh": "0", "one": "1", "two": "2", "three": "3", "four": "4", "five": "5", "six": "6",
+                 "seven": "7", "eight": "8", "nine": "9", "niner": "9", "ten": "10", "eleven": "11", "twelve": "12"}
+
+
+def _name_tokens(text):
+    """Field-name words: _field_key with number words as digits ('H four' -> h 4)."""
+    out = []
+    for w in _field_key(text).split():
+        w = _NUMBER_WORDS.get(w, w)
+        if w.isdigit() and out and out[-1].isdigit():
+            out[-1] += w  # 'zero one' -> 01
+        else:
+            out.append(w)
+    return out
+
+
+def _digits(s):
+    return re.sub(r"\D", "", s)
+
+
 def named_field(text, pic):
-    """(row, named): the airfield the pilot named, matched tolerantly (speech recognition wrote 'Nelli's Air Force
-    Base' for Nellis); named is True when a field name was spoken, found or not."""
-    said = _field_key(text).split()
-    best = None
+    """(row, named): the airfield the pilot named. named is True when a field name was spoken, found or not, and
+    'ambiguous' when the words were close to a field but not surely that one. Review A (11-11): never the wrong field.
+    An exact (normalised) name wins; a speech-recognition slip ('Nelli's Air Force Base') is accepted only when it is
+    unambiguous: within the edit tolerance (0 up to 4 letters, 1 up to 7, else 2; same first letter, same digits), at
+    least two edits better than any other field, and not a short name inside a longer spoken name ('Tonopah Test' is
+    not Tonopah, 'H four' is not H, 'H3 Southwet' is not H3)."""
+    said = _name_tokens(text)
+    found = []  # (edits, allowed, start, end, row, key tokens)
     for row in airfields_of(pic or {}):
-        key = _field_key(row["name"])
-        flat = key.replace(" ", "")
+        key = _name_tokens(row["name"])
+        flat = "".join(key)
         if not flat:
             continue
         allowed = 0 if len(flat) <= 4 else 1 if len(flat) <= 7 else 2
-        n = len(key.split())
-        for size in {max(1, n - 1), n, n + 1}:
+        best = None
+        n = len(key)
+        for size in sorted({max(1, n - 1), n, n + 1}):
             for i in range(len(said) - size + 1):
                 cand = "".join(said[i:i + size])
-                if cand[0] != flat[0] or abs(len(cand) - len(flat)) > allowed:
+                if cand[0] != flat[0] or _digits(cand) != _digits(flat) or abs(len(cand) - len(flat)) > allowed + 1:
                     continue
-                d = _edits(cand, flat, allowed)
-                if d <= allowed and (best is None or (d, -len(flat)) < best[0]):
-                    best = ((d, -len(flat)), row)
-    if best is not None:
-        return best[1], True
+                d = _edits(cand, flat, allowed + 1)
+                if d <= allowed + 1 and (best is None or (d, -size) < (best[0], -(best[3] - best[2]))):
+                    best = (d, allowed, i, i + size, row, key)
+        if best is not None:
+            found.append(best)
+    matches = [m for m in found if m[0] <= m[1]]
+
+    words_of = [(_name_tokens(r["name"]), r) for r in airfields_of(pic or {})]
+
+    def other_word(w, m):
+        """w (a spoken word next to the match) is a word of another field's name: 'H Northwest', 'pInvisible FARP'."""
+        return len(w) >= 4 and any(r is not m[4] and w not in m[5] and any(
+            w == k or (len(k) >= 5 and abs(len(k) - len(w)) <= 2 and _edits(w, k, 2) <= (1 if len(k) < 8 else 2))
+            for k in key)
+            for key, r in words_of)
+
+    def continues(m):
+        """The spoken name goes on past this field's name: a digit ('H four'), a word of another field's name, or the
+        next word of a longer field that starts with this name ('Tonopah Test' -> Tonopah Test Range)."""
+        if m[2] > 0 and other_word(said[m[2] - 1], m):
+            return True
+        if m[3] >= len(said):
+            return False
+        nxt = said[m[3]]
+        if (nxt.isdigit() and not m[5][-1][-1:].isdigit()) or other_word(nxt, m):
+            return True
+        for r in airfields_of(pic or {}):
+            longer = _name_tokens(r["name"])
+            if len(longer) > len(m[5]) and longer[:len(m[5])] == m[5]:
+                word = longer[len(m[5])]
+                if nxt == word or (len(nxt) >= 3 and word.startswith(nxt)) or (
+                        len(word) >= 5 and _edits(nxt, word, 1) <= 1):
+                    return True
+        return False
+    # a match inside a longer match's words explains less of what was said (H3 inside 'H3 Southwet')
+    kept = [m for m in matches if not any(o is not m and o[2] <= m[2] and m[3] <= o[3] and o[3] - o[2] > m[3] - m[2]
+                                          for o in matches)]
+    dropped = [m for m in matches if m not in kept]
+    rejected = [m for m in kept if continues(m)]
+    kept = [m for m in kept if m not in rejected]
+    exact = [m for m in kept if m[0] == 0]
+    if exact:
+        return max(exact, key=lambda m: m[3] - m[2])[4], True
+    if kept:
+        best = min(kept, key=lambda m: (m[0], -(m[3] - m[2])))
+        rivals = [m for m in found if m[4] is not best[4] and m not in dropped and m[0] - best[0] < 2
+                  and not (best[2] <= m[2] and m[3] <= best[3] and m[3] - m[2] < best[3] - best[2])]
+        if not rivals:
+            return best[4], True
+    if matches or rejected:
+        return None, "ambiguous"
     return None, bool(NAMED_FIELD.search(text or ""))
+
+
+def _field_said(text, pic):
+    """A field was named: matched, or close to a field but not surely which one ('I don't have that field')."""
+    row, named = named_field(text, pic)
+    return row is not None or named == "ambiguous"
 
 
 def _field_call(row, coalition):
@@ -483,18 +656,35 @@ def _field_call(row, coalition):
 
 
 def _traffic_lines(row, pic):
-    """The field's traffic from the picture (aircraft on or near it); never a clearance, runway or wind."""
+    """The field's traffic from the picture (aircraft on or near it); never a clearance, runway or wind.
+    Review A (11-11): a hostile aircraft at the field is read first and as a bandit, with its distance from the
+    field; then the other traffic (count and the nearest one)."""
     traffic = row.get("traffic")
     if not isinstance(traffic, dict):  # nearest_friendly rows carry no traffic: the same field's full row does
         same = [r for r in airfields_of(pic) if r.get("name") == row.get("name")]
         traffic = same[0].get("traffic") if same else None
     if not isinstance(traffic, dict):
         return ["Traffic unknown."]
-    planes = [a["call"] for a in traffic.get("aircraft") or [] if isinstance(a, dict) and a.get("call")]
+    planes = [a for a in traffic.get("aircraft") or [] if isinstance(a, dict) and a.get("call")]
     n = traffic.get("count") or len(planes)
     if not n:
         return ["No traffic."]
-    return ["Traffic, %s aircraft." % words(n)] + planes[:1]  # the count and the nearest one fit one reply
+    hostile = [a for a in planes if a.get("side") == "hostile"]
+    others = [a["call"] for a in planes if a.get("side") != "hostile"]
+    lines = []
+    for a in hostile:
+        call = a["call"] if a["call"].startswith("Bandit ") else "Bandit " + a["call"]
+        far = a.get("field_range_nm")
+        if a.get("on_field"):
+            call = call.rstrip(". ") + ", on the field."
+        elif isinstance(far, (int, float)):
+            miles = max(1, round(far))
+            call = call.rstrip(". ") + ", %s mile%s from %s." % (words(miles), "" if miles == 1 else "s", row.get("name"))
+        lines.append(call)
+    rest = n - len(hostile)
+    if rest > 0:
+        lines += ["%s, %s aircraft." % ("Other traffic" if hostile else "Traffic", words(rest))] + others[:1]
+    return lines  # _fit_calls drops whole lines from the end: the bandits stay
 
 
 def airfield_calls(klass, text, pic):
@@ -661,13 +851,22 @@ def requested_calls(klass, text, pic):
     if klass == "intent":
         return [intent_ack(text) or "copy."]
     if klass == "fuel":
-        return fuel_calls(pic["ownship"].get("fuel"))
+        lines = fuel_calls(pic["ownship"].get("fuel"))
+        if lines and WEAPON_WORD.search(text):  # "fuel and weapons": both halves
+            lines = lines + (loadout_calls(pic["ownship"], text) or [])
+        return lines
     if klass in ("airfield", "landing"):
-        return airfield_calls(klass, text, pic)
+        lines = airfield_calls(klass, text, pic)
+        if lines and BINGO_RTB.search(text):  # "Bingo fuel, RTB": the fuel, then the nearest friendly field
+            lines = (fuel_calls(pic["ownship"].get("fuel")) or []) + lines
+        return lines
     if klass == "impact":
         return impact_calls(pic)
     if klass == "loadout":
-        return loadout_calls(pic["ownship"], text)
+        lines = loadout_calls(pic["ownship"], text)
+        if lines and re.search(r"\b%s\b" % _FUEL, text, re.I):  # "fuel and ammo state": both halves
+            lines = (fuel_calls(pic["ownship"].get("fuel")) or []) + lines
+        return lines
     if klass == "damage":
         damage = pic["ownship"].get("damage") or {}
         recent = [r for r in damage.get("events", []) if r["age_s"] < 300]
@@ -765,6 +964,9 @@ def fit_reply(answer, limit=MAX_REPLY_CHARS, word_trim=True):
 
 
 ASK_REST = "Ask again for the rest."
+DEFER = {"airfield": "Ask again for the vector.", "landing": "Ask again for the field.", "fuel": "Ask again for fuel.",
+         "loadout": "Ask again for weapons.", "traffic": "Ask again for traffic.", "picture": "Ask again for the picture.",
+         "long_picture": "Ask again for the picture.", "ground_picture": "Ask again for ground targets."}
 LIST_CLASSES = {"picture": None, "long_picture": None, "traffic": None, "ground_picture": 3}
 
 
@@ -1453,7 +1655,7 @@ class SimpleController:
                 report = None
         pic, error = self._picture_with_retry()
         pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
-        klass = call_class(text, pic)
+        klass = call_class(text, pic, [q for q, _ in list(self.history)[-3:]])
         if klass is None and time.time() - self._last_launch_reply <= 90 and LAUNCH_FOLLOWUP.search(text):
             klass = "launch"  # "do you see it?" right after a launch call
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
@@ -1499,20 +1701,23 @@ class SimpleController:
         if calls is not None:
             lead = []  # one not-yet-called bandit inside 20 nm goes first; the requested lines fill the rest
             for row in close_bandits or []:
-                marks.append((row["key"], _plain_call(row["call"])))
-                if not lead and _plain_call(row["call"]) not in " ".join(calls):
+                needle = _plain_call(row["call"]).rstrip(". ")  # a traffic line may extend the call ("..., one mile from")
+                marks.append((row["key"], needle))
+                if not lead and needle not in " ".join(calls):
                     lead = [row["call"]]
             stale = lead + stale
             # round 9: drop whole contacts/lines from the end, never clip one mid-call
             room = MAX_REPLY_CHARS - len(prefix + " ".join(stale + [""]))
-            # a pending RWR/threat alert outranks the 2nd and 3rd contact of a list: keep room for the first one
-            first_alert = ((pic.get("rwr_alert_to_announce") or [""])[0] or "").strip()
-            reserve = len(first_alert) + 2 if klass in LIST_CLASSES and first_alert else 0
+            # Review A (11-11): every pending missile-launch / SAM alert goes out first and whole; the requested
+            # lines (field, traffic, fuel, contacts) get the room that is left, shortened or deferred
+            reserve = 0
+            for alert, _ in _alert_rows(pic.get("rwr_alert_to_announce"), rwr_keys, "rwr_alert_to_announce"):
+                if alert not in self._launch_covered and alert not in " ".join(calls) and reserve + len(alert) + 1 <= room:
+                    reserve += len(alert) + 1
             fitted, trimmed = _fit_calls(klass, calls, room - reserve)
-            if fitted is None and reserve:
-                fitted, trimmed = _fit_calls(klass, calls, room)
-            if fitted is None and lead:
-                fitted, trimmed = ["Ask again for the rest."], True  # nothing requested was said: all stays pending
+            if fitted is None and (lead or (reserve and _fit_calls(klass, calls, room)[0] is not None)):  # nothing requested fits: say so, the threats stay whole
+                defer = DEFER.get(klass, ASK_REST)
+                fitted, trimmed = ([defer] if len(defer) <= room - reserve else []), True
             if fitted is None:
                 self._log(request, "controller_error", outcome="fixed_response_overflow", route=route,
                           counts={"speech_chars": len(prefix + " ".join(stale + calls))})
@@ -1573,12 +1778,20 @@ class SimpleController:
             answer, meta = self._call_model(messages, deadline)
             llm_ms = round((time.monotonic() - t_llm) * 1000)
             answer = clean(answer)
-            if answer and CLEARANCE.search(answer):  # Athena never clears or approves: drop those words
-                cut = CLEARANCE.sub("", answer).strip()
-                cut = re.sub(r"\s*[,;]\s*([.!?]|$)", lambda m: m.group(1) or ".", cut)
-                cut = re.sub(r"([.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), cut)
+            atc = klass in ("atc", "landing") or bool(ATC_TYPE_ASK.search(text))
+            if answer and clearance_in(answer, atc):
+                # Athena never clears, approves or invents airfield data (review A 11-11): an ATC-type ask gets the
+                # fixed field + traffic answer (threat alerts first), anything else loses the offending sentences
                 meta["clearance_removed"] = True
-                answer = cut if cut.rstrip(" ,.") and cut.rstrip(" ,.") != ADDRESS.rstrip(" ,") else ""
+                lines = None
+                if atc and pic.get("ownship"):
+                    lines = airfield_calls("landing", text, pic if airfields is None else dict(pic, _airfields=airfields))
+                if lines:
+                    alerts = [a for f, k in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys))
+                              for a, _ in _alert_rows(pic.get(f), k, f)]
+                    route, answer = "fixed", fit_reply(prefix + " ".join(alerts + lines))[0]
+                else:
+                    answer = strip_clearance(answer, atc)
                 self._log(request, "controller_error", outcome="clearance_removed", route=route, llm=meta)
             if parroted(answer):  # never speak a key name / "no position call": fixed sentence or say again
                 meta["fallback_reason"] = "parroted_picture_text"

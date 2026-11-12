@@ -91,8 +91,11 @@ class TrafficTests(unittest.TestCase):
         self.assertEqual(sum(r["on_field"] for r in field["traffic"]["aircraft"]), 3)
         self.assertTrue(all(re.search(r"^Friendly [\w-]+, \w+ \w+ \w+, .*angels .*o'clock", r["call"])
                             for r in field["traffic"]["aircraft"]))
-        _, messages, log = exchange(eye, "request take off at Ramat David", "Traffic at Ramat David.")
-        self.assertIn(CLASS_HINTS["atc"], [m["content"] for m in messages])
+        said, messages, log = exchange(eye, "request take off at Ramat David", "Traffic at Ramat David.")
+        self.assertEqual(messages, [])  # flight 11-11: a takeoff request is a fixed answer, the field and its traffic
+        self.assertIn("Ramat David, bearing", said)
+        self.assertIn("Traffic, four aircraft. Friendly F-16C", said)
+        self.assertNotIn("clear", said.lower())
         tool = next(r for r in log.records if r["kind"] == "tool")
         self.assertEqual(tool["result"]["picture"]["airbases"]["nearest"][0]["traffic"]["count"], 4)
 

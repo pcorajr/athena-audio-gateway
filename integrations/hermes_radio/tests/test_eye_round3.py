@@ -439,7 +439,7 @@ class PromptRoutingTests(unittest.TestCase):
             return "Prometheus, Athena, missile launch, SA-11 at your nine o'clock."
         c = SimpleController(None, FakeTranscript(), model="test", api_key="x", eye=eye, llm=llm)
         list(c.stream(req("Athena, what's painting me?")))
-        list(c.stream(req("Athena, fuel state", tid="t2")))
+        list(c.stream(req("Athena, is my gear down?", tid="t2")))  # fuel is a fixed answer since 11-11
         pic1 = json.loads([m for m in seen[0] if m["content"].startswith("PICTURE ")][0]["content"][8:])
         pic2 = json.loads([m for m in seen[1] if m["content"].startswith("PICTURE ")][0]["content"][8:])
         # phase 1: the controller ticks the Eye, so the SA-11 range alert is raised too, after the launch. Kept
@@ -455,7 +455,7 @@ class PromptRoutingTests(unittest.TestCase):
         self.assertEqual(len(focus), 1)
         self.assertIn("cockpit.rwr", focus[0])
         self.assertEqual(seen[0][-1], {"role": "user", "content": "Athena, what's painting me?"})
-        self.assertIn("ownship.fuel", [m["content"] for m in seen[1] if m["content"].startswith("FOCUS:")][0])
+        self.assertIn("cockpit.config", [m["content"] for m in seen[1] if m["content"].startswith("FOCUS:")][0])
         tool = [r for r in c.transcript.records if r["kind"] == "tool"][0]
         summary = tool["result"]["summary"]
         self.assertEqual(summary["cockpit"]["rwr_highest"], "launch")

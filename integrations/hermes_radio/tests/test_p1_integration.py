@@ -144,12 +144,15 @@ class LaunchDeliveryTests(unittest.TestCase):
             transcript = Transcript(Path(root) / "radio")
             c = controller(r.eye, transcript=transcript)
             first = say(c, LAUNCH, "l-1")
-            self.assertEqual(first.count("Missile launch, SA-2"), 1, first)
+            # flight 11-11: the launch answer itself says the missile; its pending alert is not said a second time
+            self.assertEqual(first.count("SA-2 in the air"), 1, first)
+            self.assertNotIn("Missile launch", first)
             self.assertIn(launches[0]["key"], r.eye.announced)
             outcome(transcript, "l-1", "say_again_fallback_sent:bridge_failed")  # the pilot heard "say again"
             r.advance(SHOT_T + 5)
             second = say(c, ANOTHER, "l-2")
-            self.assertIn("Missile launch, SA-2", second)  # pending again: spoken on the next reply
+            self.assertEqual(second.count("SA-2 in the air"), 1, second)  # spoken on the next reply, once
+            self.assertIn(launches[0]["key"], r.eye.announced)
             self.assertNotIn("Same missile", second)  # the unheard launch reply left no 'already called' trace
             self.assertTrue(any(rec.get("route") == "rearm" for rec in self._records(root)))
             r.advance(SHOT_T + 6)

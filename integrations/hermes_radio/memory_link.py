@@ -408,9 +408,10 @@ class MemoryLink:
 
         def write():
             try:
-                path = request({"operation": "debrief", "mission": key,
-                                "automatic": reason is not None}, path=self.path, timeout=4)["path"]
-                status = dict(context, state="written", path=path)
+                reply = request({"operation": "debrief", "mission": key,
+                                 "automatic": reason is not None}, path=self.path, timeout=4)
+                # Memory says written | rewritten | unchanged (reused report); older Memory: written.
+                status = dict(context, state=reply.get("state", "written"), path=reply["path"])
             except (OSError, ValueError, KeyError, TimeoutError) as error:
                 status = dict(context, state="failed", error=type(error).__name__)
             with self.lock:

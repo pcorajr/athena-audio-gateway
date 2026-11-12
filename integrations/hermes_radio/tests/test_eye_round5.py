@@ -91,8 +91,11 @@ class TrafficTests(unittest.TestCase):
         self.assertEqual(sum(r["on_field"] for r in field["traffic"]["aircraft"]), 3)
         self.assertTrue(all(re.search(r"^Friendly [\w-]+, \w+ \w+ \w+, .*angels .*o'clock", r["call"])
                             for r in field["traffic"]["aircraft"]))
-        _, messages, log = exchange(eye, "request take off at Ramat David", "Traffic at Ramat David.")
-        self.assertIn(CLASS_HINTS["atc"], [m["content"] for m in messages])
+        said, messages, log = exchange(eye, "request take off at Ramat David", "Traffic at Ramat David.")
+        self.assertEqual(messages, [])  # flight 11-11: a takeoff request is a fixed answer, the field and its traffic
+        self.assertIn("Ramat David, bearing", said)
+        self.assertIn("Traffic, four aircraft. Friendly F-16C", said)
+        self.assertNotIn("clear", said.lower())
         tool = next(r for r in log.records if r["kind"] == "tool")
         self.assertEqual(tool["result"]["picture"]["airbases"]["nearest"][0]["traffic"]["count"], 4)
 
@@ -129,17 +132,20 @@ class AirPictureTests(unittest.TestCase):
                 self.assertLessEqual(len(speech), MAX_REPLY_CHARS)
                 kept = [call for call in base["picture_top3"] if call in speech]
                 self.assertEqual(kept, base["picture_top3"][:len(kept)])  # nearest first, whole calls
-                self.assertGreaterEqual(len(kept), 1)
+                # review A (11-11): pending threat alerts go out whole first; the picture gets the room left
+                self.assertGreaterEqual(len(kept), 0 if count else 1)
                 for call in base["picture_top3"][len(kept):]:
                     self.assertNotIn(call.split(", angels")[0], speech)  # dropped whole, not half
-                if len(kept) < 3:
+                if not kept:
+                    self.assertTrue(speech.endswith("Ask again for the picture."))
+                elif len(kept) < 3:
                     self.assertIn("Plus %s more." % ("two" if len(kept) == 1 else "one"), speech)
                 rwr_said = [k for i, k in enumerate(rwr_keys) if "contact number %d." % i in speech]
                 splash_said = [k for i, k in enumerate(splash_keys) if "target number %d." % i in speech]
                 marked = [k for c in mark.call_args_list for k in c.args[0] if not str(k).startswith('close-bandit')]
                 self.assertEqual(marked, rwr_said + splash_said)  # only what was actually said is announced
                 if count:
-                    self.assertTrue(rwr_said)  # alerts ride in the room left by the picture
+                    self.assertTrue(rwr_said)  # alerts first; the picture rides in the room they leave
                     self.assertLess(len(rwr_said) + len(splash_said), count * 2)  # the rest stay pending
 
     def test_oversize_requested_calls_are_reported_not_silently_truncated(self):

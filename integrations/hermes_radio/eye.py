@@ -576,7 +576,8 @@ def scenery_name(name):
     for pattern, label in SCENERY_NAMES:
         if re.search(pattern, name or "", re.I):
             return label
-    return re.sub(r"[^\w]+|_", " ", name or "scenery").strip().title()
+    # hyphens stay: a static 'T-55' is the T-55, never a second type 'T 55' in the tally (11-11)
+    return re.sub(r"[^\w-]+|_", " ", name or "scenery").strip(" -").title()
 
 
 def object_type(obj):
@@ -758,11 +759,19 @@ class Eye:
             self.events_at = None
             self.reset_reason, self.reset_at = reason, self.clock()
 
-    def set_connected(self, ok, error=None, stream=None):
+    def set_connected(self, ok, error=None, stream=None, idle=False, alive=None):
         """Per-stream connection state (R2 F5). `connected` is True while ANY stream is up, so one failing stream
-        never reads as "DCS disconnected" (Memory ends a mission after 60 s of that). stream=None = all streams."""
+        never reads as "DCS disconnected" (Memory ends a mission after 60 s of that). stream=None = all streams.
+        idle=True: subscribed and open, but nothing of that kind sent yet (a mission with no ships or helicopters).
+        alive: for an idle stream, a callable that is False once the subscription call has ended.
+
+        What an idle stream's label can and cannot tell (review A 11-11): it reads "up, no units for Ns" only while
+        the subscription call is open (alive); a call that ends or fails reads "down". A dead connection is found by
+        the channel keepalive (about 30 s) and then reads "down". A server that keeps the call open but stops sending
+        (a hang) cannot be told apart from a mission with none of that unit kind: the growing N is the only sign."""
         with self.lock:
-            self.streams[stream or "_all"] = {"up": bool(ok), "t": self.clock(), "error": error}
+            self.streams[stream or "_all"] = {"up": bool(ok), "t": self.clock(), "error": error, "idle": idle,
+                                              "alive": alive if idle else None}
             if stream is None:
                 for s in self.streams.values():
                     s["up"] = bool(ok)
@@ -771,11 +780,23 @@ class Eye:
                 self.last_error = error
 
     def streams_json(self, now):
+        def _alive(check):
+            try:
+                return bool(check())
+            except Exception:  # noqa: BLE001 - a call that cannot say is not shown as up
+                return False
+
         out = {}
         for name, s in sorted(self.streams.items()):
             if name == "_all":
                 continue
-            out[name] = "up" if s["up"] else "down %ds (%s)" % (int(now - s["t"]), s["error"] or "error")
+            alive = s.get("alive")
+            if s["up"] and s.get("idle") and alive is not None and not _alive(alive):
+                out[name] = "down %ds (subscription ended)" % int(now - s["t"])
+            elif s["up"] and s.get("idle"):
+                out[name] = "up, no units for %ds" % int(now - s["t"])
+            else:
+                out[name] = "up" if s["up"] else "down %ds (%s)" % (int(now - s["t"]), s["error"] or "error")
         return out
 
     def note_type_info(self, rows):
@@ -2468,7 +2489,8 @@ class Eye:
             if out is not None:
                 out["age_s"] = None if self.fuel_at is None else round(now - self.fuel_at, 1)
                 return out
-        return {"known": False, "note": "fuel unknown (no usable cockpit or DCS-gRPC fuel value): say fuel unknown"}
+        return {"known": False, "reason": "no cockpit or DCS fuel reading",
+                "note": "fuel unknown (no usable cockpit or DCS-gRPC fuel value): say fuel unknown"}
 
     def _working_target(self, own, cp, now):
         """The ONE target being worked: cockpit lock, else the target of my last attack (still alive)."""
@@ -2697,6 +2719,7 @@ class Eye:
                 self._contacts(own, pic)
             pic["working_target"] = self._working_target(own, cockpit, now)
         pic["airbases"] = self._airbases_json(own)
+        pic["_airfields"] = pic["airbases"].pop("_all", [])
         pic["cockpit"] = cockpit
         pic["threats"], sams, flight = self._threats_json(own, now)
         alerts = self.cockpit.pending_alerts(self.announced, now) + self._pending_threat_alerts(now, sams, flight)
@@ -2748,8 +2771,9 @@ class Eye:
                           key=lambda m: m[:2])[:3]
         for rng, row in rows[:5] + [(m[1], m[2]) for m in mine if m[1:] not in rows[:5]]:
             ab = row.get("_field")
-            if ab is not None and (rng, row) in rows[:5]:
+            if ab is not None:  # nearest five and nearest friendly three: ATC answers read this
                 row["traffic"] = self._field_traffic(own, ab)
+        for rng, row in rows:  # every field has its ready call: a named field is resolved at reply time (11-11)
             if row.get("clock") and (row.get("bearing_mag") or row.get("bearing_true")):
                 hour = int(row["clock"].split()[0])
                 row["call"] = "%s, bearing %s, %s, at your %s o'clock." % (
@@ -2764,6 +2788,7 @@ class Eye:
                                        for _, _, r in mine]
             if not mine:
                 out["nearest_friendly_note"] = "no friendly airfield known; do not offer one"
+            out["_all"] = [r for _, r in rows]  # moved to pic["_airfields"]; the model never sees all fields
         if own is not None and rows and rows[0][1].get("range_nm") is not None and rows[0][0] <= 5:
             on_ground = (own["speed_ms"] or 0) * MS_TO_KT < 50
             out["at_or_near"] = dict(rows[0][1], on_ground=on_ground)
@@ -3081,6 +3106,16 @@ class GrpcFeeder:
         for call in calls:
             call.cancel()
 
+    @staticmethod
+    def _opened(call):
+        """True once the server answered the subscription (response headers) and the call is still open. Blocks
+        until headers or the end of the call; a failed call returns False and its error is raised by iteration."""
+        try:
+            call.initial_metadata()
+            return not call.done()
+        except Exception:  # noqa: BLE001 - the stream loop reports the real error
+            return False
+
     def _units(self, name, category, poll, backoff):
         import grpc
         from dcs.mission.v0 import mission_pb2, mission_pb2_grpc
@@ -3095,6 +3130,10 @@ class GrpcFeeder:
             self._unit_calls.add(call)
         first = True
         try:
+            # 11-11: units-helo/units-ship read "down 2306s" all flight: subscribed fine, but a mission with no
+            # helicopters or ships never sends a message. The server's response headers prove the subscription.
+            if self._opened(call):
+                self.eye.set_connected(True, stream=name, idle=True, alive=lambda: not call.done())
             for resp in call:
                 if self.stop.is_set():
                     return

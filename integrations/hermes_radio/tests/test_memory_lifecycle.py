@@ -222,6 +222,16 @@ class MemoryLifecycleTests(unittest.TestCase):
         self.link.capture_picture({"connected": False})
         self.assertTrue(self.drain())
 
+    def test_debrief_status_reports_memory_state_not_always_written(self):
+        """Flight 2026-11-11: Memory reused an old report and the log still said 'written'."""
+        for reply, state in (({"ok": True, "path": "/r.md", "state": "unchanged", "reused": True}, "unchanged"),
+                             ({"ok": True, "path": "/r.md", "state": "rewritten"}, "rewritten"),
+                             ({"ok": True, "path": "/r.md"}, "written")):  # older Memory: no state field
+            with self.subTest(state=state), patch("integrations.hermes_radio.memory_link.request", return_value=reply):
+                self.link.debrief_thread = None
+                self.assertTrue(self.link._schedule_debrief_locked("mission-1", reason="disconnect"))
+                self.link.debrief_thread.join(1)
+                self.assertEqual(self.link.debrief_status["state"], state)
     def test_failed_automatic_attempt_is_visible_manual_regeneration_allowed(self):
         self.link.publish("event", {"kind": "mission_end"})
         self.assertTrue(self.link._send_one())

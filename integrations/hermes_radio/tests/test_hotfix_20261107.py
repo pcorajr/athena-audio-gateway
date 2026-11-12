@@ -90,7 +90,7 @@ class PromptTests(unittest.TestCase):
         ground = PROMPT.index("bearing zero three eight, three miles, ground target, eleven o'clock.")
         self.assertLess(air, ground)
         self.assertIn("Basic ATC", PROMPT)
-        self.assertIn("Don't invent runway numbers", PROMPT)
+        self.assertIn("never clears or approves anything: no clearance, runway, wind or altimeter", PROMPT)  # 11-11
 
 
 if __name__ == "__main__":

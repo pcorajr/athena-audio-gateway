@@ -455,7 +455,7 @@ class CallClassTests(unittest.TestCase):
             "Note for development, the picture is too long": "dev_note",
             "Athena should be able to read my fuel": "dev_note", "bug report, fuel says zero": "dev_note",
             "Athena, what's the picture?": "picture", "Athena, bearing to enemy armor": None,
-            "bearing to all enemy armor": None, "Athena, fuel state": None, "copy, what's my fuel?": None,
+            "bearing to all enemy armor": None, "Athena, fuel state": "fuel", "copy, what's my fuel?": "fuel",  # fixed fuel answer (flight 11-11)
         }
         for text, want in cases.items():
             self.assertEqual(call_class(text), want, text)

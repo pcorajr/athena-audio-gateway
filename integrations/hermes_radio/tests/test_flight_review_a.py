@@ -260,10 +260,11 @@ BLOCKED = ("Prometheus, Athena, you're clear to land.", "Prometheus, Athena, cle
            "Prometheus, Athena, cleared for touch and go.", "Prometheus, Athena, report base.",
            "Prometheus, Athena, number one for landing.", "Prometheus, Athena, winds calm, no traffic.",
            "Prometheus, Athena, cleared to land.", "Prometheus, Athena, the altimeter is two niner niner two.",
-           "Prometheus, Athena, enter left downwind.", "Prometheus, Athena, ok to land, no traffic.")
+           "Prometheus, Athena, enter left downwind.", "Prometheus, Athena, ok to land, no traffic.",
+           "Prometheus, Athena, cleared hot.")  # re-review AB2: Athena never clears weapons either
 PASSED = ("Prometheus, Athena, you are clear of the SA-2.", "Prometheus, Athena, clear to the north.",
           "Prometheus, Athena, no traffic.", "Prometheus, Athena, copy, runway attack complete.",
-          "Prometheus, Athena, cleared hot.", "Prometheus, Athena, loud and clear.",
+          "Prometheus, Athena, loud and clear.",
           "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic.",
           "Prometheus, Athena, copy, landing gear down.", "Prometheus, Athena, copy, wheels up.",
           "Prometheus, Athena, Fuel 3,640 pounds.", "Prometheus, Athena, enemy armor on the runway at Mina.",
@@ -298,12 +299,15 @@ class ClearanceGuardTests(unittest.TestCase):
     def test_an_atc_ask_gets_the_fixed_field_answer_and_others_lose_the_sentence(self):
         pic = live("19:01:46")
         pic.pop("rwr_alert_to_announce", None)
-        fixed = "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic."
+        fixed = ("Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic. "
+                 "I have no runway, wind or altimeter data.")  # re-review AB2: an ATC ask never calls the model
         for said in BLOCKED + ("Prometheus, Athena, you're good to go, no traffic.",):
             with self.subTest(said=said):
-                spoken, reply, _, _, _ = answer(deepcopy(pic), "Athena, which runway is in use?", Stub(answer=said))
+                stub = Stub(answer=said)
+                spoken, reply, _, _, _ = answer(deepcopy(pic), "Athena, which runway is in use?", stub)
                 self.assertEqual(spoken, fixed)
                 self.assertEqual(reply["route"], "fixed")
+                self.assertEqual(stub.calls, 0)
         for said, want in (("Prometheus, Athena, SAM SA-2 tracking you, your twelve o'clock. Cleared to land.",
                             "Prometheus, Athena, SAM SA-2 tracking you, your twelve o'clock."),
                            ("Prometheus, Athena, permission granted.", FALLBACK),

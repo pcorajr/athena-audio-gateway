@@ -76,15 +76,18 @@ LANDING_MISSES = ("landing gear down?", "I landed", "Athena, touchdown.", "Athen
                   "ready to launch Maverick", "departing target area", "what's the best approach to the SAM?",
                   "Athena, wheels up", "Athena, airborne", "is my gear down?")
 FRIENDLY_HITS = ("Athena, are there any friendlies in the air?", "any friendlies", "where are the friendlies",
-                 "friendly aircraft nearby", "Athena, any friendlies around?", "where are the friendlies at",
+                 "friendly air traffic", "any friendlies airborne", "where are the friendlies at",
                  "any friendly aircraft", "friendlies airborne?", "show me the friendlies", "any blue aircraft",
-                 "Athena, are there friendlies up", "any friendly jets nearby", "where's the friendly flight",
-                 "see any friendlies", "Athena, friendly air near me?")
+                 "Athena, are there friendlies up", "where are the friendly aircraft", "where's the friendly flight",
+                 "see any friendlies", "any blue traffic near me")
 FRIENDLY_MISSES = ("tally one friendly", "friendly fire", "any friendly kills", "did any friendlies get killed",
                    "any friendlies destroyed?", "friendlies on the ground", "any friendly armor nearby",
                    "how many friendly aircraft are airborne", "is that a friendly?", "confirm friendly kills",
                    "any friendly ground units", "friendly trucks", "Athena, wingman splash",
-                   "how many friendlies left", "friendly vehicles nearby")
+                   "how many friendlies left", "friendly vehicles nearby",
+                   # re-review AB2: a friendlies-near-a-place ask is never the air-traffic list
+                   "friendly aircraft nearby", "Athena, any friendlies around?", "any friendly jets nearby",
+                   "Athena, friendly air near me?", "any friendlies near the convoy")
 
 
 def live(time_):
@@ -291,20 +294,23 @@ class ClearanceGuardTests(unittest.TestCase):
     def test_a_model_clearance_is_never_spoken(self):
         pic = live("19:01:46")
         pic.pop("rwr_alert_to_announce", None)
-        # review A: a clearance in a reply to an ATC-type ask is replaced by the fixed field + traffic answer
-        fixed = "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic."
+        # re-review AB2: an ATC ask never reaches the model; it gets the fixed field + traffic answer
+        fixed = ("Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic. "
+                 "I have no runway, wind or altimeter data.")
         cases = {
             "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. Cleared to land, "
             "no traffic.": fixed,
             "Prometheus, Athena, no traffic, cleared for takeoff runway two seven.": fixed,
             "Prometheus, Athena, permission granted, cleared to land.": fixed,
             "Prometheus, Athena, you're cleared for the approach, no traffic.": fixed,
-            "Prometheus, Athena, cleared hot.": "Prometheus, Athena, cleared hot.",  # an attack call, not ATC
+            "Prometheus, Athena, cleared hot.": fixed,
         }
         for said, want in cases.items():
             with self.subTest(said=said):
-                spoken = answer(pic, "Athena, which runway is in use?", Stub(answer=said))[0]
+                stub = Stub(answer=said)
+                spoken = answer(pic, "Athena, which runway is in use?", stub)[0]
                 self.assertEqual(spoken, want)
+                self.assertEqual(stub.calls, 0)
 
 
 class StreamHealthTests(unittest.TestCase):

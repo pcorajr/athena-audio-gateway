@@ -36,7 +36,7 @@ class ParrotTests(unittest.TestCase):
         self.assertEqual(frames[0]["speech"], "Prometheus, Athena, " + NO_POSITION)
     def test_normal_answers_and_aircraft_names_are_untouched(self):
         for said in ("Prometheus, Athena, no ground targets within twenty miles.",
-                     "Prometheus, Athena, one FA-18C_hornet on the runway.", "Prometheus, Athena, no position yet from the F-4E."):
+                     "Prometheus, Athena, one FA-18C_hornet on the runway.", "Prometheus, Athena, no position yet from the FA-18C."):
             with self.subTest(said=said):
                 c, _ = controller(OWN, Stub(answer=said))
                 frames, _ = say(c, ASKS[1])

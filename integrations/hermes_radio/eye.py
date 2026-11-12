@@ -689,6 +689,8 @@ class Eye:
         self.on_mission_start = None
         self.on_player_shot = None  # feeder hook: refresh stores right after a shot
         self.stores_dir = stores_dir  # durable stores/shots log (stores-YYYYMMDD.jsonl); None = off
+        self.chat_generation = 0  # dialogue only: reconnect/spawn may happen between radio calls
+        self._chat_unit = None
         self.reset("init")
         self.connected = False
         self.streams = {}  # stream name -> {"up": bool, "t": eye clock, "error": str|None}
@@ -775,7 +777,10 @@ class Eye:
             if stream is None:
                 for s in self.streams.values():
                     s["up"] = bool(ok)
-            self.connected = any(s["up"] for s in self.streams.values())
+            connected = any(s["up"] for s in self.streams.values())
+            if connected and not self.connected:
+                self.chat_generation += 1
+            self.connected = connected
             if error:
                 self.last_error = error
 
@@ -939,6 +944,10 @@ class Eye:
         if cached is not None:
             return cached[0]  # picture() resolves ownship once per build (busy maps: thousands of _is_me calls)
         own = self._resolve_own()
+        unit = (own.get("id"), own.get("name"), own.get("type")) if own else None
+        if unit is not None and unit != self._chat_unit:
+            self.chat_generation += 1
+        self._chat_unit = unit
         if own is not None:
             if self._stand_in(own):
                 self._stand_used = True

@@ -309,7 +309,7 @@ class ClearanceGuardTests(unittest.TestCase):
                 self.assertEqual(reply["route"], "fixed")
                 self.assertEqual(stub.calls, 0)
         for said, want in (("Prometheus, Athena, SAM SA-2 tracking you, your twelve o'clock. Cleared to land.",
-                            "Prometheus, Athena, SAM SA-2 tracking you, your twelve o'clock."),
+                            FALLBACK),  # no SA-2 in this picture: clearance-free is not necessarily grounded
                            ("Prometheus, Athena, permission granted.", FALLBACK),
                            ("Prometheus, Athena, radio check, loud and clear, good to go.",
                             "Prometheus, Athena, radio check, loud and clear, good to go.")):

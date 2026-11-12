@@ -18,33 +18,37 @@ from .cockpit import spoken_name
 from .codex_llm import read_chunks
 from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words
 
-PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
+PROMPT = """GROUNDING (most important):
+- The PICTURE (JSON) is your only source of facts. Say only names, numbers, bearings and ranges that are in it.
+- Before saying "unknown", "unavailable", "not connected" or "nothing showing", look again: if the field has a value, give the value. ownship.fuel.spoken is the fuel; airbases.nearest_friendly is the friendly airfield list; air_traffic is the friendly air traffic; connected true means the picture is live.
+- Never invent clearances ("cleared to land/for takeoff"), runways, winds, altimeter, times or units. You are not a tower: for landing give the airfield call and its traffic, then "your discretion".
+- Never read JSON key names, codes or ids aloud.
+- Every unit in contacts and totals is alive. Dead only from my_kills_this_mission, recent_kills_and_losses or a shot result kill. confidence confirmed = say it plainly; likely = "likely".
+- If ownship is null you have no position for Prometheus: no range or bearing answers; totals and kills are still fine.
+- data_health problems matter only for the stream named; never let them hide data that is present.
 
-Every turn you get a live PICTURE (JSON) from the Athena Eye tracking system. It is your only source of truth: ownship (Prometheus' aircraft), contact groups already computed from Prometheus (bearing, range in nautical miles, altitude, aspect, closure, and "clock" = clock position relative to Prometheus' nose with ahead/behind/left/right), nearby airbases, Prometheus' own shots and their results, recent kills and losses, recent events and alive totals. data_age_s tells you how old the data is; if it is old or the picture is not connected, say so briefly and still give what you have. Never invent contacts, kills or numbers that are not in the picture.
+You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
+
+Every turn you get a live PICTURE (JSON) from the Athena Eye. data_age_s tells you how old the data is; if old or disconnected, say so briefly and give what you have.
 
 Facts that matter:
 - Optional memory is mission history, not a replacement for the live Eye: takeoff airfield, weapons used, observed kill/loss timeline and labelled disagreements. Never turn an unclear audit verdict into a confirmed fact.
-- Every unit listed in contacts and totals is ALIVE. Something is dead or killed ONLY if it appears in recent_kills_and_losses, my_kills_this_mission or a shot result says kill. In my_kills_this_mission, confidence confirmed = a kill: say it plainly ("splash one T-55"), never "likely", even when inferred is true. Only confidence likely, or a recent_kills_and_losses row "no longer showing, likely destroyed", is "likely destroyed".
-- "Mission status" / "status" / "how are we doing" = a short OVERVIEW, not only contacts: kills so far (count from my_kills_this_mission), what enemy remains (alive_totals_by_coalition, ground categories), nearest threat or bandit if any, then fuel and weapons in a few words. Two or three sentences.
-- Mission kill totals come from my_kills_this_mission (cumulative for the whole mission, every row is one kill) or the memory section; recent_* lists are short windows, never totals.
-- Names: say "bridge" for MOST/BRIDGE scenery codes, never read internal codes or numeric weapon ids aloud.
-- my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
-- ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words.
-- ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
+- A confirmed kill stays confirmed even when inferred is true. Only confidence likely, or a recent_kills_and_losses row "no longer showing, likely destroyed", is "likely destroyed".
+- "Mission status" / "status" / "how are we doing" = a short OVERVIEW, not only contacts: kills so far (count from my_kills_this_mission), what enemy remains (alive_totals_by_coalition, ground categories), nearest threat or bandit if any, then fuel and weapons in a few words. Two or three sentences. Mission kill totals come from my_kills_this_mission (cumulative for the whole mission, every row is one kill) or the memory section; recent_* lists are short windows, never totals.
+- Names: say "bridge" for MOST/BRIDGE scenery codes.
+- my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it. Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
+- ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words. Fuel state: ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
 - Damage / "I'm hit": ownship.damage hit events and getLife/getLife0 drops are primary evidence. Read the damage call. Cockpit warning lights, engine RPM changes and fuel-loss trend are secondary clues only. No warnings NEVER means no damage; acknowledge the pilot even if telemetry is unavailable. A fuel loss trend alone is not proof of a leak.
 - data_health.combat_events not "ok" = kills may be unconfirmed; mention it only when asked about kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
-- cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
+- cockpit is live aircraft data: config, flight, payload, rwr, locked_target and warning_lights. Prefer it when cockpit.fresh is true; if unavailable or stale and needed for the question, say "no cockpit data". Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
 - RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. missile_scan not on: say missile tracking is limited and why."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
-- Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
-- Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
 - If the picture has rwr_alert_to_announce, START the answer with it, before anything else, e.g. "Prometheus, Athena, spike, SA-11 at your three o'clock." Then answer the question.
 
 How to talk:
-- Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
-- If ownship is null you have no position for Prometheus, so nothing that needs a range or bearing from him can be answered; alive totals and kills are still fine.
-- Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
+- Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups. Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
+- Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges. Air threats first (nearest and hot first), then SAMs, then ground.
 - Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (read the picture_top3 calls verbatim, every call whole, nothing added between them); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts. Never cut a call mid-way: if the answer must be shorter, leave out whole calls from the end.
 - Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
 - Never say "overhead" unless that contact has overhead_allowed true (within three nautical miles). Nineteen miles is NOT overhead.
@@ -55,15 +59,12 @@ How to talk:
   Air picture: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
   Close bandit or traffic: "Bandit MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level."
   Ground: "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock."
-- Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
 - If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" only when it says so).
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
-- Air threats first (nearest and hot first), then SAMs, then ground.
 - No markdown, no lists, no parentheses, no abbreviations with periods. Write numbers so a text-to-speech voice reads them well.
-- Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
 - Follow-up questions refer to the previous exchanges.
 - Development notes: the pilot is also the developer of Athena. ONLY when a "DEV NOTE" system hint is present (explicit phrasing such as "feature request", "note for development", "bug report", "Athena should be able to ...", "add a feature"), reply briefly "Prometheus, Athena, copy, noted for development: <one-line restatement>." Without that hint it is a normal radio call: kill reports ("target destroyed", "splash", "armor dead") and chat ("switching missions") are acknowledged normally, never noted for development.
-- Basic ATC: for takeoff, landing or approach requests at an airfield, check the picture for aircraft near that field (within about five miles and below about five thousand feet) and say "no traffic" or call the traffic with the same BRAA + clock format. Athena never clears or approves anything: no clearance, runway, wind or altimeter. A friendly airfield (nearest friendly, land, RTB) comes ONLY from airbases.nearest_friendly: its call line, else "no friendly airfield showing".
+- Basic ATC: Athena never clears or approves anything: no clearance, runway, wind or altimeter. Use the selected airfield traffic (within five miles and below five thousand feet): "no traffic" or BRAA + clock. A friendly airfield comes ONLY from airbases.nearest_friendly: its call line, else "no friendly airfield showing".
 """
 
 SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
@@ -83,6 +84,10 @@ assert MAX_REPLY_CHARS <= MAX_SPEECH_CHARS
 EXCHANGE_DEADLINE_S = 10.0
 MIN_MODEL_S = 2.0  # less than this left (the request waited behind another one): no model call, say again
 FALLBACK = "Prometheus, Athena, say again."
+# Missing-data/link statements become false after connecting or spawning (11-11 preflight).
+STALE_CHAT = re.compile(r"unknown|unavailable|not available|not connected|disconnected|"
+                        r"no .{0,60}(showing|reading|data)|no cockpit|not showing|don['’]t have|do not have|"
+                        r"no position|say again|ask again for", re.I)
 
 # Question focus (round 3): a one-line hint telling the model which picture section answers the question.
 FOCUS_RULES = (
@@ -930,7 +935,7 @@ PARROT_KEY = re.compile(r"(?<![\w-])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![\w-])")
 
 
 def parroted(text):
-    return bool(re.search(r"no[ _-]position[ _-]call", text, re.I) or PARROT_KEY.search(text))
+    return bool(re.search(r"no[ _-]position[ _-]call|\bownship\b|\bjson\b", text, re.I) or PARROT_KEY.search(text))
 
 
 def clean(text):
@@ -1081,6 +1086,223 @@ def _missile_name(kind):
     kind = str(kind or "").strip()
     m = re.match(r"SA-?(\d+)", kind, re.I)
     return "SA-%s" % m.group(1) if m else (kind or "missile")
+UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+                                    "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if w != "_"}
+NUMWORD = re.compile(r"\b(?:%s|hundred|thousand|niner|and)(?:[\s-]+(?:%s|hundred|thousand|niner|and))*\b" % (
+    "|".join(list(UNITS) + list(TENS)), "|".join(list(UNITS) + list(TENS))), re.I)
+
+
+def _parse_run(toks):
+    """One run of number words -> list of numbers. A run of single digits is a digit string (bearing); otherwise
+    a new number starts when a word cannot continue the current one ('thirty nine forty six' = 39, 46)."""
+    if len(toks) >= 2 and all(t in UNITS and UNITS[t] < 10 for t in toks):
+        return [int("".join(str(UNITS[t]) for t in toks))]
+    out, total, cur, last = [], 0, 0, None
+    for t in toks:
+        starts_new = last is not None and (
+            (t in TENS and (cur % 100) != 0) or
+            (t in UNITS and last in UNITS) or
+            (t in UNITS and UNITS[t] >= 10 and last in TENS))
+        if starts_new:
+            out.append(total + cur)
+            total, cur = 0, 0
+        if t in UNITS:
+            cur += UNITS[t]
+        elif t in TENS:
+            cur += TENS[t]
+        elif t == "hundred":
+            cur = (cur or 1) * 100
+        elif t == "thousand":
+            total += (cur or 1) * 1000
+            cur = 0
+        last = t
+    out.append(total + cur)
+    return out
+
+
+def words_to_numbers(text):
+    """Spoken numbers in a reply: 'three four eight' -> 348 (digit run), 'two thousand five hundred eighty' -> 2580."""
+    found = []
+    for m in NUMWORD.finditer(text):
+        toks = [("nine" if t == "niner" else t) for t in re.split(r"[\s-]+", m.group(0).lower()) if t]
+        runs, run = [], []
+        for i, t in enumerate(toks):  # 'and' joins only after hundred/thousand ('one hundred and five')
+            if t == "and":
+                if run and run[-1] in ("hundred", "thousand"):
+                    continue
+                runs.append(run)
+                run = []
+                continue
+            run.append(t)
+        runs.append(run)
+        for r in runs:
+            if r:
+                found.extend(_parse_run(r))
+    for m in re.finditer(r"(?<![\w-])(\d[\d,]*(?:\.\d+)?)(?![\w-])", text):
+        try:
+            found.append(float(m.group(1).replace(",", "")))
+        except ValueError:
+            pass
+    return found
+
+
+def picture_numbers(pic):
+    nums = set()
+
+    def walk(v):
+        if isinstance(v, bool):
+            return
+        if isinstance(v, (int, float)):
+            for x in (v, round(v), int(v), int(v) + 1):
+                nums.add(float(x))
+        elif isinstance(v, str):
+            for n in words_to_numbers(v):
+                nums.add(float(n))
+            for m in re.finditer(r"\d+", v):
+                nums.add(float(m.group(0)))
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    walk(pic)
+    return nums
+
+
+
+# Mechanical grounding (the study's variant c), no model call or I/O.
+# Number parsing is shared with the offline scorer; the live path never imports the study runner.
+PHONETIC = dict(zip("alpha bravo charlie delta echo foxtrot golf hotel india juliett kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu".split(), "abcdefghijklmnopqrstuvwxyz"))
+
+
+def _ground_name(text):
+    text = str(text).lower().replace("’", "'")
+    text = re.sub(r"\b(" + "|".join(PHONETIC) + r")s?\b", lambda m: PHONETIC[m[1]], text)
+    text = re.sub(r"\b(" + "|".join(list(UNITS) + list(TENS)) + r")s\b", r"\1", text)
+    text = NUMWORD.sub(lambda m: " ".join(str(n) for n in words_to_numbers(m.group(0))), text)
+    return re.sub(r"[^a-z0-9]", "", text)
+
+
+RADIO_GRAMMAR = frozenset((
+    "missile missiles their them theirs these those "
+    'prometheus athena test pilot i your you my we our the a an no not unknown unavailable friendly enemy '
+    'bandit sam rwr awacs gci dcs fuel bearing range heading angels copy roger negative affirm unable '
+    'nothing tracking contact air ground mission kill kills confirmed likely splash total nearest left '
+    'right behind ahead at from to for with on in and but it that this there they one two three four five '
+    'six seven eight nine ten eleven twelve zero twenty thirty forty fifty sixty seventy eighty ninety '
+    'hundred thousand say ask loud clear read ready good morning afternoon evening hello hi thanks thank '
+    'yes flying still currently all last known only also plus about approximately weapons weapon maverick '
+    'mavericks loadout stores guns gun pounds percent internal aircraft airfield airbase traffic '
+    "information data position clock would could can do don't have stand by check checking see looks "
+    "looking that's correct report reporting call tally remaining its nearby sorry another continue "
+    "proceed understood apologies appreciate glad you're i'll i've "
+).split())
+
+
+def reply_check(reply, pic, ask):
+    """Return the mechanical rejection reason, or None. Clearance/key guards stay at their existing call site."""
+    text = (reply or "").lower().replace("’", "'")
+    # Validate explicit type designators and proper names, including spoken type numbers.
+    strings = []
+    def collect(value):
+        if isinstance(value, str):
+            strings.extend((value, spoken_name(value)))
+        elif isinstance(value, dict):
+            for k, v in value.items():
+                if k in ("types", "spoken_types") and isinstance(v, dict): strings.extend(v)
+                collect(v)
+        elif isinstance(value, list):
+            for v in value: collect(v)
+    collect(pic)
+    source = " ".join(strings).lower()
+    normalized = {}  # most replies have no type designator; normalize lazily, once per value
+    def has_type(name):
+        for value in strings:
+            if value not in normalized:
+                normalized[value] = _ground_name(value)
+            if name in normalized[value]:
+                return True
+        return False
+    number = "(?:" + "|".join(list(UNITS) + list(TENS) + ["niner", "hundred", "thousand"]) + ")"
+    suffix = "(?:[A-Z]|(?:" + "|".join(PHONETIC) + ")s?)"
+    types = re.findall(r"\b(?:[a-z]{1,4}-?\d+[a-z0-9-]*|(?:[FAETB]|MiG|Su|SA|AGM|AIM)[ -]+%s(?:[ -]+%s)*s?(?:[ -]+%s)?)\b" %
+                       (number, number, suffix), reply or "", re.I)
+    types = [name for name in types if not (re.fullmatch(r"a (one|two|three|four)", name, re.I)
+             and re.search(re.escape(name) + r"[- ]ship", reply, re.I))]
+    for name in types:
+        n = _ground_name(name).rstrip("s")
+        if re.search(r"no\s+" + re.escape(name.lower()) + r".{0,20}showing", text):
+            continue  # an explicit absence is not an invented contact
+        if not has_type(n):
+            return "unit not in picture: " + name
+    # Proper names must occur in the picture (or its spoken-name aliases). Common
+    # radio/grammar words are not entity names; explicit type designators above
+    # are never exempted by this vocabulary.
+    body = reply or ""
+    for name in types: body = body.replace(name, "")
+    names = re.findall(r"\b([A-Z][A-Za-z'-]+)(?=,?\s+bearing)|\b([A-Za-z][A-Za-z'-]+)(?=\s+(?:airfield|airbase|airport)\b)", body)
+    names = [a or b for a, b in names]
+    names += re.findall(r"\b[A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)*\b", NUMWORD.sub("", body))
+    for name in names:
+        if name.lower() not in RADIO_GRAMMAR and not re.search(r"\b" + re.escape(name.lower()) + r"\b", source):
+            return "name not in picture: " + name
+    body = re.sub(r"\b(?:prometheus|athena|test pilot)\b", "", body, flags=re.I)
+    nums = picture_numbers(pic)
+    # Counts of returned rows are facts too; clocks are conventional directions, not invented ranges.
+    def counts(value):
+        if isinstance(value, list):
+            nums.add(float(len(value)))
+            for v in value: counts(v)
+        elif isinstance(value, dict):
+            for v in value.values(): counts(v)
+    counts(pic)
+    body = re.sub(r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+) o'clock\b", "", body)
+    for n in words_to_numbers(body):
+        if n not in nums and not any(abs(n-p) <= max(1.0, 0.02*p) for p in nums if p > 50):
+            return "number not in picture: %s" % n
+    own = pic.get("ownship") or {}
+    fuel = own.get("fuel") or {}
+    for clause in re.split(r"[.;]", text):
+        if not re.search(r"unknown|unavailable|not available|no (connected )?picture|not connected|disconnected|"
+                         r"(?:can't|cannot|unable to) (confirm|see|tell)|no data|no .{0,50}(showing|available|reading)|"
+                         r"don't have|do not have|nothing showing|not showing", clause):
+            continue
+        if pic.get("connected", pic.get("available", False)) and re.search(r"not connected|disconnected|no (connected )?picture", clause):
+            return "claims not connected while connected"
+        if re.search(r"no longer showing|intent|weather|wind|runway|cockpit|radar|missile inbound", clause) or ("no live" in clause and not pic.get("connected", True)):
+            continue  # these are not assertions that fuel/airfields/traffic are absent
+        if re.search(r"missile tracking data|weapon status", clause) and (pic.get("my_shots_last_15_min") or {}).get("shots"):
+            return "claims no weapon data while shot results are present"
+        subject = clause if re.search(r"fuel|gas|bingo|joker|airfield|airbase|air field|air base|traffic|friendly|"
+                                     r"friendlies|weapons?|loadout|maverick|ammo|stores|aircraft|pounds|percent", clause) else ask.lower()
+        # One subject, not all overlapping ask keywords: 'friendly airfield' is not friendly traffic.
+        if re.search(r"air ?fields?|air ?bases?|home ?plate|rtb|nelli'?s|creech|divert", subject):
+            present = bool((pic.get("airbases") or {}).get("nearest_friendly"))
+        elif re.search(r"\b(fuel|gas|bingo|joker|pounds|percent)\b", subject):
+            present = (fuel.get("total_lb") is not None if "pounds" in clause else
+                       fuel.get("internal_pct") is not None if "percent" in clause else
+                       fuel.get("total_lb") is not None or fuel.get("internal_pct") is not None)
+        elif re.search(r"\b(mavericks?)\b", subject):
+            present = any(("agm-65" in str(w).lower() or "maverick" in str(w).lower()) and w.get("count", 0)
+                          for w in (own.get("loadout") or {}).get("weapons", []))
+        elif re.search(r"weapons?|loadout|ammo|stores|carrying", subject):
+            present = bool((own.get("loadout") or {}).get("available"))
+        elif re.search(r"tanker|awacs", subject):
+            # Named role absence cannot be contradicted by unrelated friendly traffic.
+            traffic = (pic.get("air_traffic") or {}).get(own.get("coalition") or "blue") or []
+            present = any(re.search(r"kc-?135|kc-?130|s-?3b|tanker" if "tanker" in subject else r"e-?3|a-?50|awacs", str(r), re.I) for r in traffic)
+        elif re.search(r"friendl\w*|traffic|wing ?m[ae]n|awacs", subject) and not re.search(r"ground|target|convoy", subject):
+            present = bool((pic.get("air_traffic") or {}).get(own.get("coalition") or "blue"))
+        elif re.search(r"what am i flying|aircraft am i|airplane am i", subject):
+            present = bool(own.get("type"))
+        else:
+            present = False
+        if present:
+            return "claims unknown while the picture has it"
+    return None
+
 class SimpleController:
     # RadioServer: hold concurrent transmissions for this controller (answered in turn) instead of 503.
     queues = True
@@ -1094,6 +1316,7 @@ class SimpleController:
         self._path = "/" + base_url.split("//", 1)[1].split("/", 1)[1].rstrip("/") + "/chat/completions"
         self.timeout = timeout
         self.history = deque(maxlen=8)
+        self._chat_state = None
         self.speaker = speaker
         self._llm = llm or self.ask
         self._turn = threading.Lock()  # one exchange at a time; later arrivals wait their turn
@@ -1646,12 +1869,30 @@ class SimpleController:
         marker = getattr(self.eye, "reset_at", None)
         if self._mission is not None and marker != self._mission:
             self.history.clear()
+            self._chat_state = None
             self._confirmed_kills = []
             self._reported_missiles = {}
             self._last_launch_reply = 0.0
             self._last_exchange = None
             self._log(request, "route", route="reset", outcome="new_mission_controller_memory_cleared")
         self._mission = marker
+
+    def _check_chat(self, request, pic):
+        """Only dialogue is invalidated on first session, reconnection or a new pilot unit.
+
+        The first GetSessionId is not an Eye reset and mission_start may precede the
+        event subscription (11-11 18:26). Never depend on that event for chat safety.
+        """
+        own = pic.get("ownship") or {}
+        unit = (tuple(own.get(k) for k in ("id", "name", "type", "group")) if own else None)
+        state = (getattr(self.eye, "session_id", None), pic.get("connected", pic.get("available")),
+                 unit, getattr(self.eye, "chat_generation", None))
+        old = self._chat_state
+        if old is not None and (state[0] != old[0] or (state[1] and not old[1]) or
+                                (unit and unit != old[2]) or state[3] != old[3]):
+            self.history.clear()
+            self._log(request, "route", route="reset", outcome="chat_context_cleared")
+        self._chat_state = state
 
     def _answer(self, request, text, arrived=None):
         start = time.monotonic() if arrived is None else arrived
@@ -1693,6 +1934,7 @@ class SimpleController:
             except Exception:  # noqa: BLE001 - never block the answer on bookkeeping
                 report = None
         pic, error = self._picture_with_retry()
+        self._check_chat(request, pic)
         pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
         klass = call_class(text, pic, [q for q, _ in list(self.history)[-3:]])
         if klass is None and time.time() - self._last_launch_reply <= 90 and LAUNCH_FOLLOWUP.search(text):
@@ -1827,8 +2069,18 @@ class SimpleController:
                 self._log(request, "controller_error", outcome="clearance_removed", route=route, llm=meta)
             if parroted(answer):  # never speak a key name / "no position call": fixed sentence or say again
                 meta["fallback_reason"] = "parroted_picture_text"
-                route, answer = ("fixed", ADDRESS + NO_POSITION) if not pic.get("ownship") else ("fallback", FALLBACK)
+                route, answer = "fallback", (ADDRESS + NO_POSITION if not pic.get("ownship") else FALLBACK)
                 self._log(request, "controller_error", outcome="parroted_picture_text", route=route, llm=meta)
+            reason = reply_check(answer, pic, text) if answer and route == "llm" else None
+            if reason:
+                meta["fallback_reason"] = "reply_check: " + reason
+                fallback_calls = requested_calls(klass, text, pic)
+                if fallback_calls is None and AIRCRAFT_ASK.search(text):
+                    # Reuse the aircraft-only lead of the existing loadout sentence.
+                    fallback_calls = loadout_calls({"type": (pic.get("ownship") or {}).get("type")}, text)
+                route = "fallback"
+                answer = ADDRESS + " ".join(fallback_calls) if fallback_calls else FALLBACK
+                self._log(request, "controller_error", outcome="reply_check_rejected", route=route, llm=meta)
             if answer:  # the model was given the splash / RWR calls to say first: marked only if it said them
                 for field, keys in (("splash_to_announce", splash_keys), ("rwr_alert_to_announce", rwr_keys)):
                     for alert, key in zip(pic.get(field) or [], keys or []):
@@ -1851,7 +2103,7 @@ class SimpleController:
         self._pending_ack = None
         keys = self._mark_said(marks, answer)
         said = None
-        if route != "fallback":  # a "say again" is never chat history
+        if route != "fallback" and not STALE_CHAT.search(answer):  # keep complete factual pairs only
             said = (text, answer)
             self.history.append(said)
         self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": kills, "history": said,

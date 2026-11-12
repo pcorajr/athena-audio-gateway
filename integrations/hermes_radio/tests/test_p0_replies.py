@@ -145,7 +145,7 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(replies[0]["route"], "llm")
 
     def test_long_model_answer_is_trimmed_to_one_frame(self):
-        long = "Prometheus, Athena, " + " ".join("Contact %d is somewhere out there." % i for i in range(40))
+        long = "Prometheus, Athena, " + " ".join("Copy, standing by for your next call." for i in range(40))
         frames, replies, _, _ = run(LIVE["loadout_2035"], "Athena, how is it looking", long)
         self.assertEqual(len(frames), 1)
         self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
@@ -257,7 +257,7 @@ class ThreeBanditTests(unittest.TestCase):
 
     def test_model_reply_over_budget_drops_whole_calls(self):
         answer = "Prometheus, Athena, " + " ".join(LONG_THREE) + " Two more groups further north, all cold."
-        pic = dict(LIVE["loadout_2035"], _close_bandits=[BANDIT])
+        pic = dict(LIVE["loadout_2035"], _close_bandits=[BANDIT], picture_top3=LONG_THREE)
         frames, replies, _, _ = run(pic, "Athena, any bandits out there?", answer)
         self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
         self.assertTrue(frames[0].startswith("Prometheus, Athena, " + BANDIT["call"]), frames[0])

@@ -43,7 +43,12 @@ class AttackAckTests(unittest.TestCase):
                         spoken, _, stub, _, _ = answer(deepcopy(pic), ask, Stub(answer=rep))
                         self.assertNotRegex(spoken, r"Creech|Nellis|traffic")
                         if stub.calls:  # "running in, ..." is a fixed intent acknowledgement
-                            self.assertEqual(spoken, rep)
+                            # These old stub answers invented an SA-2 absent from both pictures.
+                            # A non-ATC ask still never becomes a field answer.
+                            expected = FALLBACK if "SA-2" in rep else rep
+                            if "ten miles" in rep and pic is NEVADA:
+                                expected = FALLBACK  # ten is not in this recorded picture
+                            self.assertEqual(spoken, expected)
 
 
 ATC_ASKS = ("Athena, which runway is in use?", "Athena, request taxi", "Athena, what's the active runway",
@@ -117,14 +122,17 @@ class AtcTests(unittest.TestCase):
         # a threat sentence survives; only the clearance sentence goes
         rep = ADDRESS + "SAM SA-2 tracking you, your twelve o'clock. The active is two seven."
         self.assertEqual(answer(deepcopy(pic), "Athena, any threats?", Stub(answer=rep))[0],
-                         ADDRESS + "SAM SA-2 tracking you, your twelve o'clock.")
+                         FALLBACK)  # the remaining SA-2 is absent from the picture
 
     def test_legitimate_replies_pass_unchanged(self):
         pic = quiet("19:01:46")
         for text in LEGIT:
             for ask in ("Athena, radio check", "Athena, any threats near Creech?", "Athena, on final to the target, any SAMs?"):
                 with self.subTest(text=text, ask=ask):
-                    self.assertEqual(answer(deepcopy(pic), ask, Stub(answer=ADDRESS + text))[0], ADDRESS + text)
+                    # Clearance legitimacy alone does not make an absent SA-2 or a false
+                    # "no friendly airfield" grounded: Creech is in this picture.
+                    expected = FALLBACK if "SA-2" in text or "no friendly airfield" in text else ADDRESS + text
+                    self.assertEqual(answer(deepcopy(pic), ask, Stub(answer=ADDRESS + text))[0], expected)
 
     def test_athena_never_clears_weapons(self):
         pic = quiet("19:01:46")

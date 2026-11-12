@@ -129,3 +129,33 @@ model (qwen3:8b) with an FL/HDG contact list.
   `manual-reads.json`, `README.md`; `integrations/hermes_radio/tests/test_model_eval.py` (offline, 5 tests).
 - Of 282 model-route exchanges on 11-08/09/11, 191 still reach the model today (88 now fixed, 3 debrief); 33 were
   picked (all real questions with checkable answers + the six failures + some chit-chat), the rest are acks.
+
+## Guardrails built (branch only, not deployed)
+
+Clean eight-pair dialogue on first session/reconnection/spawn/unit change, discard stale missing-data exchanges,
+retain factual fixed answers for follow-ups; seven grounding rules first (actual ee138de prompt 10,124 → 9,788
+characters); mechanical number/name/false-unknown check with logged fallback, no second generation.
+
+| Comparison | Right / 72 | False unknown | Inventions | Say again | Model median / p95 s |
+|---|---:|---:|---:|---:|---:|
+| Original study baseline | 64 | 5 | 1 | 0 | 1.76 / 3.62 |
+| Fresh ee138de, same grader | 63 | 3 | 1 | 1 | 1.681 / 2.705 |
+| Guardrails, same grader | 65 | 3 | 0 | 0 | 1.619 / 2.995 |
+| Fresh ee138de, grader false alarms audited | 65 | 1 | 1 | 1 | same |
+| Guardrails, grader false alarms audited | 68 | 1 | 0 | 0 | same |
+
+Small, noisy differences do not prove improved accuracy. All five original false rejects are removed;
+combined guards flag 37/57 wrong and 2/337 labelled-right study replies (was 30/57 and 5/337). The two residual
+labels are explained in `guardrails.md`. Local check cost: 5.7 ms median / 11.2 ms p95, no network round trip.
+
+295/300 calls used, including calibration trials and five API fallbacks. Final 72 real samples were rechecked
+through final code after mechanical-only false-reject fixes, not silently sampled again. A fresh 37-exchange
+flight replay also passed; its airfield/name follow-up works and it says "say again" zero times. All six historical
+flight failures are already fixed routes in ee138de, unchanged here; the three affected asks repeated 5× give
+15/15 correct with zero model calls. All 319 stub exchanges (149 fixed), plus the separate 37-flight replay,
+are unchanged. pytest: 614 passed / 6 skipped; unittest: 617 OK / 6 skipped. No deployment, merge or push.
+
+Why history survived: no mission_start event arrived when the event stream reconnected; the first None→session-ID
+transition did not reset Eye.reset_at; spawn also did not invalidate dialogue. Details, limitations, every old/new
+flight reply, manual grading corrections and all trial data are in `guardrails.md`, `guardrails-flight.md` and the
+`guardrails-*` evidence files. Review and a live flight remain acceptance gates.

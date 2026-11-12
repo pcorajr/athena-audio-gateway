@@ -1,0 +1,90 @@
+{
+  "20261111:1378|Prometheus, Athena, I can\u2019t determine airborne friendlies; you\u2019re not currently in an aircraft, and the picture doesn\u2019t provide their airborne status.": {
+    "verdict": "right",
+    "reason": "right = a count from alive totals (about 18 incl. helos) or 'no position for a traffic list'"
+  },
+  "20261111:1484|Prometheus, Athena, Test pilot. four friendly aircraft airborne, bearing zero five four, forty five, angels zero, twelve o'clock low.": {
+    "verdict": "wrong",
+    "reason": "Four airborne is not the recorded seven/eight airborne or twelve/thirteen total."
+  },
+  "20261111:1705|Prometheus, Athena, I\u2019m not playing in your flying. I\u2019m here to provide calls from the tracking picture.": {
+    "verdict": "right",
+    "reason": "garbled; any short polite reply or say again, no invented facts"
+  },
+  "20261109:147|Prometheus, Athena, yes, you hit the T-55; it is still showing alive, no kill reported.": {
+    "verdict": "right",
+    "reason": "right = hits on the T-55, no kill, still alive"
+  },
+  "w06|Prometheus, Athena, eleven thousand three hundred seventy feet MSL.": {
+    "verdict": "right",
+    "reason": "ownship.alt_ft 11,360 (cockpit altitude may differ slightly)"
+  },
+  "w13|Prometheus, Athena, loud and clear.": {
+    "verdict": "right",
+    "reason": "garbled radio check: loud and clear or say again"
+  },
+  "w14|Prometheus, Athena, I can\u2019t determine airborne time from the live picture.": {
+    "verdict": "right",
+    "reason": "no takeoff event; 'entered aircraft 293 s ago' (about five minutes) or unknown is right"
+  },
+  "w24|Prometheus, Athena, Test pilot. those Mi-8s are hostile, but the picture shows them stationary and low, so they don\u2019t appear to be an immediate air threat.": {
+    "verdict": "right",
+    "reason": "Mi-8MT two-ship 8 mi angels 3 (transport helicopters); no invented weapons"
+  },
+  "w27|Prometheus, Athena, Test pilot. I can't see your target. Friendly M1043 HMMWV Armament, eight contacts, bearing two two eight, two miles, ground target, two o'clock. Friendly armor, eight contacts, bearing one three one, two miles, ground target, eleven o'clock. Plus four more.": {
+    "verdict": "right",
+    "reason": "The target-position caveat is true; the reply supplies nearby friendly ground groups.",
+    "raw_verdict": "wrong",
+    "raw_reasons": [
+      "false unknown: 'can't see'"
+    ]
+  },
+  "w32|Prometheus, Athena, you have two confirmed kills: one SA-2 radar and one Ural truck. Enemy forces still include six AAA, ten ground vehicles, nine SAMs, six armor, and one artillery; no bandits are showing.": {
+    "verdict": "right",
+    "reason": "No bandits showing is true: the air picture is empty. Kills and remaining totals are given.",
+    "raw_verdict": "wrong",
+    "raw_reasons": [
+      "false unknown: 'no bandits are showing'"
+    ]
+  },
+  "20261111:1378|Prometheus, Athena, friendly air traffic is unavailable; you are not currently in an aircraft.": {
+    "verdict": "right",
+    "reason": "right = a count from alive totals (about 18 incl. helos) or 'no position for a traffic list'"
+  },
+  "20261111:1577|Prometheus, Athena, Test pilot. No SAMs ahead showing.": {
+    "verdict": "right",
+    "reason": "No SAMs ahead is true: the two EWR rows are behind at seven o'clock.",
+    "raw_verdict": "wrong",
+    "raw_reasons": [
+      "false unknown: 'no sams ahead showing'"
+    ]
+  },
+  "20261111:1606|Prometheus, Athena, Test pilot. No SAM is tracking you; the nearby early warning radars could be watching you.": {
+    "verdict": "right",
+    "reason": "The scorer ignores the negation in 'No SAM is tracking you'; radar tracking_you is empty.",
+    "raw_verdict": "wrong",
+    "raw_reasons": [
+      "contradiction: /(sa-?\\s?\\d+|sam) (is )?tracking you/"
+    ]
+  },
+  "20261111:1705|Prometheus, Athena, understood. I\u2019ll keep the radio quiet unless you ask or there\u2019s a threat to call.": {
+    "verdict": "right",
+    "reason": "garbled; any short polite reply or say again, no invented facts"
+  },
+  "20261109:147|Prometheus, Athena, the T-55 took several gun hits, but no kill has been reported.": {
+    "verdict": "right",
+    "reason": "right = hits on the T-55, no kill, still alive"
+  },
+  "w06|Prometheus, Athena, you\u2019re at eleven thousand three hundred seventy feet MSL.": {
+    "verdict": "right",
+    "reason": "ownship.alt_ft 11,360 (cockpit altitude may differ slightly)"
+  },
+  "w14|Prometheus, Athena, you spawned two hundred ninety-three seconds ago, but I don\u2019t have a recorded takeoff time to confirm how long you\u2019ve been airborne.": {
+    "verdict": "right",
+    "reason": "no takeoff event; 'entered aircraft 293 s ago' (about five minutes) or unknown is right"
+  },
+  "w24|Prometheus, Athena, Test pilot. they\u2019re hostile Mi-8MT helicopters, two-ship, eight miles at your seven o\u2019clock, low. Their threat level isn\u2019t specified.": {
+    "verdict": "right",
+    "reason": "Mi-8MT two-ship 8 mi angels 3 (transport helicopters); no invented weapons"
+  }
+}

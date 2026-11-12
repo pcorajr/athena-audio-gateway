@@ -1,0 +1,122 @@
+{
+  "tables": {
+    "suite-old": {
+      "n": 72,
+      "study_grader": {
+        "right": 63,
+        "wrong": 8,
+        "invention": 1,
+        "missing": 4,
+        "sayagain": 1,
+        "false_unknown": 3
+      },
+      "audited": {
+        "right": 65,
+        "wrong": 6,
+        "invention": 1,
+        "missing": 4,
+        "sayagain": 1,
+        "false_unknown": 1
+      },
+      "say_again": 1,
+      "fallback_route": 1,
+      "model_replies": 55,
+      "median_s": 1.681,
+      "p95_s": 2.705
+    },
+    "suite-rechecked": {
+      "n": 72,
+      "study_grader": {
+        "right": 65,
+        "wrong": 7,
+        "missing": 4,
+        "false_unknown": 3,
+        "wrong_fact": 1
+      },
+      "audited": {
+        "right": 68,
+        "wrong": 4,
+        "missing": 4,
+        "false_unknown": 1
+      },
+      "say_again": 0,
+      "fallback_route": 1,
+      "model_replies": 55,
+      "median_s": 1.619,
+      "p95_s": 2.995
+    }
+  },
+  "calls": 295,
+  "calls_by_run": {
+    "suite-new": 56,
+    "suite-old": 55,
+    "suite-final": 56,
+    "suite-verified": 57,
+    "history-old": 14,
+    "history-new": 14,
+    "history-final": 14,
+    "history-verified": 14,
+    "history-release": 15
+  },
+  "model_generations": 290,
+  "history": {
+    "flight_exchanges": 37,
+    "old_say_again": 0,
+    "new_say_again": 0,
+    "new_fallbacks": 0,
+    "old_latency": {
+      "median_s": 1.77,
+      "p95_s": 2.828
+    },
+    "new_latency": {
+      "median_s": 1.504,
+      "p95_s": 3.053
+    }
+  },
+  "repeats": {
+    "right": 15,
+    "model_calls": 0
+  },
+  "stub": {
+    "all": {
+      "count": 319,
+      "fixed": 149,
+      "changed": []
+    },
+    "flight_with_preflight": {
+      "count": 39,
+      "fixed": 25,
+      "changed": []
+    }
+  },
+  "offline_check": {
+    "counts": {
+      "right": 337,
+      "wrong": 57,
+      "wrong_rejected": 37,
+      "right_rejected": 2
+    },
+    "false_rejects": [
+      {
+        "id": "w32",
+        "variant": "slim",
+        "reply": "Prometheus, Athena, two confirmed kills: one SNR 75V SAM and one Ural truck. No live enemy or fuel picture is available.",
+        "reason": "claims unknown while the picture has it"
+      },
+      {
+        "id": "20261111:1890",
+        "variant": "diet",
+        "reply": "Prometheus, Athena, Creech, no aircraft traffic, your discretion.",
+        "reason": "clearance"
+      }
+    ]
+  },
+  "check_cpu": {
+    "n": 275,
+    "median_ms": 5.687,
+    "p95_ms": 11.192,
+    "max_ms": 12.069,
+    "prompt_chars": 9788,
+    "prompt_bullets": 35
+  }
+}

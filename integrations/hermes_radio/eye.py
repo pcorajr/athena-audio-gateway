@@ -678,6 +678,22 @@ def _raw_compact(value):
 
 
 # ----------------------------------------------------------------------------- the eye
+def pilot_identity(own, previous=None):
+    """Last non-null identity; cockpit id -1 is a feed fallback, not a spawn.
+
+    Preserve a real id across fallback so a different real id still means respawn.
+    Name/type changes mean a slot/aircraft change even across source switching.
+    """
+    if not own:
+        return previous, False
+    unit = tuple(own.get(k) for k in ("id", "name", "type"))
+    same_aircraft = previous is not None and unit[1:] == previous[1:]
+    same = same_aircraft and (unit[0] == previous[0] or -1 in (unit[0], previous[0]))
+    if same and unit[0] == -1:
+        return previous, False
+    return unit, not same
+
+
 class Eye:
     def __init__(self, player=PLAYER, *, clock=time.time, source="unconfigured", stores_dir=None, test_ownship=None):
         self.player, self.clock, self.source = player, clock, source
@@ -689,6 +705,8 @@ class Eye:
         self.on_mission_start = None
         self.on_player_shot = None  # feeder hook: refresh stores right after a shot
         self.stores_dir = stores_dir  # durable stores/shots log (stores-YYYYMMDD.jsonl); None = off
+        self.chat_generation = 0  # dialogue only: reconnect/spawn may happen between radio calls
+        self._chat_unit = None
         self.reset("init")
         self.connected = False
         self.streams = {}  # stream name -> {"up": bool, "t": eye clock, "error": str|None}
@@ -775,7 +793,10 @@ class Eye:
             if stream is None:
                 for s in self.streams.values():
                     s["up"] = bool(ok)
-            self.connected = any(s["up"] for s in self.streams.values())
+            connected = any(s["up"] for s in self.streams.values())
+            if connected and not self.connected:
+                self.chat_generation += 1
+            self.connected = connected
             if error:
                 self.last_error = error
 
@@ -939,6 +960,9 @@ class Eye:
         if cached is not None:
             return cached[0]  # picture() resolves ownship once per build (busy maps: thousands of _is_me calls)
         own = self._resolve_own()
+        self._chat_unit, changed = pilot_identity(own, self._chat_unit)
+        if changed:
+            self.chat_generation += 1
         if own is not None:
             if self._stand_in(own):
                 self._stand_used = True

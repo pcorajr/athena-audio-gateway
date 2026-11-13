@@ -308,6 +308,7 @@ class ClearanceGuardTests(unittest.TestCase):
                 self.assertEqual(spoken, fixed)
                 self.assertEqual(reply["route"], "fixed")
                 self.assertEqual(stub.calls, 0)
+        pic["threats"] = {"sam_in_range": [{"call": "SAM SA-2 tracking you, your twelve o'clock."}]}
         for said, want in (("Prometheus, Athena, SAM SA-2 tracking you, your twelve o'clock. Cleared to land.",
                             "Prometheus, Athena, SAM SA-2 tracking you, your twelve o'clock."),
                            ("Prometheus, Athena, permission granted.", FALLBACK),

@@ -16,35 +16,39 @@ import unicodedata
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
 from .cockpit import spoken_name
 from .codex_llm import read_chunks
-from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words
+from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words, pilot_identity
 
-PROMPT = """You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
+PROMPT = """GROUNDING (most important):
+- The PICTURE (JSON) is your only source of facts. Say only names, numbers, bearings and ranges that are in it.
+- Before saying "unknown", "unavailable", "not connected" or "nothing showing", look again: if the field has a value, give the value. ownship.fuel.spoken is the fuel; airbases.nearest_friendly is the friendly airfield list; air_traffic is the friendly air traffic; connected true means the picture is live.
+- Never invent clearances ("cleared to land/for takeoff"), runways, winds, altimeter, times or units. You are not a tower: for landing give the airfield call and its traffic.
+- Never read JSON key names, codes or ids aloud.
+- Every unit in contacts and totals is alive. Dead only from my_kills_this_mission, recent_kills_and_losses or a shot result kill. confidence confirmed = say it plainly; likely = "likely".
+- If ownship is null you have no position for Prometheus: no range or bearing answers; totals and kills are still fine.
+- data_health problems matter only for the stream named; never let them hide data that is present.
 
-Every turn you get a live PICTURE (JSON) from the Athena Eye tracking system. It is your only source of truth: ownship (Prometheus' aircraft), contact groups already computed from Prometheus (bearing, range in nautical miles, altitude, aspect, closure, and "clock" = clock position relative to Prometheus' nose with ahead/behind/left/right), nearby airbases, Prometheus' own shots and their results, recent kills and losses, recent events and alive totals. data_age_s tells you how old the data is; if it is old or the picture is not connected, say so briefly and still give what you have. Never invent contacts, kills or numbers that are not in the picture.
+You are "Athena", an experienced human AWACS/GCI controller on the radio with one pilot, callsign "Prometheus", flying in DCS World.
+
+Every turn you get a live PICTURE (JSON) from the Athena Eye. data_age_s tells you how old the data is; if old or disconnected, say so briefly and give what you have.
 
 Facts that matter:
 - Optional memory is mission history, not a replacement for the live Eye: takeoff airfield, weapons used, observed kill/loss timeline and labelled disagreements. Never turn an unclear audit verdict into a confirmed fact.
-- Every unit listed in contacts and totals is ALIVE. Something is dead or killed ONLY if it appears in recent_kills_and_losses, my_kills_this_mission or a shot result says kill. In my_kills_this_mission, confidence confirmed = a kill: say it plainly ("splash one T-55"), never "likely", even when inferred is true. Only confidence likely, or a recent_kills_and_losses row "no longer showing, likely destroyed", is "likely destroyed".
-- "Mission status" / "status" / "how are we doing" = a short OVERVIEW, not only contacts: kills so far (count from my_kills_this_mission), what enemy remains (alive_totals_by_coalition, ground categories), nearest threat or bandit if any, then fuel and weapons in a few words. Two or three sentences.
-- Mission kill totals come from my_kills_this_mission (cumulative for the whole mission, every row is one kill) or the memory section; recent_* lists are short windows, never totals.
-- Names: say "bridge" for MOST/BRIDGE scenery codes, never read internal codes or numeric weapon ids aloud.
-- my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it.
-- ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words.
-- ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
+- A confirmed kill stays confirmed even when inferred is true. Only confidence likely, or a recent_kills_and_losses row "no longer showing, likely destroyed", is "likely destroyed".
+- "Mission status" / "status" / "how are we doing" = a short OVERVIEW, not only contacts: kills so far (count from my_kills_this_mission), what enemy remains (alive_totals_by_coalition, ground categories), nearest threat or bandit if any, then fuel and weapons in a few words. Two or three sentences. Mission kill totals come from my_kills_this_mission (cumulative for the whole mission, every row is one kill) or the memory section; recent_* lists are short windows, never totals.
+- Names: say "bridge" for MOST/BRIDGE scenery codes.
+- my_shots: result pending = weapon still flying or not known yet, hit = hit but no kill reported, kill = target destroyed, likely kill = target stopped showing long after the shot, miss = no hit within the window. weapon is the weapon used (from the shot event or the loadout change). intended_target is a guess (DCS does not report the locked target); say "looks like" if you rely on it. Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
+- ownship.loadout is what Prometheus has left: weapons by type with counts plus gun_rounds. If loadout is not available, say so with the reason in a few words. Fuel state: ownship.fuel is the fuel answer: total_lb in pounds (approximate when its source says so), else internal_pct percent; known false = "fuel unknown". Never report zero pounds unless total_lb is 0.
 - Damage / "I'm hit": ownship.damage hit events and getLife/getLife0 drops are primary evidence. Read the damage call. Cockpit warning lights, engine RPM changes and fuel-loss trend are secondary clues only. No warnings NEVER means no damage; acknowledge the pilot even if telemetry is unavailable. A fuel loss trend alone is not proof of a leak.
 - data_health.combat_events not "ok" = kills may be unconfirmed; mention it only when asked about kills.
 - Bearings are magnetic when the picture says so, otherwise true; do not mention it unless asked.
-- cockpit is live data from Prometheus' own aircraft (DCS Export.lua, about five times a second): config (gear, flaps, speedbrake, hook), flight (indicated airspeed, ground speed, altitude above ground, G, angle of attack), payload by station, rwr threats, locked_target and warning_lights. Prefer it over other fields when cockpit.fresh is true. If the cockpit is not available or not fresh and the question needs it, say "no cockpit data" in a few words.
+- cockpit is live aircraft data: config, flight, payload, rwr, locked_target and warning_lights. Prefer it when cockpit.fresh is true; if unavailable or stale and needed for the question, say "no cockpit data". Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
 - RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. missile_scan not on: say missile tracking is limited and why."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
-- Fuel state: ownship.fuel (total_lb pounds, else internal_pct percent).
-- Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
-- If the picture has rwr_alert_to_announce, START the answer with it, before anything else, e.g. "Prometheus, Athena, spike, SA-11 at your three o'clock." Then answer the question.
+- The controller speaks rwr_alert_to_announce and splash_to_announce BEFORE your text. Do NOT mention these alerts at all: no repetition, paraphrase or contradiction.
 
 How to talk:
-- Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups.
-- If ownship is null you have no position for Prometheus, so nothing that needs a range or bearing from him can be answered; alive totals and kills are still fine.
-- Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges.
+- Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups. Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
+- Give contacts only when asked (picture, threats, bogey dope, "any ...", mission status) or when a hostile aircraft or SAM is within twenty miles that you have not called in the last exchanges. Air threats first (nearest and hot first), then SAMs, then ground.
 - Range tiers: ground targets only within TWENTY miles (ground_targets_within_20nm; if empty say "no ground targets within twenty miles"); an air picture or bogey dope is the three closest bandits WITHIN FIFTY miles (read the picture_top3 calls verbatim, every call whole, nothing added between them); if none inside fifty, give air_picture_empty_call (nearest bandit out to one hundred fifty miles). "Long range picture" = picture_long_range_top3. Never append extra-group counts. Never cut a call mid-way: if the answer must be shorter, leave out whole calls from the end.
 - Traffic means AIRCRAFT, including helicopters, unless explicitly asked for ground/vehicles. Blue/friendly traffic comes from air_traffic, never friendly ground groups. For ATC use the selected airbase's traffic field, including aircraft on runways/taxiways within two miles and arriving/departing aircraft within five miles. The field itself is not traffic.
 - Never say "overhead" unless that contact has overhead_allowed true (within three nautical miles). Nineteen miles is NOT overhead.
@@ -55,15 +59,11 @@ How to talk:
   Air picture: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
   Close bandit or traffic: "Bandit MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level."
   Ground: "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock."
-- Weapons: "what do I have left" = the loadout counts by weapon plus gun rounds. "What did I use on that target" / "what killed that" = the weapon from my_shots or my_kills_this_mission.
-- If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" only when it says so).
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
-- Air threats first (nearest and hot first), then SAMs, then ground.
 - No markdown, no lists, no parentheses, no abbreviations with periods. Write numbers so a text-to-speech voice reads them well.
-- Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
 - Follow-up questions refer to the previous exchanges.
 - Development notes: the pilot is also the developer of Athena. ONLY when a "DEV NOTE" system hint is present (explicit phrasing such as "feature request", "note for development", "bug report", "Athena should be able to ...", "add a feature"), reply briefly "Prometheus, Athena, copy, noted for development: <one-line restatement>." Without that hint it is a normal radio call: kill reports ("target destroyed", "splash", "armor dead") and chat ("switching missions") are acknowledged normally, never noted for development.
-- Basic ATC: for takeoff, landing or approach requests at an airfield, check the picture for aircraft near that field (within about five miles and below about five thousand feet) and say "no traffic" or call the traffic with the same BRAA + clock format. Athena never clears or approves anything: no clearance, runway, wind or altimeter. A friendly airfield (nearest friendly, land, RTB) comes ONLY from airbases.nearest_friendly: its call line, else "no friendly airfield showing".
+- Basic ATC: Athena never clears or approves anything: no clearance, runway, wind or altimeter. Use the selected airfield traffic (within five miles and below five thousand feet): "no traffic" or BRAA + clock. A friendly airfield comes ONLY from airbases.nearest_friendly: its call line, else "no friendly airfield showing".
 """
 
 SENTENCE_END = re.compile(r"(?<!\d)[.!?](?=\s|$)")
@@ -83,6 +83,31 @@ assert MAX_REPLY_CHARS <= MAX_SPEECH_CHARS
 EXCHANGE_DEADLINE_S = 10.0
 MIN_MODEL_S = 2.0  # less than this left (the request waited behind another one): no model call, say again
 FALLBACK = "Prometheus, Athena, say again."
+# Missing-data/link statements become false after connecting or spawning (11-11 preflight).
+STALE_CHAT = re.compile(r"unknown|unavailable|not available|not connected|disconnected|"
+                        r"no (?:connected )?picture|no cockpit|don['’]t (?:have|know)|do not (?:have|know)|"
+                        r"no position|not (?:showing )?in an aircraft|last known picture|say again|ask again for|"
+                        r"no (?:fuel|loadout|position|friendly airfield|friendly aircraft).{0,40}(?:data|reading|showing)", re.I)
+REPEAT_ASK = re.compile(r"^\W*(?:athena[ ,]+)?(?:say again(?: your last)?|repeat(?: your last)?|say that again|say your last again|repeat last)[.!? ]*$", re.I)
+
+
+def sentences(text):
+    return [s.strip() for s in re.split(r"(?<=[.!?;])\s+", text or "") if s.strip()]
+
+
+def factual_history(answer):
+    """Keep useful sentences, not missing-data caveats; legitimate negatives remain."""
+    body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer or "", flags=re.I)
+    kept, removed = [], False
+    for sentence in sentences(body):
+        identity = re.match(r"unknown aircraft,? bearing\b", sentence, re.I)
+        stale = bool(STALE_CHAT.search(sentence)) and not identity
+        dependent = removed and re.match(r"(?:it\b|that\b|turn\b.*\bit\b)", sentence, re.I)
+        if not stale and not dependent:
+            kept.append(sentence)
+        removed = stale
+    return ADDRESS + " ".join(kept) if kept else ""
+
 
 # Question focus (round 3): a one-line hint telling the model which picture section answers the question.
 FOCUS_RULES = (
@@ -930,7 +955,7 @@ PARROT_KEY = re.compile(r"(?<![\w-])[a-z][a-z0-9]*(?:_[a-z0-9]+)+(?![\w-])")
 
 
 def parroted(text):
-    return bool(re.search(r"no[ _-]position[ _-]call", text, re.I) or PARROT_KEY.search(text))
+    return bool(re.search(r"no[ _-]position[ _-]call|\bownship\b|\bjson\b", text, re.I) or PARROT_KEY.search(text))
 
 
 def clean(text):
@@ -1081,6 +1106,103 @@ def _missile_name(kind):
     kind = str(kind or "").strip()
     m = re.match(r"SA-?(\d+)", kind, re.I)
     return "SA-%s" % m.group(1) if m else (kind or "missile")
+UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+                                    "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if w != "_"}
+NUMWORD = re.compile(r"\b(?:%s|hundred|thousand|niner|and)(?:[\s-]+(?:%s|hundred|thousand|niner|and))*\b" % (
+    "|".join(list(UNITS) + list(TENS)), "|".join(list(UNITS) + list(TENS))), re.I)
+
+
+def _parse_run(toks):
+    """One run of number words -> list of numbers. A run of single digits is a digit string (bearing); otherwise
+    a new number starts when a word cannot continue the current one ('thirty nine forty six' = 39, 46)."""
+    if len(toks) >= 2 and all(t in UNITS and UNITS[t] < 10 for t in toks):
+        return [int("".join(str(UNITS[t]) for t in toks))]
+    out, total, cur, last = [], 0, 0, None
+    for t in toks:
+        starts_new = last is not None and (
+            (t in TENS and (cur % 100) != 0) or
+            (t in UNITS and last in UNITS) or
+            (t in UNITS and UNITS[t] >= 10 and last in TENS))
+        if starts_new:
+            out.append(total + cur)
+            total, cur = 0, 0
+        if t in UNITS:
+            cur += UNITS[t]
+        elif t in TENS:
+            cur += TENS[t]
+        elif t == "hundred":
+            cur = (cur or 1) * 100
+        elif t == "thousand":
+            total += (cur or 1) * 1000
+            cur = 0
+        last = t
+    out.append(total + cur)
+    return out
+
+
+def words_to_numbers(text):
+    """Spoken numbers in a reply: 'three four eight' -> 348 (digit run), 'two thousand five hundred eighty' -> 2580."""
+    found = []
+    for m in NUMWORD.finditer(text):
+        toks = [("nine" if t == "niner" else t) for t in re.split(r"[\s-]+", m.group(0).lower()) if t]
+        runs, run = [], []
+        for i, t in enumerate(toks):  # 'and' joins only after hundred/thousand ('one hundred and five')
+            if t == "and":
+                if run and run[-1] in ("hundred", "thousand"):
+                    continue
+                runs.append(run)
+                run = []
+                continue
+            run.append(t)
+        runs.append(run)
+        for r in runs:
+            if r:
+                found.extend(_parse_run(r))
+    for m in re.finditer(r"(?<![\w-])(\d[\d,]*(?:\.\d+)?)(?![\w-])", text):
+        try:
+            found.append(float(m.group(1).replace(",", "")))
+        except ValueError:
+            pass
+    return found
+
+
+def announcement_echo(sentence, alerts, pic):
+    """Only suppress a named event the controller actually admitted to speech."""
+
+    def normal(text):
+        text = re.sub(r"[^a-z0-9 ]", " ", text.lower())
+        text = NUMWORD.sub(lambda m: " ".join(map(str, words_to_numbers(m.group()))), text)
+        return " ".join(re.sub(r"\b(?:a|an|the)\b", " ", text).split())
+
+    text = normal(sentence)
+    for alert in alerts:
+        call = normal(alert)
+        if text == call:
+            return True
+        if call.startswith("splash ") and re.search(r"\b(?:splash|destroyed|kills?)\b", text):
+            target = re.match(r"splash \d+ (.+)", call)
+            if target and target[1] not in ("unknown", "target", "unit"):
+                if re.search(r"\b" + re.escape(target[1]) + r"\b", text):
+                    return True
+        elif not call.startswith("splash ") and re.search(r"\b(?:radar|tracking|launch|sees you)\b", text):
+            # Only the designation before the alert's action/geometry is a name.
+            header = re.split(r"\b(?:radar|could|is|tracking|sees|your|at)\b", call, maxsplit=1)[0]
+            names = set(re.findall(r"\b[a-z]+ \d+\b", header))
+            for row in (pic.get("threats") or {}).get("sam_in_range") or []:
+                if normal(row.get("sam", "")) not in names:
+                    continue
+                raw = row.get("type", "")
+                names.update((normal(raw), normal(spoken_name(raw))))
+                # Eye's row supplies the family, e.g. S_75M_Volhov / SA-2.
+                family = re.match(r"([a-z]+)[_ -]*(\d+)", raw.lower())
+                if family:
+                    names.add(family[1] + " " + family[2])
+            if any(name and re.search(r"\b" + re.escape(name) + r"\b", text) for name in names):
+                return True
+    return False
+
+
 class SimpleController:
     # RadioServer: hold concurrent transmissions for this controller (answered in turn) instead of 503.
     queues = True
@@ -1094,6 +1216,8 @@ class SimpleController:
         self._path = "/" + base_url.split("//", 1)[1].split("/", 1)[1].rstrip("/") + "/chat/completions"
         self.timeout = timeout
         self.history = deque(maxlen=8)
+        self._chat_state = None
+        self._last_delivered = None  # actual/assumed-sent speech, independent of reasoning history
         self.speaker = speaker
         self._llm = llm or self.ask
         self._turn = threading.Lock()  # one exchange at a time; later arrivals wait their turn
@@ -1624,10 +1748,12 @@ class SimpleController:
         and leaves the chat history. No record (no gateway, other transcript dir) = assumed delivered."""
         last, self._last_exchange = self._last_exchange, None
         outcome_of = getattr(self.transcript, "outcome_of", None)
-        if not last or outcome_of is None:
+        if not last:
             return
-        outcome = outcome_of(last["id"])
+        outcome = outcome_of(last["id"]) if outcome_of is not None else None
         if outcome is None or outcome == "sent":
+            if last.get("delivery"):
+                self._last_delivered = last["delivery"]
             return
         if last["keys"]:
             self._rearm(last["keys"])
@@ -1646,12 +1772,33 @@ class SimpleController:
         marker = getattr(self.eye, "reset_at", None)
         if self._mission is not None and marker != self._mission:
             self.history.clear()
+            self._chat_state = None
+            self._last_delivered = None
             self._confirmed_kills = []
             self._reported_missiles = {}
             self._last_launch_reply = 0.0
             self._last_exchange = None
             self._log(request, "route", route="reset", outcome="new_mission_controller_memory_cleared")
         self._mission = marker
+
+    def _check_chat(self, request, pic):
+        """Only dialogue is invalidated on first session, reconnection or a new pilot unit.
+
+        The first GetSessionId is not an Eye reset and mission_start may precede the
+        event subscription (11-11 18:26). Never depend on that event for chat safety.
+        """
+        own = pic.get("ownship") or {}
+        old = self._chat_state
+        unit, changed = pilot_identity(own, old[2] if old else None)
+        state = (getattr(self.eye, "session_id", None), pic.get("connected", pic.get("available")),
+                 unit, getattr(self.eye, "chat_generation", None))
+        old = self._chat_state
+        if old is not None and (state[0] != old[0] or (state[1] and not old[1]) or
+                                changed or state[3] != old[3]):
+            self.history.clear()
+            self._last_delivered = None
+            self._log(request, "route", route="reset", outcome="chat_context_cleared")
+        self._chat_state = state
 
     def _answer(self, request, text, arrived=None):
         start = time.monotonic() if arrived is None else arrived
@@ -1679,7 +1826,8 @@ class SimpleController:
                 self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
                           trimmed=True, route="debrief")
             keys = self._mark_said(marks, answer)
-            self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": None, "history": None}
+            self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": None, "history": None,
+                                   "delivery": (text, answer, time.monotonic())}
             if memory is not None:
                 memory.publish("radio_call", {"request": text, "reply": answer, "report_status": "queued" if queued else "unavailable"},
                                generation=generation)
@@ -1693,6 +1841,16 @@ class SimpleController:
             except Exception:  # noqa: BLE001 - never block the answer on bookkeeping
                 report = None
         pic, error = self._picture_with_retry()
+        self._check_chat(request, pic)
+        repeat_answer = None
+        if REPEAT_ASK.fullmatch(text):
+            last = self._last_delivered
+            if last and time.monotonic() - last[2] <= 120 and not re.search(r"say again", last[1], re.I):
+                repeat_answer = last[1]
+            elif last:
+                text = last[0]  # re-answer the original question from this fresh picture
+            else:
+                repeat_answer = FALLBACK
         pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
         klass = call_class(text, pic, [q for q, _ in list(self.history)[-3:]])
         if klass is None and time.time() - self._last_launch_reply <= 90 and LAUNCH_FOLLOWUP.search(text):
@@ -1713,7 +1871,9 @@ class SimpleController:
         stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
         if age is not None and age > 60:
             stale.append("Contact data is %s seconds old." % words(age))
-        if klass == "launch" and pic.get("ownship"):
+        if repeat_answer is not None:
+            calls = [re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", repeat_answer, flags=re.I)]
+        elif klass == "launch" and pic.get("ownship"):
             calls = self.launch_calls(text, pic)
         elif klass == "kill_confirm" and pic.get("ownship") and "my_kills_this_mission" in pic:
             # the real room: a close bandit call goes first and takes its share (grouped kill wording then)
@@ -1827,19 +1987,48 @@ class SimpleController:
                 self._log(request, "controller_error", outcome="clearance_removed", route=route, llm=meta)
             if parroted(answer):  # never speak a key name / "no position call": fixed sentence or say again
                 meta["fallback_reason"] = "parroted_picture_text"
-                route, answer = ("fixed", ADDRESS + NO_POSITION) if not pic.get("ownship") else ("fallback", FALLBACK)
+                route, answer = "fallback", (ADDRESS + NO_POSITION if not pic.get("ownship") else FALLBACK)
                 self._log(request, "controller_error", outcome="parroted_picture_text", route=route, llm=meta)
-            if answer:  # the model was given the splash / RWR calls to say first: marked only if it said them
-                for field, keys in (("splash_to_announce", splash_keys), ("rwr_alert_to_announce", rwr_keys)):
-                    for alert, key in zip(pic.get(field) or [], keys or []):
-                        marks.append((key, _alert_needle(alert, field)))
-            else:
+            if not answer:
                 route, answer = "fallback", FALLBACK
                 meta.setdefault("fallback_reason", "empty answer")
                 self._log(request, "controller_error", outcome=meta["fallback_reason"], route=route,
                           llm=meta, timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
-            # a close bandit goes first; fit_reply trims the model's tail to make room
-            answer = self._with_close_bandits(answer, close_bandits, marks, MAX_SPEECH_CHARS)
+        if calls is None:
+            # Same priority as fixed routes: close bandit, pending threats, splash,
+            # then the model's answer. Reserve the deferral before admitting alerts;
+            # never let final fitting cut a controller-owned call in half.
+            lead = [row["call"] for row in (close_bandits or [])[:1]]
+            for row in (close_bandits or [])[:1]:
+                marks.append((row["key"], row["call"]))
+            pending = []
+            for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
+                pending.extend(_alert_rows(pic.get(field), keys, field))
+            body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer, flags=re.I)
+            tail = sentences(body)
+            defer = DEFER.get(klass, ASK_REST)
+            alerts = []
+            for alert, key in pending:
+                if alert in lead + alerts:
+                    if key:
+                        marks.append((key, alert))
+                    continue
+                if len(prefix + " ".join(lead + alerts + [alert, defer])) <= MAX_REPLY_CHARS:
+                    alerts.append(alert)
+                    if key:
+                        marks.append((key, alert))
+            first = lead + alerts
+            if first:
+                tail = [s for s in tail if not announcement_echo(s, first, pic)]
+                room = MAX_REPLY_CHARS - len(prefix + " ".join(first)) - 1
+                if len(" ".join(tail)) > room:
+                    kept = []
+                    for sentence in tail:
+                        if len(" ".join(kept + [sentence, defer])) > room:
+                            break
+                        kept.append(sentence)
+                    tail, trimmed = kept + [defer], True
+            answer = (prefix if first else ADDRESS) + " ".join(first + tail)
         answer, net_trimmed = fit_marked(answer, test)  # fixed replies already carry it; model / fallback get it here
         trimmed = trimmed or net_trimmed
         if trimmed:
@@ -1851,11 +2040,14 @@ class SimpleController:
         self._pending_ack = None
         keys = self._mark_said(marks, answer)
         said = None
-        if route != "fallback":  # a "say again" is never chat history
-            said = (text, answer)
+        factual = factual_history(answer)
+        if factual:  # only the final spoken factual sentences, including repaired answers
+            said = (text, factual)
             self.history.append(said)
         self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": kills, "history": said,
-                               "missiles": self._launch_undo}
+                               "missiles": self._launch_undo,
+                               "delivery": (self._last_delivered[0] if repeat_answer is not None and self._last_delivered else text,
+                                            answer, time.monotonic())}
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
             memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"},
                            generation=pic.get("_memory_generation") if isinstance(pic, dict) else None)

@@ -43,6 +43,7 @@ class AttackAckTests(unittest.TestCase):
                         spoken, _, stub, _, _ = answer(deepcopy(pic), ask, Stub(answer=rep))
                         self.assertNotRegex(spoken, r"Creech|Nellis|traffic")
                         if stub.calls:  # "running in, ..." is a fixed intent acknowledgement
+                            # Names and unrelated numbers are deliberately not checked.
                             self.assertEqual(spoken, rep)
 
 
@@ -114,7 +115,8 @@ class AtcTests(unittest.TestCase):
                     self.assertEqual(spoken, FALLBACK)
                 blocked += spoken == FALLBACK
         self.assertGreaterEqual(blocked, len(EVASIONS) - len(NON_ATC_OK))
-        # a threat sentence survives; only the clearance sentence goes
+        # a grounded threat sentence survives; only the clearance sentence goes
+        pic["threats"] = {"sam_in_range": [{"call": "SAM SA-2 tracking you, your twelve o'clock."}]}
         rep = ADDRESS + "SAM SA-2 tracking you, your twelve o'clock. The active is two seven."
         self.assertEqual(answer(deepcopy(pic), "Athena, any threats?", Stub(answer=rep))[0],
                          ADDRESS + "SAM SA-2 tracking you, your twelve o'clock.")
@@ -124,7 +126,9 @@ class AtcTests(unittest.TestCase):
         for text in LEGIT:
             for ask in ("Athena, radio check", "Athena, any threats near Creech?", "Athena, on final to the target, any SAMs?"):
                 with self.subTest(text=text, ask=ask):
-                    self.assertEqual(answer(deepcopy(pic), ask, Stub(answer=ADDRESS + text))[0], ADDRESS + text)
+                    # Model facts are not checked; existing clearance/key guards remain.
+                    expected = ADDRESS + text
+                    self.assertEqual(answer(deepcopy(pic), ask, Stub(answer=ADDRESS + text))[0], expected)
 
     def test_athena_never_clears_weapons(self):
         pic = quiet("19:01:46")

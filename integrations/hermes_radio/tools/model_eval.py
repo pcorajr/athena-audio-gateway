@@ -597,67 +597,8 @@ def cmd_run(args):
 
 
 # ------------------------------------------------------------------ scorer (mechanical) + reply check
-UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
-                                    "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
-TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if w != "_"}
-NUMWORD = re.compile(r"\b(?:%s|hundred|thousand|niner|and)(?:[\s-]+(?:%s|hundred|thousand|niner|and))*\b" % (
-    "|".join(list(UNITS) + list(TENS)), "|".join(list(UNITS) + list(TENS))), re.I)
-
-
-def _parse_run(toks):
-    """One run of number words -> list of numbers. A run of single digits is a digit string (bearing); otherwise
-    a new number starts when a word cannot continue the current one ('thirty nine forty six' = 39, 46)."""
-    if len(toks) >= 2 and all(t in UNITS and UNITS[t] < 10 for t in toks):
-        return [int("".join(str(UNITS[t]) for t in toks))]
-    out, total, cur, last = [], 0, 0, None
-    for t in toks:
-        starts_new = last is not None and (
-            (t in TENS and (cur % 100) != 0) or
-            (t in UNITS and last in UNITS) or
-            (t in UNITS and UNITS[t] >= 10 and last in TENS))
-        if starts_new:
-            out.append(total + cur)
-            total, cur = 0, 0
-        if t in UNITS:
-            cur += UNITS[t]
-        elif t in TENS:
-            cur += TENS[t]
-        elif t == "hundred":
-            cur = (cur or 1) * 100
-        elif t == "thousand":
-            total += (cur or 1) * 1000
-            cur = 0
-        last = t
-    out.append(total + cur)
-    return out
-
-
-def words_to_numbers(text):
-    """Spoken numbers in a reply: 'three four eight' -> 348 (digit run), 'two thousand five hundred eighty' -> 2580."""
-    found = []
-    for m in NUMWORD.finditer(text):
-        toks = [("nine" if t == "niner" else t) for t in re.split(r"[\s-]+", m.group(0).lower()) if t]
-        runs, run = [], []
-        for i, t in enumerate(toks):  # 'and' joins only after hundred/thousand ('one hundred and five')
-            if t == "and":
-                if run and run[-1] in ("hundred", "thousand"):
-                    continue
-                runs.append(run)
-                run = []
-                continue
-            run.append(t)
-        runs.append(run)
-        for r in runs:
-            if r:
-                found.extend(_parse_run(r))
-    for m in re.finditer(r"(?<![\w-])(\d[\d,]*(?:\.\d+)?)(?![\w-])", text):
-        try:
-            found.append(float(m.group(1).replace(",", "")))
-        except ValueError:
-            pass
-    return found
-
-
+# Shared pure number parsing; historical scoring tolerances below are unchanged.
+words_to_numbers = sc.words_to_numbers
 def picture_numbers(pic):
     nums = set()
 
@@ -680,6 +621,10 @@ def picture_numbers(pic):
                 walk(x)
     walk(pic)
     return nums
+
+
+
+
 
 
 INVENT = re.compile(r"\b(cleared (to land|for (take ?off|landing|the approach))|runway \w+|winds?\b|altimeter|qnh|"

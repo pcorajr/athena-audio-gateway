@@ -209,16 +209,16 @@ class SamWarningTests(unittest.TestCase):
 
 
 class MissionMemoryTests(unittest.TestCase):
-    def test_new_mission_clears_history_reconnect_keeps_it(self):
+    def test_first_session_clears_chat_partial_stream_reconnect_keeps_it(self):
         r = Replay()
         feeder = GrpcFeeder(r.eye, "fixture.invalid")
         session = lambda sid: SimpleNamespace(GetSessionId=lambda *a, **k: SimpleNamespace(session_id=sid))  # noqa: E731
         c = controller(r.eye, Stub())
         say(c, RADIO, "m-1")
-        feeder._check_session(session(111))  # DCS connects after the radio is up: first session id, same mission
+        feeder._check_session(session(111))  # first DCS connection invalidates preflight dialogue
         r.advance(r.clock.t + 1)
         say(c, RADIO, "m-2")
-        self.assertEqual(len(c.history), 2)
+        self.assertEqual(len(c.history), 1)
         # reconnect: the unit stream drops and resubscribes; units are re-sent; the sweep runs; same session id
         r.eye.set_connected(False, "UNAVAILABLE", stream="units_ground")
         r.advance(r.clock.t + 3)
@@ -231,8 +231,8 @@ class MissionMemoryTests(unittest.TestCase):
         self.assertIsNotNone(r.eye.last_sweep)
         feeder._check_session(session(111))
         say(c, RADIO, "m-3")
-        self.assertEqual(len(c.history), 3)
-        self.assertFalse(any(rec.get("route") == "reset" for rec in c.transcript.records))
+        self.assertEqual(len(c.history), 2)
+        self.assertEqual(sum(rec.get("outcome") == "chat_context_cleared" for rec in c.transcript.records), 1)
         # new mission: mission_start event (no Memory attached), then a new DCS session id
         r.advance(r.clock.t + 1)
         r.eye.on_event({"time": 0.0, "mission_start": {}})
@@ -244,7 +244,8 @@ class MissionMemoryTests(unittest.TestCase):
             feeder._check_session(session(222))
         say(c, RADIO, "m-6")
         self.assertEqual(len(c.history), 1)
-        self.assertEqual(sum(1 for rec in c.transcript.records if rec.get("route") == "reset"), 2)
+        self.assertEqual(sum(1 for rec in c.transcript.records
+                             if rec.get("outcome") == "new_mission_controller_memory_cleared"), 2)
 
 
 class KillReportTests(unittest.TestCase):

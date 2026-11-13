@@ -84,6 +84,9 @@ class Radio7ReviewTests(unittest.TestCase):
         self.assertIsNone(call_class("Athena, mission status", {"last_attack_age_s": None}))
         pic = base()
         pic["picture_top3"] = ["Bandit MiG-15bis, bearing three four zero, forty four miles, angels twenty three."]
+        pic["my_kills_this_mission"] = [{"target": "T-55", "confidence": "confirmed"}] * 9
+        pic["alive_totals_by_coalition"] = {"red": {"armor": 7}}
+        pic["ownship"]["fuel"] = {"total_lb": 7000}
         overview = "Prometheus, Athena, nine kills so far, seven enemy armor remain, fuel seven thousand pounds."
         eye = FakeEye(pic)
         c = SimpleController(None, FakeTranscript(), model="fixture", api_key="unused", eye=eye,

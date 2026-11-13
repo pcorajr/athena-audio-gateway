@@ -28,6 +28,9 @@ type mvpRoute struct {
 	// radio is the configured channel the pilot transmitted on. The reply is
 	// bound to it: it goes out on this channel and nowhere else.
 	radio types.Radio
+	// Unsolicited speech requires current peer radio metadata; prompted replies
+	// retain the packet-authorized tolerance for lagging peer metadata.
+	unprompted bool
 	// Content-free packet admission reason for observed non-command audio.
 	rejection string
 }
@@ -330,6 +333,14 @@ func (c *Client) mvpRejectionLocked(t Transmission) string {
 	// transmitted on (bound into the route at reception).
 	if !c.mvpConfiguredRadio(t.Radio) || !exactMVPRadio(t.Radio, t.route.radio) {
 		return "radio_channel_mismatch"
+	}
+	if t.route.unprompted {
+		for _, radio := range c.clients[identity.guid].RadioInfo.Radios {
+			if exactMVPRadio(t.Radio, radio) {
+				return ""
+			}
+		}
+		return "radio_pilot_channel_mismatch"
 	}
 	return ""
 }

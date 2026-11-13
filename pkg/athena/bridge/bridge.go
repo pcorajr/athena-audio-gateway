@@ -123,7 +123,8 @@ type Response struct {
 	// TestPilot optionally says the TEST stand-in aircraft is the pilot for this
 	// reply (the adapter already spoke the marker). The gateway only uses it to
 	// mark its own "say again" the same way. Deliverable frames only.
-	TestPilot bool `json:"test_pilot,omitempty"`
+	TestPilot bool   `json:"test_pilot,omitempty"`
+	Priority  string `json:"priority,omitempty"`
 }
 
 // MaxModelChars bounds the optional Response.Model label.
@@ -132,8 +133,11 @@ const MaxModelChars = 64
 // validLabels checks the optional route/model labels of a reply frame.
 func (r Response) validLabels() bool {
 	switch r.Route {
-	case "", "fixed", "llm", "debrief", "fallback":
+	case "", "fixed", "llm", "debrief", "fallback", "unprompted":
 	default:
+		return false
+	}
+	if r.Priority != "" && (!r.Deliverable || (r.Priority != "normal" && r.Priority != "threat" && r.Priority != "launch")) {
 		return false
 	}
 	return utf8.RuneCountInString(r.Model) <= MaxModelChars && strings.IndexFunc(r.Model, unicode.IsControl) < 0 &&

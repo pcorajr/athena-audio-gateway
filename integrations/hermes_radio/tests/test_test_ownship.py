@@ -176,7 +176,8 @@ class NoPositionReplyTests(unittest.TestCase):
                 llm = Stub(answer="Prometheus, Athena, no hostile air groups within fifty miles.")
                 c, _ = controller(LIVE["picture"], llm)
                 frames, _ = say(c, text)
-                self.assertEqual(frames[0]["speech"], self.SAID)
+                expected = self.SAID.replace("Athena, ", "Athena, no tower: I can't give clearances. ") if "request landing" in text else self.SAID
+                self.assertEqual(frames[0]["speech"], expected)
                 self.assertEqual(replies(c)[0]["route"], "fixed")
                 self.assertEqual(llm.calls, 0)
 

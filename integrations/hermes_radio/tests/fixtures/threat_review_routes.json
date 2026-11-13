@@ -1,0 +1,398 @@
+[
+  {
+    "text": "The SAM is not dormant.",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "The SAM is not quiet.",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "The SAM does not look dead.",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "The SAM isn't silent; it just shot at me.",
+    "group": "A2",
+    "call_class": "launch",
+    "route": "llm"
+  },
+  {
+    "text": "I'm not going in closer to the SAM.",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "I'm not pressing on that SAM.",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "Don't let me run in on that SAM.",
+    "group": "A2",
+    "call_class": "intent",
+    "route": "fixed"
+  },
+  {
+    "text": "Is the SA-13 quiet?",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "Was the SAM quiet before I arrived?",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "I am turning away, not closing on the SAM.",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "Roger, going in to land.",
+    "group": "A2",
+    "call_class": "atc",
+    "route": "fixed"
+  },
+  {
+    "text": "Roger, headed towards the tanker.",
+    "group": "A2",
+    "call_class": "ack",
+    "route": "llm"
+  },
+  {
+    "text": "Do you recommend going in?",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "I'm low on fuel, should I be going in?",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "Before going in, what's the weather?",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "The SA-13 is dead, but I'm going in on the trucks.",
+    "group": "A2",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "Why is that friendly aircraft smoking?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Is the friendly aircraft damaged?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "What weapons does the friendly aircraft carry?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "What type of radar does that friendly aircraft have?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Can the friendly aircraft refuel me?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Tell the friendly aircraft to hold position.",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Do not call the friendly aircraft again.",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Is the friendly aircraft declaring an emergency?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Was that friendly aircraft shot down?",
+    "group": "A4",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What is that friendly aircraft attacking?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Can I join up with the friendly aircraft?",
+    "group": "A4",
+    "call_class": "traffic",
+    "route": "fixed"
+  },
+  {
+    "text": "Why did the friendly aircraft shoot at me?",
+    "group": "A4",
+    "call_class": "friendlies_near",
+    "route": "llm"
+  },
+  {
+    "text": "What heading should I fly to the tanker?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What heading should I fly home?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What altitude should I maintain?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "How fast should I fly on final?",
+    "group": "A7",
+    "call_class": "ack",
+    "route": "llm"
+  },
+  {
+    "text": "What is the tanker's heading?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's my wingman's speed?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's my recommended approach speed?",
+    "group": "A7",
+    "call_class": "atc",
+    "route": "fixed"
+  },
+  {
+    "text": "What is my stall speed?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's the optimum altitude for this mission?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "How high is the terrain ahead?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's the bogey's altitude?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "At what altitude is the tanker?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What is the safe ejection speed?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's the maximum speed for gear extension?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's the wind speed?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's the missile's speed?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What altitude should I climb to avoid that SA-13?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What heading gets me away from that missile?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "Check my heading bug setting.",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "Report the helicopter's altitude.",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What speed does the SA-13 missile reach?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What altitude is the cloud base?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What heading is the runway?",
+    "group": "A7",
+    "call_class": "atc",
+    "route": "fixed"
+  },
+  {
+    "text": "What's the bandit's heading?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What is the enemy's speed?",
+    "group": "A7",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What's the friendly target's altitude?",
+    "group": "A7",
+    "call_class": "friendlies_near",
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft am I intercepting?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft are we attacking?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft am I chasing?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What jet am I refuelling from?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft are we escorting?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft am I supposed to join?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What am I flying towards?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What are we flying over?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft is my wingman flying?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft is that tanker?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  },
+  {
+    "text": "What aircraft shot at me?",
+    "group": "A8",
+    "call_class": "launch",
+    "route": "llm"
+  },
+  {
+    "text": "What airplane just landed?",
+    "group": "A8",
+    "call_class": null,
+    "route": "llm"
+  }
+]

@@ -53,7 +53,7 @@ class ThreatsFirstTests(unittest.TestCase):
     def test_the_field_answer_is_deferred_not_the_missiles(self):
         spoken = answer(launch_picture(True, 4), "Athena, request landing at Creech")[0]
         self.assertEqual(spoken, ADDRESS + BANDIT["call"] + " Missile launch, SA-2, your three o'clock, thirteen miles. "
-                         "Missile launch, SA-2, your three o'clock, fifteen miles. Ask again for the field.")
+                         "Missile launch, SA-2, your three o'clock, fifteen miles. no tower: I can't give clearances. Ask again for the rest.")
         spoken = answer(launch_picture(True, 0), "Athena, vectors to Nelli's Air Force Base")[0]
         self.assertTrue(spoken.endswith("fifteen miles. Ask again for the vector.") or "Nellis, bearing" in spoken)
 
@@ -134,7 +134,7 @@ class FieldTrafficTests(unittest.TestCase):
                "field_range_nm": 0.6}
         creech["traffic"] = {"count": 2, "aircraft": [{"call": FRIENDLY, "side": "friendly"}, mig]}
         spoken = answer(pic, "Athena, requesting permission to land")[0]
-        self.assertEqual(spoken, "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. "
+        self.assertEqual(spoken, "Prometheus, Athena, no tower: I can't give clearances. Creech, bearing zero six nine, five miles, at your three o'clock. "
                                  "Bandit MiG-21Bis, zero six eight, six miles, angels one, three o'clock low, one mile "
                                  "from Creech. Other traffic, one aircraft. Ask again for the rest.")
         creech["traffic"] = {"count": 1, "aircraft": [mig]}
@@ -296,7 +296,7 @@ class ClearanceGuardTests(unittest.TestCase):
                 self.assertFalse(clearance_in(text))
                 self.assertEqual(strip_clearance(text), text)
 
-    def test_an_atc_ask_gets_the_fixed_field_answer_and_others_lose_the_sentence(self):
+    def test_atc_is_fixed_but_other_model_sentences_are_unfiltered(self):
         pic = live("19:01:46")
         pic.pop("rwr_alert_to_announce", None)
         fixed = ("Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic. "
@@ -315,7 +315,7 @@ class ClearanceGuardTests(unittest.TestCase):
                            ("Prometheus, Athena, radio check, loud and clear, good to go.",
                             "Prometheus, Athena, radio check, loud and clear, good to go.")):
             with self.subTest(said=said):
-                self.assertEqual(answer(deepcopy(pic), "Athena, radio check", Stub(answer=said))[0], want)
+                self.assertEqual(answer(deepcopy(pic), "Athena, radio check", Stub(answer=said))[0], said)
 
 
 class MinorTests(unittest.TestCase):

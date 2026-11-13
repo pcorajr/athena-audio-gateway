@@ -133,7 +133,7 @@ class PictureTests(unittest.TestCase):
         sam = group(pic, "SA-11 Buk SR 9S18M1")
         self.assertEqual(sam["count"], 2)
         self.assertEqual(sam["category"], "SAM")
-        self.assertEqual(sam["label"], "SAM site")
+        self.assertEqual(sam["label"], "SA-11 site")
         self.assertEqual(sam["clock"], "3 o'clock, right")
         self.assertNotIn("alt_ft", sam)
 

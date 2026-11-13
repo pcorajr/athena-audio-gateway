@@ -140,7 +140,7 @@ class MissileTests(TypeInfoIsolation):
         eye.on_cockpit_packet(f4e_packet())
         eye.on_weapons([])
         eye.on_event(self.shot(4294967295))
-        self.assertEqual(list(eye.threat_alerts), [])  # scan on: the scan raises the one alert
+        self.assertEqual(len(eye.threat_alerts), 1)  # v15: immediate shot alert; scan inherits its key
         clock.t += 3
         eye.on_weapons([])  # the scan never saw it (out of its sphere)
         eye.tick()
@@ -172,7 +172,7 @@ class MissileTests(TypeInfoIsolation):
         row = pic["threats"]["missiles_in_flight"][0]
         self.assertEqual((row["from"], row["scan"]), ("shot event", "no live scan (Eval off)"))
         self.assertEqual(len(eye.threat_alerts), 1)  # the only source: it alerts
-        self.assertEqual(pic["rwr_alert_to_announce"], ["Missile launch, SA-2, your twelve o'clock, ten miles."])
+        self.assertEqual(pic["rwr_alert_to_announce"], ["Missile launch, SA-11, your twelve o'clock, ten miles."])
         clock.t += eye_mod.EVAL_OFF_KEEP_S + 1
         eye.tick()
         pic = eye.picture()

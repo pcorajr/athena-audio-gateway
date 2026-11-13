@@ -27,7 +27,7 @@ REQUEST_KEYS = frozenset({
 })
 STATES = frozenset({"ok", "stale", "degraded", "unavailable", "ownship_ambiguous"})
 INTENT_CLASSES = frozenset({"factual", "cue", "action_preview", "unrecognized"})
-ROUTES = frozenset({"fixed", "llm", "debrief", "fallback"})  # optional response label (phase 1)
+ROUTES = frozenset({"fixed", "llm", "debrief", "fallback", "unprompted"})
 MAX_MODEL_CHARS = 64
 _UNSAFE = frozenset({"Cc", "Cf", "Cs", "Co", "Zl", "Zp"})
 _UTC = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|\+00:00)\Z")
@@ -132,7 +132,7 @@ def parse_request(raw, *, speaker="Prometheus"):
 
 
 def response(request, *, speech="", state="unavailable", reason="", intent="factual", route=None, model=None,
-             test_pilot=None):
+             test_pilot=None, priority=None):
     value = {"transmission_id": request.transmission_id, "deliverable": bool(speech),
              "speech": speech, "intent_class": intent, "state": state}
     if not speech:
@@ -143,12 +143,16 @@ def response(request, *, speech="", state="unavailable", reason="", intent="fact
             value["model"] = model
         if test_pilot is not None:  # only while the TEST stand-in setting is configured
             value["test_pilot"] = bool(test_pilot)
+        if priority is not None:
+            value["priority"] = priority
     return value
 
 
 def encode_response(value):
     required = {"transmission_id", "deliverable", "speech", "intent_class", "state"}
-    if type(value) is not dict or not required <= set(value) <= required | {"suppression_reason", "route", "model", "test_pilot"}:
+    if type(value) is not dict or not required <= set(value) <= required | {"suppression_reason", "route", "model", "test_pilot", "priority"}:
+        raise ContractError()
+    if 'priority' in value and (value['priority'] not in ('normal', 'threat', 'launch') or not value.get('deliverable')):
         raise ContractError()
     if "test_pilot" in value and (value["test_pilot"] is not True and value["test_pilot"] is not False or
                                   value.get("deliverable") is not True):

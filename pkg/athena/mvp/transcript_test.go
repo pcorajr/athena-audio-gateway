@@ -83,7 +83,7 @@ func TestTranscriptBeforeAdmissionAndSTTFailure(t *testing.T) {
 	}
 }
 
-func TestBusyReceptionQueuedAndAnsweredInOrder(t *testing.T) {
+func TestBusyReceptionSupersedesIdenticalQueuedAsk(t *testing.T) {
 	r, tr, radio, _ := runnerFixture(t)
 	r.Transcript = &transcript.Writer{Root: t.TempDir()}
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
@@ -125,14 +125,17 @@ func TestBusyReceptionQueuedAndAnsweredInOrder(t *testing.T) {
 	close(release)
 	close(in)
 	<-done
-	if radio.sends != 3 {
+	if radio.sends != 2 {
 		t.Fatalf("queued commands not answered: sends=%d", radio.sends)
 	}
-	if strings.Join(order, ",") != "synthetic-1,busy-second,busy-third" {
+	if strings.Join(order, ",") != "synthetic-1,busy-third" {
 		t.Fatalf("answer order %v", order)
 	}
-	inbound, queued := 0, 0
+	inbound, queued, superseded := 0, 0, 0
 	for _, record := range records(t, r.Transcript.Root) {
+		if record.ID == "busy-second" && record.Outcome == "superseded" {
+			superseded++
+		}
 		if record.Kind == "inbound" {
 			inbound++
 		}
@@ -140,7 +143,7 @@ func TestBusyReceptionQueuedAndAnsweredInOrder(t *testing.T) {
 			queued++
 		}
 	}
-	if inbound != 3 || queued != 2 {
+	if inbound != 3 || queued != 2 || superseded != 1 {
 		t.Fatalf("inbound=%d queued=%d", inbound, queued)
 	}
 }

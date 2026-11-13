@@ -60,7 +60,7 @@ class MissileScanHonestyTests(unittest.TestCase):
         eye.on_event(hostile_shot())
         pic = eye.picture()
         self.assertEqual(pic["threats"]["missile_scan"], "off: missile scan is not answering")
-        self.assertIn("Missile launch, SA9M38M1", pic["rwr_alert_to_announce"][0])
+        self.assertIn("Missile launch, SA-11", pic["rwr_alert_to_announce"][0])
         said = ask(eye)
         self.assertIn("in the air", said)
         self.assertNotIn("No launch seen", said)

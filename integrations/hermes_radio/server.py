@@ -8,6 +8,8 @@ import threading
 
 
 from .contract import ContractError, MAX_BODY_BYTES, encode_response, parse_request, response, safe_text
+from .unprompted import Unprompted, control_request
+from types import SimpleNamespace
 
 
 class RadioServer(ThreadingMixIn, HTTPServer):
@@ -24,6 +26,8 @@ class RadioServer(ThreadingMixIn, HTTPServer):
             raise ValueError("invalid_request_timeout")
         safe_text(speaker)
         self.adapter, self.request_timeout, self.speaker = adapter, request_timeout, speaker
+        self.threats = Unprompted(adapter) if hasattr(adapter, '_turn') and getattr(adapter, 'eye', None) else None
+        adapter._wire_priority = True
         self._active = threading.Lock()
         self._owner_lock = threading.Lock()
         self._owner = None
@@ -113,7 +117,9 @@ class RadioHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.close_connection = True
-        if self.path != "/radio/v1/exchange":
+        actions = {'/radio/v1/heard': 'heard', '/radio/v1/unprompted': 'poll', '/radio/v1/delivery': 'delivery'}
+        action = actions.get(self.path)
+        if self.path != "/radio/v1/exchange" and (not action or self.server.threats is None):
             self.send_error(404)
             return
         lengths = self.headers.get_all("Content-Length", [])
@@ -133,6 +139,29 @@ class RadioHandler(BaseHTTPRequestHandler):
             if len(raw) != size or self._expired.is_set():
                 self.send_error(400)
                 return
+            if action:
+                if action == 'heard':
+                    request = parse_request(raw, speaker=self.server.speaker)
+                    valid = self.server.threats.remember(request)
+                    wire = response(request, reason='accepted' if valid else 'rejected')
+                else:
+                    data = control_request(raw, action)
+                    request = SimpleNamespace(transmission_id=data['transmission_id'])
+                    if action == 'poll':
+                        wire = self.server.threats.poll(data['transmission_id'], data['reply_to'])
+                        wire = wire or response(request, reason='no_pending_call')
+                    else:
+                        valid = self.server.threats.receipt(data['transmission_id'], data['outcome'])
+                        wire = response(request, reason='accepted' if valid else 'rejected')
+                self._stop_timer()
+                wire = encode_response(wire)
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(wire)))
+                self.send_header('X-Athena-Protocol', '15')
+                self.end_headers()
+                self.wfile.write(wire)
+                return
             request = parse_request(raw, speaker=self.server.speaker)
             self._stop_timer()
             if self._expired.is_set():
@@ -142,6 +171,7 @@ class RadioHandler(BaseHTTPRequestHandler):
             if self.headers.get("Accept") == "application/x-ndjson":
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
+                self.send_header('X-Athena-Protocol', '15')
                 self.send_header("Connection", "close")
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
@@ -170,6 +200,7 @@ class RadioHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(wire)))
             self.send_header("Connection", "close")
+            self.send_header('X-Athena-Protocol', '15')
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(wire)

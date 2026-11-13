@@ -90,7 +90,15 @@ func (w *Writer) Append(r Record) error {
 			return c
 		}, s)
 	}
-	txt := fmt.Sprintf("%s %.3f %s %s [%s %s %s %s part=%d] %s\n", r.Time.Format(time.RFC3339Nano), float64(r.FrequencyHz)/1000000, line(r.Modulation), line(r.Speaker), line(r.Kind), line(r.ID), line(r.Route), line(r.Outcome), r.Part, line(r.Text))
+	timings := ""
+	if len(r.Timings) > 0 {
+		rawTimings, err := json.Marshal(r.Timings)
+		if err != nil {
+			return errors.New("transcript_encoding_failed")
+		}
+		timings = " timings_ms=" + string(rawTimings)
+	}
+	txt := fmt.Sprintf("%s %.3f %s %s [%s %s %s %s part=%d%s] %s\n", r.Time.Format(time.RFC3339Nano), float64(r.FrequencyHz)/1000000, line(r.Modulation), line(r.Speaker), line(r.Kind), line(r.ID), line(r.Route), line(r.Outcome), r.Part, timings, line(r.Text))
 	for _, item := range []struct {
 		suffix string
 		data   []byte

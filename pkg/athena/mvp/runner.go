@@ -5,7 +5,7 @@ package mvp
 import (
 	"context"
 	"strings"
-
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -46,6 +46,10 @@ func LogTiming(t Timing) {
 // admission: in Run, busy arrivals are queued and answered in order; the
 // synchronous Process API still answers only one exchange at a time.
 type Runner struct {
+	Unprompted         bool
+	activeThreat       atomic.Bool
+	lastMu             sync.RWMutex
+	lastRadio          simpleradio.Transmission
 	Gate               *admission.Gate
 	Bridge             bridge.Client
 	Radio              Radio
@@ -95,13 +99,22 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 		return
 	}
 	r.lastTransmissionID = t.TraceID
+	var speech string // Private transcript only, never the content-free timing log.
 	timing := Timing{TransmissionID: t.TraceID, Received: 0, STTDone: -1, ReplyReceived: -1, TTSDone: -1, FirstSend: -1, LastSend: -1, Outcome: "bridge_no_response"}
 	defer func() {
+		if context.Cause(ctx) == errLaunchInterrupt {
+			timing.Outcome = "interrupted"
+		}
 		route, model := exchangeRoute(timing), timing.Model
 		if route != timing.Route && timing.Route != "" {
 			model = "" // a gateway fallback: the adapter's words were not spoken
 		}
-		r.log(t, transcript.Record{Kind: "exchange_outcome", Outcome: timing.Outcome, Route: route, Model: model, Timings: map[string]int64{"stt_done": timing.STTDone, "reply_received": timing.ReplyReceived, "tts_done": timing.TTSDone, "first_send": timing.FirstSend, "last_send": timing.LastSend}})
+		r.log(t, transcript.Record{Kind: "exchange_outcome", Text: speech, Outcome: timing.Outcome, Route: route, Model: model, Timings: map[string]int64{"stt_done": timing.STTDone, "reply_received": timing.ReplyReceived, "tts_done": timing.TTSDone, "first_send": timing.FirstSend, "last_send": timing.LastSend}})
+		outcome := "failed"
+		if timing.Outcome == "sent" || timing.Outcome == "interrupted" {
+			outcome = timing.Outcome
+		}
+		r.receipt(t.TraceID, outcome)
 		if r.Record != nil {
 			r.Record(timing)
 		} else {
@@ -156,7 +169,7 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 	}
 	req := bridge.Request{TransmissionID: t.TraceID, Transcript: text, Speaker: t.ClientName, FrequencyHz: uint64(t.Radio.Frequency), Modulation: modulation, ReceivedAt: t.ReceivedAt.UTC(), TranscribedAt: time.Now().UTC()}
 	if streaming, ok := r.Bridge.(bridge.StreamClient); ok {
-		r.streamReply(ctx, workCtx, t, req, expires, valid, streaming, &timing)
+		r.streamReply(ctx, workCtx, t, req, expires, valid, streaming, &timing, &speech)
 		return
 	}
 	resp, err := r.Bridge.Exchange(workCtx, req)
@@ -174,7 +187,9 @@ func (r *Runner) replyAt(ctx context.Context, t simpleradio.Transmission, text, 
 		timing.Outcome = "suppressed"
 		return
 	}
+	speech = resp.Speech
 	timing.Route, timing.Model = frameRoute(resp), resp.Model
+	r.activeThreat.Store(resp.Priority != "normal")
 	r.recordFrame(t, "reply_intended", resp, "generated", 1, map[string]int64{"reply_received": timing.ReplyReceived})
 	audio, err := r.Synthesize(workCtx, resp.Speech)
 	timing.TTSDone = time.Since(t.ReceivedAt).Milliseconds()

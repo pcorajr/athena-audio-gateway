@@ -94,49 +94,45 @@ class AtcTests(unittest.TestCase):
                     spoken, reply, _, _, _ = answer(deepcopy(pic), ask, stub)
                     self.assertEqual(stub.calls, 0)
                     self.assertEqual(reply["route"], "fixed")
-                    self.assertTrue(spoken.startswith(ADDRESS + "Creech, bearing zero six nine, five miles"), spoken)
+                    disclaimer = "no tower: I can't give clearances. "
+                    self.assertTrue(spoken.replace(disclaimer, "").startswith(ADDRESS + "Creech, bearing zero six nine, five miles"), spoken)
                     self.assertIn("No traffic.", spoken)
                     info = bool(re.search(r"runway|wind|altimeter", ask, re.I))
                     self.assertEqual(spoken.endswith("I have no runway, wind or altimeter data."), info, spoken)
-                    self.assertNotRegex(spoken.lower(), r"clear|approv|discretion|granted|yours")
+                    self.assertNotRegex(spoken.replace(disclaimer, "").lower(), r"clear|approv|discretion|granted|yours")
 
     def test_landing_gear_and_lights_are_no_atc_ask(self):
         for text in ("Athena, landing gear damaged", "Athena, I think my landing gear is damaged", "Athena, landing light on"):
             self.assertNotEqual(call_class(text, deepcopy(NEVADA)), "atc", text)
 
-    def test_every_evasion_is_dropped_from_a_non_atc_reply_and_never_replaced_by_a_field(self):
+    def test_non_atc_model_reply_is_not_sentence_filtered(self):
         pic = quiet("19:01:46")
-        blocked = 0
         for ev in EVASIONS:
             with self.subTest(ev=ev):
                 spoken = answer(deepcopy(pic), "Athena, radio check", Stub(answer=ADDRESS + ev))[0]
-                self.assertNotIn("Creech, bearing", spoken)
-                if ev not in NON_ATC_OK:
-                    self.assertEqual(spoken, FALLBACK)
-                blocked += spoken == FALLBACK
-        self.assertGreaterEqual(blocked, len(EVASIONS) - len(NON_ATC_OK))
-        # a grounded threat sentence survives; only the clearance sentence goes
+                self.assertEqual(spoken, ADDRESS + ev)
+        # Both sentences survive: controller-owned ATC routes remain separate.
         pic["threats"] = {"sam_in_range": [{"call": "SAM SA-2 tracking you, your twelve o'clock."}]}
         rep = ADDRESS + "SAM SA-2 tracking you, your twelve o'clock. The active is two seven."
         self.assertEqual(answer(deepcopy(pic), "Athena, any threats?", Stub(answer=rep))[0],
-                         ADDRESS + "SAM SA-2 tracking you, your twelve o'clock.")
+                         rep)
 
     def test_legitimate_replies_pass_unchanged(self):
         pic = quiet("19:01:46")
         for text in LEGIT:
             for ask in ("Athena, radio check", "Athena, any threats near Creech?", "Athena, on final to the target, any SAMs?"):
                 with self.subTest(text=text, ask=ask):
-                    # Model facts are not checked; existing clearance/key guards remain.
+                    # Model sentences are not fact checked or filtered.
                     expected = ADDRESS + text
                     self.assertEqual(answer(deepcopy(pic), ask, Stub(answer=ADDRESS + text))[0], expected)
 
-    def test_athena_never_clears_weapons(self):
+    def test_model_weapons_sentences_are_not_filtered(self):
         pic = quiet("19:01:46")
         for text in ("cleared hot.", "you're cleared hot.", "clear to engage.", "you're cleared to engage.",
                      "weapons free.", "cleared hot, no friendlies."):
             with self.subTest(text=text):
                 self.assertEqual(answer(deepcopy(pic), "Athena, in hot, am I clear?", Stub(answer=ADDRESS + text))[0],
-                                 FALLBACK)
+                                 ADDRESS + text)
 
 
 FRIENDLY_GROUND = {"side": "friendly", "domain": "ground", "range_nm": 1.2, "category": "armor",

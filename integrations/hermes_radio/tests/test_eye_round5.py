@@ -95,7 +95,8 @@ class TrafficTests(unittest.TestCase):
         self.assertEqual(messages, [])  # flight 11-11: a takeoff request is a fixed answer, the field and its traffic
         self.assertIn("Ramat David, bearing", said)
         self.assertIn("Traffic, four aircraft. Friendly F-16C", said)
-        self.assertNotIn("clear", said.lower())
+        self.assertIn("no tower: I can't give clearances.", said)
+        self.assertNotRegex(said.lower(), r"cleared (to|for)")
         tool = next(r for r in log.records if r["kind"] == "tool")
         self.assertEqual(tool["result"]["picture"]["airbases"]["nearest"][0]["traffic"]["count"], 4)
 
@@ -254,7 +255,7 @@ class DamageTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(call_class(text), "damage")
                 speech, _, _ = exchange(eye, text, "No damage showing.")
-                self.assertIn("You took damage, life down to seventy percent", speech)
+                self.assertIn("You're hit, airframe at seventy percent", speech)
 
     def test_weapon_initiator_hit_logged_without_cockpit_warnings(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -289,7 +290,7 @@ class DamageTests(unittest.TestCase):
             self.assertEqual(damage["life_age_s"], 3)
             self.assertEqual(len([r for r in store_rows(tmp) if r["kind"] == "own_damage"]), 2)
             speech, _, _ = exchange(eye, "damage report")
-            self.assertIn("You took damage, life down to sixty percent", speech)
+            self.assertIn("You're hit, airframe at sixty percent", speech)
 
     def test_zero_life_is_valid_missing_nan_or_bad_max_is_not(self):
         eye, _ = make_eye()

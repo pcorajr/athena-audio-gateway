@@ -2,6 +2,7 @@ package mvp
 
 import (
 	"context"
+	"errors"
 	"github.com/dharmab/skyeye/pkg/athena/bridge"
 	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/simpleradio"
@@ -15,18 +16,14 @@ import (
 // that arrives while a reply is in flight is queued and answered next, never
 // dropped (Athena Eye, 2026-11-07). Its expiry clock starts when its turn comes.
 func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmission) {
-	type job struct {
-		t             simpleradio.Transmission
-		text, outcome string
-		ready         time.Time
-	}
 	jobs := make(chan simpleradio.Transmission, 16)
-	answers := make(chan job, 16)
+	answers := make(chan replyJob, 16)
 	var worker, replier sync.WaitGroup
 	worker.Go(func() {
 		defer close(answers)
 		for t := range jobs {
 			text, outcome := r.observe(ctx, t)
+			r.rememberRoute(ctx, t, text, outcome)
 			if ctx.Err() != nil {
 				continue
 			}
@@ -34,21 +31,14 @@ func (r *Runner) runCapture(ctx context.Context, in <-chan simpleradio.Transmiss
 				r.record(t, "route", "", "queued_behind_reply", "pending", 0, nil)
 			}
 			select {
-			case answers <- job{t: t, text: text, outcome: outcome, ready: time.Now()}:
+			case answers <- replyJob{t: t, text: text, outcome: outcome, ready: time.Now()}:
 			default:
 				r.record(t, "route", "", "reply_queue_full", "ignored", 0, nil)
 			}
 		}
 	})
 	replier.Go(func() {
-		for j := range answers {
-			if ctx.Err() != nil {
-				continue
-			}
-			r.busy.Store(true)
-			r.replyAt(ctx, j.t, j.text, j.outcome, j.t.ReceivedAt.Add(time.Since(j.ready)))
-			r.busy.Store(false)
-		}
+		r.schedule(ctx, answers)
 	})
 	defer func() { close(jobs); worker.Wait(); replier.Wait() }()
 	defer func() {
@@ -108,7 +98,7 @@ func (r *Runner) log(t simpleradio.Transmission, rec transcript.Record) {
 		rec.Modulation = "FM"
 	}
 	rec.Speaker = t.ClientName
-	if rec.Kind == "reply_intended" || rec.Kind == "delivery" {
+	if rec.Kind == "reply_intended" || rec.Kind == "delivery" || strings.HasPrefix(rec.Kind, "unprompted_") {
 		rec.Speaker = "Athena"
 	}
 	rec.ID, rec.FrequencyHz = t.TraceID, uint64(t.Radio.Frequency)
@@ -182,6 +172,9 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 	if err != nil {
 		r.record(t, "stream_error", "", "bridge_or_delivery_failed", "LLM", len(parts), nil)
 		timing.Outcome = "bridge_failed"
+		if errors.Is(err, bridge.ErrInvalidResponse) {
+			return
+		} // incompatible wire contract fails SILENT
 		r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing)
 		return
 	}
@@ -191,6 +184,11 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 		return
 	}
 	timing.Route, timing.Model = frameRoute(parts[0]), parts[0].Model
+	protected := false
+	for _, part := range parts {
+		protected = protected || part.Priority != "normal"
+	}
+	r.activeThreat.Store(protected)
 	r.noteTestPilot(parts[0])
 	for i, resp := range parts {
 		r.recordFrame(t, "reply_intended", resp, "generated", i+1, map[string]int64{"reply_received": timing.ReplyReceived})

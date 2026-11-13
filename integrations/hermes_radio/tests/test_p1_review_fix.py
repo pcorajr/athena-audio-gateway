@@ -125,7 +125,7 @@ class LaunchWithoutScanTests(Isolated):
         eye.on_weapons([])  # the scan answered: 'on'
         clock.t += 0.5
         eye.on_event(self.shot(4294967001))
-        self.assertEqual(launch_alerts(eye), [])  # the scan is expected to see it first
+        self.assertEqual(len(launch_alerts(eye)), 1)  # v15: do not wait for the scan to warn
         for _ in range(3):
             clock.t += 1
             eye.tick()
@@ -189,7 +189,8 @@ class LaunchWithoutScanTests(Isolated):
         eye.on_weapons([])  # a scan after the shot ran and did not see it
         clock.t += 2
         eye.tick()
-        self.assertEqual(launch_alerts(eye), [])
+        self.assertEqual(len(launch_alerts(eye)), 1)  # historical immediate alert remains in the audit
+        self.assertFalse([a for a in eye.picture().get("rwr_alert_to_announce", []) if a.startswith("Missile launch")])
         self.assertEqual(eye.picture()["threats"]["missiles_in_flight"], [])
         self.assertEqual(eye.missile_shots, {})
 
@@ -230,8 +231,8 @@ class LaunchWithoutScanTests(Isolated):
             eye.tick()
             heard += [(s, c) for c in self.heard_calls(eye)]
         self.assertEqual(len(launch_alerts(eye)), 2, launch_alerts(eye))
-        self.assertEqual(len(heard), 2, heard)  # A from its shot event, B (the live missile) from the scan
-        self.assertGreaterEqual(heard[1][0], 12)
+        self.assertEqual(len(heard), 2, heard)  # both immediate shot alerts, no second scan call
+        self.assertEqual(heard[1][0], 9)
 
     def test_matching_prefers_the_shot_whose_flight_time_fits(self):
         """Two shot rows from the same group: the scan row goes to the one whose distance flown fits its age."""

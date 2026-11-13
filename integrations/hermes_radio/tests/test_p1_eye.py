@@ -140,7 +140,7 @@ class MissileTests(TypeInfoIsolation):
         eye.on_cockpit_packet(f4e_packet())
         eye.on_weapons([])
         eye.on_event(self.shot(4294967295))
-        self.assertEqual(list(eye.threat_alerts), [])  # scan on: the scan raises the one alert
+        self.assertEqual(len(eye.threat_alerts), 1)  # v15: immediate shot alert; scan inherits its key
         clock.t += 3
         eye.on_weapons([])  # the scan never saw it (out of its sphere)
         eye.tick()

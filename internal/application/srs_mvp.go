@@ -2,7 +2,9 @@ package application
 
 import (
 	"context"
+	"os"
 
+	"github.com/dharmab/skyeye/pkg/athena/bridge"
 	"github.com/dharmab/skyeye/pkg/athena/mvp"
 	"github.com/dharmab/skyeye/pkg/athena/transcript"
 	"github.com/dharmab/skyeye/pkg/pcm"
@@ -16,7 +18,11 @@ func (a *Application) runSRSMVP(ctx context.Context) {
 }
 
 func (a *Application) srsMVPRunner() *mvp.Runner {
+	if client, ok := a.hermesBridge.(*bridge.MVPClient); ok {
+		client.RequireProtocol15 = true
+	}
 	return &mvp.Runner{
+		Unprompted: os.Getenv("ATHENA_UNPROMPTED") != "off",
 		Transcript: transcript.Default(),
 		Gate:       a.admissionGate, Bridge: a.hermesBridge, Radio: a.srsClient,
 		MaxAge: a.athenaResponseMaxAge, MaxSpeech: a.athenaMaxSpeech,

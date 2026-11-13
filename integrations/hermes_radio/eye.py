@@ -1649,8 +1649,9 @@ class Eye:
                 "_launch": (src["lat"], src["lon"]), "_group": ini.get("group"), "_launcher": ini.get("name")}
         if not closing:
             return None  # flying away from Prometheus
-        if self._eval_scan_on(ev["t"]):
-            return None  # the scan normally sees it within a second; _prune_missiles alerts if it does not
+        # Reserve the alert key immediately; the scan inherits it when it merges
+        # the bridge. This permits fast unprompted delivery without a duplicate
+        # ordinary-reply bridge call while waiting for the first scan.
         return self._shot_alert(self.missile_shots[wid], ev["t"])
 
     def _shot_alert(self, b, now):
@@ -2030,6 +2031,9 @@ class Eye:
                 rows[wid] = dict({k: v for k, v in a.items() if not k.startswith("_")},
                                  age_s=int(now - a["first_seen"]),
                                  scan="not yet in the live scan" if scan else "no live scan (Eval off)")
+        for wid, row in rows.items():
+            original = self.missile_shots.get(wid) or self.missiles_near.get(wid) or {}
+            row['announced'] = original.get('_alert') in self.announced
         return sorted(rows.values(), key=lambda m: (not m.get("targeting_me"), m.get("range_nm") or 0))
 
     def _pending_threat_alerts(self, now, sams=None, flight=None):

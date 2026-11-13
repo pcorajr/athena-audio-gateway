@@ -65,9 +65,10 @@ func ValidateMVPEndpoint(endpoint string) error {
 // MVPClient explicitly selects the native bridge, independently of credentials.
 // It never retries, follows redirects or uses environment proxy settings.
 type MVPClient struct {
-	endpoint  string
-	http      *http.Client
-	maxSpeech int
+	RequireProtocol15 bool // production gateway fails silent against an incompatible adapter
+	endpoint          string
+	http              *http.Client
+	maxSpeech         int
 }
 
 // NewMVPClient constructs the explicit PTT-only native HTTP bridge.
@@ -112,6 +113,9 @@ func (c *MVPClient) Exchange(ctx context.Context, req Request) (Response, error)
 		return Response{}, fmt.Errorf("MVP bridge transport failed")
 	}
 	defer func() { _ = r.Body.Close() }()
+	if c.RequireProtocol15 && r.Header.Get("X-Athena-Protocol") != "15" {
+		return Response{}, ErrInvalidResponse
+	}
 	if r.StatusCode != http.StatusOK {
 		return Response{}, fmt.Errorf("MVP bridge status %d", r.StatusCode)
 	}
@@ -128,6 +132,9 @@ func (c *MVPClient) Exchange(ctx context.Context, req Request) (Response, error)
 	}
 	if err := resp.ValidateMVP(req.TransmissionID, c.maxSpeech); err != nil {
 		return Response{}, err
+	}
+	if c.RequireProtocol15 && resp.Deliverable && resp.Priority == "" {
+		return Response{}, ErrInvalidResponse
 	}
 	return resp, nil
 }
@@ -162,7 +169,7 @@ func validateMVPJSON(payload []byte) error {
 			if json.Unmarshal(value, &b) != nil {
 				return invalid()
 			}
-		case "transmission_id", "speech", "intent_class", "state", "suppression_reason", "route", "model":
+		case "transmission_id", "speech", "intent_class", "state", "suppression_reason", "route", "model", "priority":
 			var s string
 			if json.Unmarshal(value, &s) != nil || strings.ContainsRune(s, utf8.RuneError) {
 				return invalid()

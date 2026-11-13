@@ -3,6 +3,7 @@ package simpleradio
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -10,6 +11,21 @@ import (
 // 30 s at 16 kHz. Callers check it before speaking so they can say a short
 // fallback line instead of going silent.
 const MaxMVPReplySamples = 30 * 16000
+
+// UnpromptedMVP mints one new token from an admitted reception, never from
+// caller-supplied radio fields. Connection epoch, pilot identity and channel
+// are revalidated here and on every packet. The adapter fences DCS sessions.
+func (c *Client) UnpromptedMVP(last Transmission, id string) (Transmission, bool) {
+	c.clientsLock.RLock()
+	defer c.clientsLock.RUnlock()
+	if id == "" || !c.validMVPLocked(last) || c.mvpInterlockReason() != "" {
+		return Transmission{}, false
+	}
+	t := last
+	t.TraceID, t.ReceivedAt, t.Audio = id, time.Now(), nil
+	t.route.used = &atomic.Bool{}
+	return t, true
+}
 
 // BeginMVPReply consumes the reception token ONCE. The returned private sender
 // has a two-part lifetime and permanently closes on error. No new route token

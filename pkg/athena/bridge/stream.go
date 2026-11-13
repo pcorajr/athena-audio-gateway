@@ -41,6 +41,9 @@ func (c *MVPClient) ExchangeStream(ctx context.Context, req Request, emit func(R
 		return errors.New("stream_transport_failed")
 	}
 	defer reply.Body.Close()
+	if c.RequireProtocol15 && reply.Header.Get("X-Athena-Protocol") != "15" {
+		return ErrInvalidResponse
+	}
 	if reply.StatusCode != http.StatusOK || strings.Split(reply.Header.Get("Content-Type"), ";")[0] != "application/x-ndjson" {
 		return errors.New("stream_protocol_failed")
 	}
@@ -72,6 +75,9 @@ func (c *MVPClient) ExchangeStream(ctx context.Context, req Request, emit func(R
 			return ErrInvalidResponse
 		}
 		count++
+		if c.RequireProtocol15 && resp.Deliverable && resp.Priority == "" {
+			return ErrInvalidResponse
+		}
 		if resp.Deliverable && resp.Speech == previousSpeech {
 			return ErrInvalidResponse
 		}

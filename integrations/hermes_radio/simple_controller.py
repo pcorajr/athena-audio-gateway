@@ -1821,7 +1821,10 @@ class SimpleController:
         stand_in = None  # the flag is sent only while the TEST stand-in setting is configured
         if getattr(self.eye, "test_ownship", None):
             stand_in = answer[len(ADDRESS):].startswith(TEST_PILOT)  # the marker is on every stand-in reply
-        return response(request, speech=answer, state="ok", route=route, model=model, test_pilot=stand_in)
+        protected = getattr(self, '_current_threat', True) or bool(re.search(
+            r"\b(?:missile|launch|caution|SAM|SA-\d+|tracking you|you're down)\b", answer, re.I))
+        priority = ('threat' if protected else 'normal') if getattr(self, '_wire_priority', False) else None
+        return response(request, speech=answer, state="ok", route=route, model=model, test_pilot=stand_in, priority=priority)
 
     def _mark_said(self, marks, answer):
         """Splash / threat / close-bandit keys are announced only when their call is in the final, fitted
@@ -1843,7 +1846,7 @@ class SimpleController:
         if hasattr(self.eye, "unmark_announced"):
             self.eye.unmark_announced(keys)
 
-    def _settle_previous(self, request):
+    def _settle_previous(self, request, reported=None):
         """Phase 1, 'said only when delivered': the gateway is serial, so by the time the next request arrives it
         has written the previous exchange's outcome to the shared transcript. A reply that was not transmitted
         (say again, too long, expired) un-says its splash / threat / close-bandit calls and kill read-backs,
@@ -1852,7 +1855,7 @@ class SimpleController:
         outcome_of = getattr(self.transcript, "outcome_of", None)
         if not last:
             return
-        outcome = outcome_of(last["id"]) if outcome_of is not None else None
+        outcome = reported if reported is not None else outcome_of(last["id"]) if outcome_of is not None else None
         if outcome is None or outcome == "sent":
             if last.get("delivery"):
                 self._last_delivered = last["delivery"]
@@ -2021,6 +2024,7 @@ class SimpleController:
                 if site.get(field):
                     self._launch_covered[site[field]] = calls[0]
         route = "fixed" if calls is not None else "llm"
+        self._current_threat = bool(klass in ('launch', 'sam_caution', 'own_loss') or rwr_keys or close_bandits)
         result = {"summary": self.picture_summary(pic), "picture": pic,
                   "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""}
         if klass:
@@ -2152,7 +2156,7 @@ class SimpleController:
             # A current closing shot bridge can precede its scan-owned alert (20:34:31).
             # Speak its factual launch here, not a model rendition of its raw weapon ID.
             bridges = [m for m in (pic.get("threats") or {}).get("missiles_in_flight") or []
-                       if m.get("from") == "shot event" and m.get("closing") and m.get("call")]
+                       if m.get("from") == "shot event" and m.get("closing") and m.get("call") and not m.get('announced')]
             if any(a.lower().startswith("missile launch,") for a, _ in pending):
                 bridges = []  # existing launch batch already owns this turn (including its two-detail cap)
             for missile in bridges[:2]:

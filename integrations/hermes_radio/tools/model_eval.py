@@ -599,7 +599,32 @@ def cmd_run(args):
 # ------------------------------------------------------------------ scorer (mechanical) + reply check
 # Shared pure number parsing; historical scoring tolerances below are unchanged.
 words_to_numbers = sc.words_to_numbers
-picture_numbers = sc.picture_numbers
+def picture_numbers(pic):
+    nums = set()
+
+    def walk(v):
+        if isinstance(v, bool):
+            return
+        if isinstance(v, (int, float)):
+            for x in (v, round(v), int(v), int(v) + 1):
+                nums.add(float(x))
+        elif isinstance(v, str):
+            for n in words_to_numbers(v):
+                nums.add(float(n))
+            for m in re.finditer(r"\d+", v):
+                nums.add(float(m.group(0)))
+        elif isinstance(v, dict):
+            for x in v.values():
+                walk(x)
+        elif isinstance(v, list):
+            for x in v:
+                walk(x)
+    walk(pic)
+    return nums
+
+
+
+
 
 
 INVENT = re.compile(r"\b(cleared (to land|for (take ?off|landing|the approach))|runway \w+|winds?\b|altimeter|qnh|"

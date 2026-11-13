@@ -157,10 +157,11 @@ class SaidOnlyWhenSpokenTests(unittest.TestCase):
         return dict(LIVE["loadout_2035"], splash_to_announce=["Splash one Ural-375"], _splash_keys=["k-splash"],
                     rwr_alert_to_announce=["Spike, SA-2 at your six o'clock."], _rwr_keys=["k-rwr"])
 
-    def test_model_failure_keeps_alerts_pending(self):
+    def test_model_failure_still_speaks_controller_alerts(self):
         frames, _, _, eye = run(self.pic(), "Athena, how is it looking", RuntimeError("down"))
-        self.assertEqual(frames, [FALLBACK])
-        self.assertEqual(eye.announced, [])
+        self.assertIn("Spike, SA-2 at your six o'clock.", frames[0])
+        self.assertIn("Splash one Ural-375", frames[0])
+        self.assertEqual(sorted(eye.announced), ["k-rwr", "k-splash"])
 
     def test_model_answer_marks_alerts(self):
         _, _, _, eye = run(self.pic(), "Athena, how is it looking",
@@ -262,6 +263,8 @@ class ThreeBanditTests(unittest.TestCase):
         self.assertLessEqual(len(frames[0]), MAX_REPLY_CHARS)
         self.assertTrue(frames[0].startswith("Prometheus, Athena, " + BANDIT["call"]), frames[0])
         body = frames[0][len("Prometheus, Athena, " + BANDIT["call"]):].strip()
+        self.assertTrue(body.endswith("Ask again for the rest."))
+        body = body.removesuffix("Ask again for the rest.").strip()
         self.assertEqual(body, " ".join(LONG_THREE[:body.count("o'clock")]))  # whole calls only, never half
         self.assertIn(LONG_THREE[0], body)
         self.assertTrue(replies[0].get("trimmed"))
@@ -274,13 +277,13 @@ class MinorFixTests(unittest.TestCase):
         for text in ("Athena, tally", "tally.", "Athena tally"):
             self.assertEqual(call_class(text), "kill_confirm", text)
 
-    def test_model_reply_without_the_alerts_keeps_them_pending(self):
+    def test_model_reply_without_alerts_gets_controller_calls(self):
         pic = dict(LIVE["loadout_2035"], splash_to_announce=["Splash one Ural-375"], _splash_keys=["k-splash"],
                    rwr_alert_to_announce=["Spike, SA-2 at your six o'clock."], _rwr_keys=["k-rwr"])
         _, _, _, eye = run(pic, "Athena, how is it looking", "Prometheus, Athena, quiet out here.")
-        self.assertEqual(eye.announced, [])
+        self.assertEqual(sorted(eye.announced), ["k-rwr", "k-splash"])
         _, _, _, eye = run(pic, "Athena, how is it looking", "Prometheus, Athena, spike, SA-2 behind you.")
-        self.assertEqual(eye.announced, ["k-rwr"])
+        self.assertEqual(sorted(eye.announced), ["k-rwr", "k-splash"])
 
 
 

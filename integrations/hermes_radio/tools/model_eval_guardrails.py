@@ -10,6 +10,7 @@ Every Codex HTTP attempt and API fallback is counted BEFORE sending, including f
 import argparse
 import copy
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -73,6 +74,11 @@ def consume():
         json.dump({"calls": count + 1}, f); f.flush()
 
 
+def messages_hash(messages):
+    return hashlib.sha256(json.dumps(messages, ensure_ascii=True, sort_keys=True,
+                                    separators=(",", ":")).encode()).hexdigest()
+
+
 class Model:
     def __init__(self, ctl, stub=False):
         self.rows = []
@@ -98,6 +104,7 @@ class Model:
         else:
             text, meta = self.inner.answer_by(messages, deadline)
         self.rows.append({"raw_reply": text, "meta": meta, "model_s": round(time.monotonic()-start, 3),
+                          "messages_sha256": messages_hash(messages),
                           "prompt_chars": sum(len(m["content"]) for m in messages),
                           "history_sent": [m for m in messages if m["role"] == "assistant"]})
         return text, dict(meta)
@@ -113,9 +120,8 @@ class CachedModel:
         self.row, self.rows = row, []
 
     def answer_by(self, messages, deadline):
-        assert sum(len(m["content"]) for m in messages) == self.row["prompt_chars"], "prompt changed"
-        assert [m for m in messages if m["role"] == "assistant"] == self.row["history_sent"], "history changed"
-        fields = ("raw_reply", "meta", "model_s", "prompt_chars", "history_sent")
+        assert messages_hash(messages) == self.row["messages_sha256"], "ordered model messages changed"
+        fields = ("raw_reply", "meta", "model_s", "prompt_chars", "history_sent", "messages_sha256")
         self.rows.append({k: self.row[k] for k in fields})
         return self.row["raw_reply"], dict(self.row["meta"])
 
@@ -128,7 +134,14 @@ def controller(module, pic, stub=False):
 
 
 def exchange(ctl, item, variant, rep=0):
-    ctl.eye.pic = item["picture"]
+    ctl.eye.pic = copy.deepcopy(item["picture"])
+    # Transcripts omit private Eye event keys. Call text is NOT an identity:
+    # two different kills can have identical splash wording. Each recorded pending
+    # observation gets an exchange-local key; supplied real keys remain untouched.
+    for field, keys in (("splash_to_announce", "_splash_keys"), ("rwr_alert_to_announce", "_rwr_keys")):
+        if keys not in ctl.eye.pic:
+            ctl.eye.pic[keys] = ["%s|%s|%s" % (item.get("tid", item["id"]), field, n)
+                                 for n, _ in enumerate(ctl.eye.pic.get(field) or [])]
     before = len(ctl._llm.rows)
     log_before = len(ctl.transcript.records)
     req = study._request(item["ask"])
@@ -184,8 +197,9 @@ def main():
                     ctl = controller(module, item["picture"], stub=bool(cached) or args.stub_model)
                     if cached:
                         ctl._llm = CachedModel(cached[item["id"]])
-                    ctl.history.extend(tuple(h) for h in item.get("history", [])
-                                       if args.old or not new.STALE_CHAT.search(h[1]))
+                    ctl.history.extend((h[0], h[1] if args.old else new.factual_history(h[1]))
+                                       for h in item.get("history", [])
+                                       if args.old or new.factual_history(h[1]))
                     row = exchange(ctl, item, variant, rep)
                     if cached:
                         row["cached_input"] = args.cached_input

@@ -1,0 +1,28 @@
+{
+  "recorded": {
+    "count": 284,
+    "max_final_chars": 280,
+    "incremental_changed_replies": 6,
+    "preexisting_key_flags": 4,
+    "preexisting_clearance_flags": 5,
+    "median_ms": 0.0258890213444829,
+    "p95_ms": 0.09266519919037819,
+    "max_ms": 0.6237931083887815
+  },
+  "study": {
+    "count": 394,
+    "max_final_chars": 278,
+    "incremental_changed_replies": 25,
+    "preexisting_key_flags": 0,
+    "preexisting_clearance_flags": 11,
+    "median_ms": 0.03568350803107023,
+    "p95_ms": 0.08698995225131512,
+    "max_ms": 0.18912600353360176
+  },
+  "static_scan": {
+    "shell_injection": 0,
+    "unsafe_pickle": 0,
+    "embedded_secret": 0,
+    "dynamic_execution": 0
+  }
+}

@@ -1,0 +1,4037 @@
+{
+  "1834": {
+    "source": "Athena Eye (DCS-gRPC 10.90.10.113:50051)",
+    "connected": true,
+    "data_age_s": {
+      "units": 0.9,
+      "last_event": 6.6,
+      "airbases": 10.4,
+      "ownship": 0.9
+    },
+    "event_stream": {
+      "state": "live",
+      "last_event_age_s": 0.4,
+      "events_per_min": 62.4,
+      "events_total": 2046,
+      "units_age_s": 0.9,
+      "last_mission_event_age_s": 6.6,
+      "resubscribes": {
+        "reconnect:events": 1
+      },
+      "kinds_total": {
+        "simulation_fps": 1989,
+        "shot": 12,
+        "hit": 11,
+        "unit_lost": 8,
+        "dead": 8,
+        "birth": 5,
+        "weapon_add": 4,
+        "score": 4,
+        "kill": 4,
+        "player_enter_unit": 1
+      }
+    },
+    "data_health": {
+      "connected": true,
+      "streams": {
+        "events": "up",
+        "units-air": "up",
+        "units-ground": "up",
+        "units-helo": "down 2003s (units-helo: _InactiveRpcError StatusCode.UNAVAILABLE)",
+        "units-ship": "down 2003s (units-ship: _InactiveRpcError StatusCode.UNAVAILABLE)",
+        "world": "up"
+      },
+      "events": "live",
+      "combat_events": "ok",
+      "unit_sync": {
+        "category": "GROUP_CATEGORY_AIRPLANE",
+        "removed": 0,
+        "age_s": 1903.4
+      }
+    },
+    "theatre": "Nevada",
+    "bearings": "magnetic (declination -11.8 deg from DCS)",
+    "notes": [
+      "Every unit listed in contacts/totals is ALIVE as of data_age_s.",
+      "Kills, losses and deaths come ONLY from recent_kills_and_losses / my_shots / my_kills. A kill with confidence confirmed is a kill (say splash, no 'likely'); only confidence likely is 'likely'.",
+      "Mission totals come from kill_tallies / my_kills_this_mission, never recent lists. For fresh confirmations use my_kills_recent seq after your last confirmation cursor.",
+      "clock is relative to Prometheus' nose (12 = ahead).",
+      "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
+      "picture_top3 = the three closest hostile air groups within 50 nm, verbatim. No extra-group count.",
+      "Traffic means aircraft (including helos), not ground units. Use air_traffic and airbase traffic.",
+      "Never say overhead unless the contact has overhead_allowed true (within 3 nm).",
+      "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): config, flight, payload, warning_lights; rwr/locked_target only when cockpit.rwr.available is true (no module has exported them so far). Fuel: ownship.fuel."
+    ],
+    "ownship": {
+      "type": "F-4E-45MC",
+      "coalition": "blue",
+      "group": "Aerial-1 Mavs A's x4",
+      "player_name": "Prometheus",
+      "alt_ft": 10123,
+      "speed_kt": 547,
+      "heading_true": "202",
+      "fuel": {
+        "internal_pct": 30,
+        "total_lb": 3640,
+        "internal_lb": 3640,
+        "source": "cockpit fraction x DCS fuelMassMax for F-4E-45MC",
+        "estimated": false,
+        "spoken": "3,640 pounds"
+      },
+      "fuel_fraction": 0.3,
+      "loadout": {
+        "available": true,
+        "age_s": 0.2,
+        "weapons": [
+          {
+            "weapon": "chaff/flare pod",
+            "type": "chaff/flare pod",
+            "raw_weapon": "HB_ALE_40_30_60",
+            "raw_type": "HB_ALE_40_30_60",
+            "spoken_name": "chaff/flare pod",
+            "kind": "missile",
+            "count": 1
+          },
+          {
+            "weapon": "Pave Spike pod",
+            "type": "Pave Spike pod",
+            "raw_weapon": "HB_ORD_Pave_Spike_Fast",
+            "raw_type": "HB_ORD_Pave_Spike_Fast",
+            "spoken_name": "Pave Spike pod",
+            "kind": "missile",
+            "count": 1
+          }
+        ],
+        "gun_rounds": 639,
+        "source": "cockpit (Export.lua payload)"
+      },
+      "damage": {
+        "life_available": true,
+        "events": [],
+        "note": "No warnings does not mean no damage. Hit events and life drops are primary evidence.",
+        "life_percent": 100,
+        "life_age_s": 1.7,
+        "secondary": {
+          "warning_lights": [],
+          "engine": {
+            "rpm_pct": [
+              98.2,
+              98.4
+            ],
+            "note": "RPM changes are secondary clues, not proof of a hit.",
+            "rpm_change": [
+              -0.6,
+              -0.5
+            ],
+            "window_s": 57.4
+          },
+          "fuel_trend": {
+            "window_s": 57.4,
+            "loss_lb_per_min": 0.0,
+            "note": "Observed fuel loss (burn, leak or jettison), not a confirmed leak; engine fuel-flow telemetry unavailable."
+          }
+        }
+      },
+      "lat": 36.5443,
+      "lon": -115.4808,
+      "heading_mag": "213"
+    },
+    "contacts_within_nm": 150.0,
+    "hostile_groups": [
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "AAA",
+        "count": 3,
+        "types": {
+          "ZU-23 Emplacement Closed": 3
+        },
+        "spoken_types": {
+          "ZU-23": 3
+        },
+        "range_nm": 25.9,
+        "clock": "3 o'clock, right",
+        "bearing_mag": "297",
+        "label": "triple A",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Triple A, three contacts, bearing two nine seven, twenty six miles, ground target, three o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-13",
+          "Ground-14",
+          "Ground-15"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "armor",
+        "count": 6,
+        "types": {
+          "BTR-80": 4,
+          "T-90": 1,
+          "Grad_FDDM": 1
+        },
+        "spoken_types": {
+          "BTR-80": 4,
+          "T-90": 1,
+          "Grad FDDM": 1
+        },
+        "range_nm": 25.9,
+        "clock": "3 o'clock, right",
+        "bearing_mag": "297",
+        "label": "enemy armor",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Enemy armor, six contacts, bearing two nine seven, twenty six miles, ground target, three o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-11",
+          "Ground-12",
+          "Ground-16"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "AAA",
+        "count": 3,
+        "types": {
+          "ZU-23 Emplacement Closed": 3
+        },
+        "spoken_types": {
+          "ZU-23": 3
+        },
+        "range_nm": 27.0,
+        "clock": "3 o'clock, right",
+        "bearing_mag": "317",
+        "label": "triple A",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Triple A, three contacts, bearing three one seven, twenty seven miles, ground target, three o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-5",
+          "Ground-7",
+          "Ground-9"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "ground vehicle",
+        "count": 11,
+        "types": {
+          "ATZ-10": 4,
+          "ATMZ-5": 2,
+          "Ural-4320 APA-5D": 1,
+          "ZIL-131 KUNG": 2,
+          "Ural-4320T": 2
+        },
+        "spoken_types": {
+          "ATZ-10": 4,
+          "fuel truck": 2,
+          "Ural power truck": 1,
+          "ZIL-131 truck": 2,
+          "Ural truck": 2
+        },
+        "range_nm": 27.1,
+        "clock": "3 o'clock, right",
+        "bearing_mag": "317",
+        "label": "enemy ground vehicle",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Enemy ground vehicle, eleven contacts, bearing three one seven, twenty seven miles, ground target, three o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-1",
+          "Ground-2",
+          "Ground-3"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "SAM",
+        "count": 10,
+        "types": {
+          "SA-18 Igla comm": 2,
+          "S_75M_Volhov": 6,
+          "p-19 s-125 sr": 1,
+          "SNR_75V": 1
+        },
+        "spoken_types": {
+          "SA-18 command post": 2,
+          "SA-2": 6,
+          "P-19 radar": 1,
+          "SA-2 radar": 1
+        },
+        "range_nm": 27.1,
+        "clock": "3 o'clock, right",
+        "bearing_mag": "317",
+        "label": "SAM site",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "SAM site, ten contacts, bearing three one seven, twenty seven miles, ground target, three o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-10",
+          "Ground-6",
+          "Ground-8"
+        ]
+      }
+    ],
+    "friendly_groups": [
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "attack",
+        "count": 1,
+        "types": {
+          "A-10C": 1
+        },
+        "spoken_types": {
+          "A-10C": 1
+        },
+        "range_nm": 8.1,
+        "clock": "4 o'clock, behind right",
+        "bearing_mag": "336",
+        "alt_ft": 11900,
+        "angels": 12,
+        "vertical": "high",
+        "speed_kt": 349,
+        "heading_true": "171",
+        "aspect": "hot",
+        "closure_kt": 27,
+        "call": "Friendly A-10C, three three six, eight miles, angels twelve, four o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "R63 #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "attack",
+        "count": 1,
+        "types": {
+          "A-10C": 1
+        },
+        "spoken_types": {
+          "A-10C": 1
+        },
+        "range_nm": 15.8,
+        "clock": "4 o'clock, behind right",
+        "bearing_mag": "343",
+        "alt_ft": 8700,
+        "angels": 9,
+        "vertical": "low",
+        "speed_kt": 206,
+        "heading_true": "226",
+        "aspect": "beaming",
+        "closure_kt": -284,
+        "call": "Friendly A-10C, three four three, sixteen, angels nine, four o'clock low.",
+        "overhead_allowed": false,
+        "groups": [
+          "R63 #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 28.6,
+        "clock": "1 o'clock, ahead right",
+        "bearing_mag": "235",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 450,
+        "heading_true": "129",
+        "aspect": "beaming",
+        "closure_kt": 547,
+        "call": "Friendly IL-76MD, two three five, twenty nine, angels thirty three, one o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #003"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 43.8,
+        "clock": "8 o'clock, behind left",
+        "bearing_mag": "095",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 444,
+        "heading_true": "230",
+        "aspect": "flanking",
+        "closure_kt": 100,
+        "call": "Friendly IL-76MD, zero nine five, forty four, angels thirty three, eight o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #001"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 44.5,
+        "clock": "8 o'clock, behind left",
+        "bearing_mag": "080",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 444,
+        "heading_true": "238",
+        "aspect": "hot",
+        "closure_kt": 53,
+        "call": "Friendly IL-76MD, zero eight zero, forty four, angels thirty three, eight o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 54.6,
+        "clock": "11 o'clock, ahead left",
+        "bearing_mag": "196",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 452,
+        "heading_true": "064",
+        "aspect": "flanking",
+        "closure_kt": 746,
+        "call": "Friendly IL-76MD, one nine six, fifty five, angels thirty three, eleven o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #004"
+        ]
+      }
+    ],
+    "air_traffic": {
+      "blue": [
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "attack",
+          "count": 1,
+          "types": {
+            "A-10C": 1
+          },
+          "spoken_types": {
+            "A-10C": 1
+          },
+          "range_nm": 8.1,
+          "clock": "4 o'clock, behind right",
+          "bearing_mag": "336",
+          "alt_ft": 11900,
+          "angels": 12,
+          "vertical": "high",
+          "speed_kt": 349,
+          "heading_true": "171",
+          "aspect": "hot",
+          "closure_kt": 27,
+          "call": "Friendly A-10C, three three six, eight miles, angels twelve, four o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "R63 #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "attack",
+          "count": 1,
+          "types": {
+            "A-10C": 1
+          },
+          "spoken_types": {
+            "A-10C": 1
+          },
+          "range_nm": 15.8,
+          "clock": "4 o'clock, behind right",
+          "bearing_mag": "343",
+          "alt_ft": 8700,
+          "angels": 9,
+          "vertical": "low",
+          "speed_kt": 206,
+          "heading_true": "226",
+          "aspect": "beaming",
+          "closure_kt": -284,
+          "call": "Friendly A-10C, three four three, sixteen, angels nine, four o'clock low.",
+          "overhead_allowed": false,
+          "groups": [
+            "R63 #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 28.6,
+          "clock": "1 o'clock, ahead right",
+          "bearing_mag": "235",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 450,
+          "heading_true": "129",
+          "aspect": "beaming",
+          "closure_kt": 547,
+          "call": "Friendly IL-76MD, two three five, twenty nine, angels thirty three, one o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #003"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 43.8,
+          "clock": "8 o'clock, behind left",
+          "bearing_mag": "095",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 444,
+          "heading_true": "230",
+          "aspect": "flanking",
+          "closure_kt": 100,
+          "call": "Friendly IL-76MD, zero nine five, forty four, angels thirty three, eight o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #001"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 44.5,
+          "clock": "8 o'clock, behind left",
+          "bearing_mag": "080",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 444,
+          "heading_true": "238",
+          "aspect": "hot",
+          "closure_kt": 53,
+          "call": "Friendly IL-76MD, zero eight zero, forty four, angels thirty three, eight o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 54.6,
+          "clock": "11 o'clock, ahead left",
+          "bearing_mag": "196",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 452,
+          "heading_true": "064",
+          "aspect": "flanking",
+          "closure_kt": 746,
+          "call": "Friendly IL-76MD, one nine six, fifty five, angels thirty three, eleven o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #004"
+          ]
+        }
+      ]
+    },
+    "hostile_air_groups": 0,
+    "hostile_groups_total": 5,
+    "picture_top3": [],
+    "air_picture_radius_nm": 50.0,
+    "picture_long_range_top3": [],
+    "long_range_radius_nm": 150.0,
+    "air_picture_empty_call": "No bandits within one hundred fifty miles.",
+    "ground_targets_within_20nm": [],
+    "ground_empty_call": "No ground targets within twenty miles.",
+    "working_target": null,
+    "airbases": {
+      "count": 17,
+      "nearest": [
+        {
+          "name": "Creech",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 10.2,
+          "clock": "3 o'clock, right",
+          "bearing_mag": "296",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Creech, bearing two nine six, ten miles, at your three o'clock."
+        },
+        {
+          "name": "North Las Vegas",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 24.4,
+          "clock": "10 o'clock, ahead left",
+          "bearing_mag": "156",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "North Las Vegas, bearing one five six, twenty four miles, at your ten o'clock."
+        },
+        {
+          "name": "Nellis",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 28.5,
+          "clock": "10 o'clock, ahead left",
+          "bearing_mag": "144",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Nellis, bearing one four four, twenty eight miles, at your ten o'clock."
+        },
+        {
+          "name": "McCarran International",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 32.0,
+          "clock": "10 o'clock, ahead left",
+          "bearing_mag": "163",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "McCarran International, bearing one six three, thirty two miles, at your ten o'clock."
+        },
+        {
+          "name": "Henderson Executive",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 38.5,
+          "clock": "10 o'clock, ahead left",
+          "bearing_mag": "166",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Henderson Executive, bearing one six six, thirty nine miles, at your ten o'clock."
+        }
+      ],
+      "nearest_friendly": [
+        {
+          "name": "Creech",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 10.2,
+          "bearing_mag": "296",
+          "clock": "3 o'clock, right",
+          "call": "Creech, bearing two nine six, ten miles, at your three o'clock."
+        },
+        {
+          "name": "North Las Vegas",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 24.4,
+          "bearing_mag": "156",
+          "clock": "10 o'clock, ahead left",
+          "call": "North Las Vegas, bearing one five six, twenty four miles, at your ten o'clock."
+        },
+        {
+          "name": "Nellis",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 28.5,
+          "bearing_mag": "144",
+          "clock": "10 o'clock, ahead left",
+          "call": "Nellis, bearing one four four, twenty eight miles, at your ten o'clock."
+        }
+      ]
+    },
+    "cockpit": {
+      "available": true,
+      "fresh": true,
+      "age_s": 0.2,
+      "aircraft": "F-4E-45MC",
+      "pilot": "Prometheus",
+      "config": {
+        "gear": "up",
+        "flaps_pct": 0,
+        "speedbrake": "in",
+        "canopy": "closed",
+        "wheel_brakes": false
+      },
+      "flight": {
+        "ias_kt": 473,
+        "tas_kt": 549,
+        "gs_kt": 546,
+        "mach": 0.86,
+        "alt_msl_ft": 10190,
+        "agl_ft": 7130,
+        "vs_fpm": 5450,
+        "g": 2.7,
+        "aoa_deg": 1.7,
+        "heading_true": 198,
+        "heading_mag": 186,
+        "pitch_deg": 6,
+        "bank_deg": -68
+      },
+      "engine": {
+        "rpm_pct": [
+          98.2,
+          98.4
+        ],
+        "note": "RPM changes are secondary clues, not proof of a hit.",
+        "rpm_change": [
+          -0.6,
+          -0.5
+        ],
+        "window_s": 57.4
+      },
+      "fuel_trend": {
+        "window_s": 57.4,
+        "loss_lb_per_min": 0.0,
+        "note": "Observed fuel loss (burn, leak or jettison), not a confirmed leak; engine fuel-flow telemetry unavailable."
+      },
+      "fuel": {
+        "internal_pct": 30,
+        "total_lb": 3640,
+        "internal_lb": 3640,
+        "source": "cockpit fraction x DCS fuelMassMax for F-4E-45MC",
+        "estimated": false,
+        "spoken": "3,640 pounds"
+      },
+      "payload": {
+        "age_s": 0.2,
+        "stations": [
+          {
+            "station": 6,
+            "weapon": "Pave Spike pod",
+            "count": 1
+          },
+          {
+            "station": 14,
+            "weapon": "chaff/flare pod",
+            "count": 1
+          }
+        ],
+        "by_weapon": {
+          "Pave Spike pod": 1,
+          "chaff/flare pod": 1
+        },
+        "gun_rounds": 639,
+        "selected_station": 0
+      },
+      "rwr": {
+        "available": false,
+        "reason": "no RWR data (aircraft without exportable RWR, or sensor export disabled on the server)"
+      },
+      "locked_target": null,
+      "locked_note": "nothing locked"
+    },
+    "threats": {
+      "rwr_source": "grpc_inferred",
+      "rwr_export_by_module": {
+        "F-4E-45MC": false
+      },
+      "sam_source": "dcs_radar",
+      "sam_radar": {
+        "available": true,
+        "age_s": 0.3,
+        "source": "DCS Unit:getRadar() + group radar detection (Eval, 1 Hz)",
+        "confidence": "DCS truth",
+        "tracking_you": [],
+        "radars_on": 1
+      },
+      "missile_scan": "on",
+      "sam_in_range": [],
+      "missiles_inbound": [],
+      "missiles_in_flight": [],
+      "note": "no RWR feed from this aircraft. sam_in_range confidence 'DCS radar: ...' is DCS's own radar state; 'range only' rows are inferred from nominal range: say 'could be' for those"
+    },
+    "my_shots_last_15_min": {
+      "total": 1,
+      "by_result": {
+        "kill": 1
+      },
+      "shots": [
+        {
+          "weapon": "AGM-65A",
+          "kind": "missile",
+          "age_s": 34,
+          "result": "kill",
+          "count": 1,
+          "intended_target": {
+            "id": 17182,
+            "type": "ZU-23 Emplacement Closed",
+            "name": "Ground-13-1",
+            "group": "Ground-13",
+            "category": "AAA",
+            "coalition": "red",
+            "player": null,
+            "range_nm_at_launch": 28.6,
+            "off_nose_deg": 4,
+            "method": "guess: enemy nearest the nose at launch",
+            "group_count_at_launch": 1
+          },
+          "hit": {
+            "id": 8129,
+            "type": "T 55",
+            "name": "63-12 SFW Target #017",
+            "kind": "static",
+            "coalition": "red",
+            "category": "scenery",
+            "player": null
+          }
+        }
+      ]
+    },
+    "last_attack_age_s": 34.3,
+    "my_kills_this_mission": [
+      {
+        "target": "T-55",
+        "target_id": 11987,
+        "target_kind": "unit",
+        "category": "armor",
+        "weapon": "AGM-65A",
+        "seq": 663,
+        "t": 1794440205.2031627,
+        "mission_time": 558.23,
+        "shooter_id": "17084",
+        "age_s": 1345,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8126,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 804,
+        "t": 1794440335.7831144,
+        "mission_time": 688.814,
+        "shooter_id": "17084",
+        "age_s": 1215,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8113,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 948,
+        "t": 1794440465.6731431,
+        "mission_time": 818.714,
+        "shooter_id": "17084",
+        "age_s": 1085,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 6,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "my_kills_recent": [
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 6,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "friendly_kills_this_mission": [
+      {
+        "target": "T-55",
+        "target_id": 11987,
+        "target_kind": "unit",
+        "category": "armor",
+        "weapon": "AGM-65A",
+        "seq": 663,
+        "t": 1794440205.2031627,
+        "mission_time": 558.23,
+        "shooter_id": "17084",
+        "age_s": 1345,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8126,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 804,
+        "t": 1794440335.7831144,
+        "mission_time": 688.814,
+        "shooter_id": "17084",
+        "age_s": 1215,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8113,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 948,
+        "t": 1794440465.6731431,
+        "mission_time": 818.714,
+        "shooter_id": "17084",
+        "age_s": 1085,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 6,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "friendly_kills_recent": [
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 6,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "kill_seq": 2036,
+    "kill_tallies": {
+      "me": {
+        "total": 4,
+        "confirmed": 4,
+        "likely": 0,
+        "by_category": {
+          "armor": 1,
+          "AAA": 0,
+          "SAM": 0,
+          "infantry": 0,
+          "vehicles": 0,
+          "scenery": 3
+        },
+        "by_type": {
+          "T-55": 1,
+          "T 55": 3
+        }
+      },
+      "all_friendly": {
+        "total": 4,
+        "confirmed": 4,
+        "likely": 0,
+        "by_category": {
+          "armor": 1,
+          "AAA": 0,
+          "SAM": 0,
+          "infantry": 0,
+          "vehicles": 0,
+          "scenery": 3
+        },
+        "by_type": {
+          "T-55": 1,
+          "T 55": 3
+        }
+      },
+      "by_shooter": {
+        "17084": {
+          "total": 4,
+          "confirmed": 4,
+          "likely": 0,
+          "by_category": {
+            "armor": 1,
+            "AAA": 0,
+            "SAM": 0,
+            "infantry": 0,
+            "vehicles": 0,
+            "scenery": 3
+          },
+          "by_type": {
+            "T-55": 1,
+            "T 55": 3
+          },
+          "shooter": {
+            "type": "F-4E-45MC",
+            "name": "Aerial-1-2",
+            "coalition": "blue",
+            "category": "fighter",
+            "player": "Prometheus"
+          },
+          "flight_member": true
+        }
+      }
+    },
+    "splash_to_announce": [
+      "Splash one T 55"
+    ],
+    "my_weapons_used_this_mission": {
+      "source": "stores (loadout diff)",
+      "by_weapon": {
+        "AGM-65A": 4
+      }
+    },
+    "recent_kills_and_losses_last_10_min": [
+      {
+        "age_s": 6,
+        "event": "destroyed",
+        "victim": {
+          "type": "unknown",
+          "name": "",
+          "coalition": "unknown",
+          "category": "unknown"
+        },
+        "friendly_loss": false
+      },
+      {
+        "age_s": 6,
+        "event": "lost",
+        "victim": {
+          "type": "AGM-65A",
+          "name": "",
+          "coalition": "unknown",
+          "category": "weapon"
+        },
+        "where": {
+          "range_nm": 4.6,
+          "clock": "4 o'clock, behind right",
+          "bearing_mag": "344"
+        },
+        "friendly_loss": false
+      },
+      {
+        "age_s": 6,
+        "event": "killed",
+        "victim": {
+          "type": "T 55",
+          "name": "63-12 SFW Target #017",
+          "coalition": "red",
+          "category": "scenery"
+        },
+        "killer": {
+          "type": "F-4E-45MC",
+          "name": "Aerial-1-2",
+          "coalition": "blue",
+          "category": "fighter",
+          "player": "Prometheus"
+        },
+        "weapon": "AGM-65A",
+        "by_me": true,
+        "where": {
+          "range_nm": 4.6,
+          "clock": "4 o'clock, behind right",
+          "bearing_mag": "344"
+        },
+        "friendly_loss": false
+      }
+    ],
+    "recent_events_last_10_min": [
+      "6s ago: red T 55 hit red T 55 with T-55",
+      "6s ago: blue Prometheus (F-4E-45MC) hit red T 55 with AGM-65A",
+      "6s ago: blue Prometheus (F-4E-45MC) hit red T 55 with AGM-65A",
+      "6s ago: blue Prometheus (F-4E-45MC) hit red T 55 with AGM-65A",
+      "20s ago: blue A-10C fired BDU-33",
+      "34s ago: blue Prometheus (F-4E-45MC) fired AGM-65A"
+    ],
+    "alive_totals_by_coalition": {
+      "blue": {
+        "fighter": 1,
+        "transport": 4,
+        "attack": 2
+      },
+      "red": {
+        "ground vehicle": 11,
+        "SAM": 10,
+        "armor": 6,
+        "AAA": 6
+      }
+    },
+    "_memory_generation": 1,
+    "memory": {
+      "coverage": {
+        "audit_claim_limit": 256,
+        "audit_claims_truncated": false,
+        "note": "Recent evidence window only. Older claims/evidence are not fully audited; missing evidence is inconclusive.",
+        "raw_event_limit": 2048,
+        "raw_events_truncated": false
+      },
+      "kill_loss_timeline": [
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #014",
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43102,
+          "time": 1794440335.7928607,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": null,
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43103,
+          "time": 1794440335.79348,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "Aerial-1-2",
+            "target": "63-12 SFW Target #001",
+            "type": "kill",
+            "weapon": "AGM-65A"
+          },
+          "raw_id": 43238,
+          "time": 1794440465.675768,
+          "type": "kill"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #001",
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43239,
+          "time": 1794440465.6765802,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": 4294967275,
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43240,
+          "time": 1794440465.6775393,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #001",
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43241,
+          "time": 1794440465.6787543,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": null,
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43242,
+          "time": 1794440465.6796083,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "Aerial-1-2",
+            "target": "63-12 SFW Target #017",
+            "type": "kill",
+            "weapon": "AGM-65A"
+          },
+          "raw_id": 43376,
+          "time": 1794441544.2281542,
+          "type": "kill"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #017",
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43377,
+          "time": 1794441544.2289662,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": 4294967268,
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43380,
+          "time": 1794441544.2327,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #017",
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43382,
+          "time": 1794441544.2350829,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": null,
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43383,
+          "time": 1794441544.2360065,
+          "type": "dead"
+        }
+      ],
+      "mission_key": "mission-056721f5024fb7d3e68d76e1b9e649cb9667b30782c6c48d78fe9886f403f0e9",
+      "recent_disagreements": [
+        {
+          "bug_note": "Replay raw event unknown with Eye observation 7216119c-4470-4870-88f0-a319f2b8e0a5; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 558.23,
+            "place": null,
+            "seq": 667,
+            "t": 1794440205.2061763,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        },
+        {
+          "bug_note": "Replay raw event unknown with Eye observation 22a9f0bd-3bfb-4f7e-a3bc-0d1d4586018d; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 688.814,
+            "place": null,
+            "seq": 812,
+            "t": 1794440335.7860441,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        },
+        {
+          "bug_note": "Replay raw event unknown with Eye observation 23d6bd98-f5e3-4baa-adea-760d36c65f5d; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 818.714,
+            "place": null,
+            "seq": 952,
+            "t": 1794440465.6746418,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        },
+        {
+          "bug_note": "Replay raw event unknown with Eye observation e6965f4c-155a-4a2f-b2e9-a28992006701; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 948.106,
+            "place": null,
+            "seq": 2043,
+            "t": 1794441544.230754,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        }
+      ],
+      "takeoff_airfield": null,
+      "weapons_used_this_mission": {
+        "by_weapon": {
+          "AGM-65A": 4
+        },
+        "source": "stores (loadout diff)"
+      }
+    }
+  },
+  "1890": {
+    "source": "Athena Eye (DCS-gRPC 10.90.10.113:50051)",
+    "connected": true,
+    "data_age_s": {
+      "units": 0.2,
+      "last_event": 162.5,
+      "airbases": 45.6,
+      "ownship": 0.2
+    },
+    "event_stream": {
+      "state": "live",
+      "last_event_age_s": 0.3,
+      "events_per_min": 62.4,
+      "events_total": 2202,
+      "units_age_s": 0.2,
+      "last_mission_event_age_s": 162.5,
+      "resubscribes": {
+        "reconnect:events": 1
+      },
+      "kinds_total": {
+        "simulation_fps": 2145,
+        "shot": 12,
+        "hit": 11,
+        "unit_lost": 8,
+        "dead": 8,
+        "birth": 5,
+        "weapon_add": 4,
+        "score": 4,
+        "kill": 4,
+        "player_enter_unit": 1
+      }
+    },
+    "data_health": {
+      "connected": true,
+      "streams": {
+        "events": "up",
+        "units-air": "up",
+        "units-ground": "up",
+        "units-helo": "down 2159s (units-helo: _InactiveRpcError StatusCode.UNAVAILABLE)",
+        "units-ship": "down 2159s (units-ship: _InactiveRpcError StatusCode.UNAVAILABLE)",
+        "world": "up"
+      },
+      "events": "live",
+      "combat_events": "ok",
+      "unit_sync": {
+        "category": "GROUP_CATEGORY_AIRPLANE",
+        "removed": 0,
+        "age_s": 2059.3
+      }
+    },
+    "theatre": "Nevada",
+    "bearings": "magnetic (declination -11.9 deg from DCS)",
+    "notes": [
+      "Every unit listed in contacts/totals is ALIVE as of data_age_s.",
+      "Kills, losses and deaths come ONLY from recent_kills_and_losses / my_shots / my_kills. A kill with confidence confirmed is a kill (say splash, no 'likely'); only confidence likely is 'likely'.",
+      "Mission totals come from kill_tallies / my_kills_this_mission, never recent lists. For fresh confirmations use my_kills_recent seq after your last confirmation cursor.",
+      "clock is relative to Prometheus' nose (12 = ahead).",
+      "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
+      "picture_top3 = the three closest hostile air groups within 50 nm, verbatim. No extra-group count.",
+      "Traffic means aircraft (including helos), not ground units. Use air_traffic and airbase traffic.",
+      "Never say overhead unless the contact has overhead_allowed true (within 3 nm).",
+      "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): config, flight, payload, warning_lights; rwr/locked_target only when cockpit.rwr.available is true (no module has exported them so far). Fuel: ownship.fuel."
+    ],
+    "ownship": {
+      "type": "F-4E-45MC",
+      "coalition": "blue",
+      "group": "Aerial-1 Mavs A's x4",
+      "player_name": "Prometheus",
+      "alt_ft": 6285,
+      "speed_kt": 317,
+      "heading_true": "337",
+      "fuel": {
+        "internal_pct": 30,
+        "total_lb": 3640,
+        "internal_lb": 3640,
+        "source": "cockpit fraction x DCS fuelMassMax for F-4E-45MC",
+        "estimated": false,
+        "spoken": "3,640 pounds"
+      },
+      "fuel_fraction": 0.3,
+      "loadout": {
+        "available": true,
+        "age_s": 0.8,
+        "weapons": [
+          {
+            "weapon": "chaff/flare pod",
+            "type": "chaff/flare pod",
+            "raw_weapon": "HB_ALE_40_30_60",
+            "raw_type": "HB_ALE_40_30_60",
+            "spoken_name": "chaff/flare pod",
+            "kind": "missile",
+            "count": 1
+          },
+          {
+            "weapon": "Pave Spike pod",
+            "type": "Pave Spike pod",
+            "raw_weapon": "HB_ORD_Pave_Spike_Fast",
+            "raw_type": "HB_ORD_Pave_Spike_Fast",
+            "spoken_name": "Pave Spike pod",
+            "kind": "missile",
+            "count": 1
+          }
+        ],
+        "gun_rounds": 639,
+        "source": "cockpit (Export.lua payload)"
+      },
+      "damage": {
+        "life_available": true,
+        "events": [],
+        "note": "No warnings does not mean no damage. Hit events and life drops are primary evidence.",
+        "life_percent": 100,
+        "life_age_s": 0.4,
+        "secondary": {
+          "warning_lights": [],
+          "engine": {
+            "rpm_pct": [
+              68.4,
+              68.5
+            ],
+            "note": "RPM changes are secondary clues, not proof of a hit.",
+            "rpm_change": [
+              -5.1,
+              -5.2
+            ],
+            "window_s": 58.8
+          },
+          "fuel_trend": {
+            "window_s": 58.8,
+            "loss_lb_per_min": 0.0,
+            "note": "Observed fuel loss (burn, leak or jettison), not a confirmed leak; engine fuel-flow telemetry unavailable."
+          }
+        }
+      },
+      "lat": 36.5406,
+      "lon": -115.7699,
+      "heading_mag": "349"
+    },
+    "contacts_within_nm": 150.0,
+    "hostile_groups": [
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "AAA",
+        "count": 3,
+        "types": {
+          "ZU-23 Emplacement Closed": 3
+        },
+        "spoken_types": {
+          "ZU-23": 3
+        },
+        "range_nm": 13.1,
+        "clock": "11 o'clock, ahead left",
+        "bearing_mag": "314",
+        "label": "triple A",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Triple A, three contacts, bearing three one four, thirteen miles, ground target, eleven o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-13",
+          "Ground-14",
+          "Ground-15"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "armor",
+        "count": 6,
+        "types": {
+          "BTR-80": 4,
+          "T-90": 1,
+          "Grad_FDDM": 1
+        },
+        "spoken_types": {
+          "BTR-80": 4,
+          "T-90": 1,
+          "Grad FDDM": 1
+        },
+        "range_nm": 13.1,
+        "clock": "11 o'clock, ahead left",
+        "bearing_mag": "314",
+        "label": "enemy armor",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Enemy armor, six contacts, bearing three one four, thirteen miles, ground target, eleven o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-11",
+          "Ground-12",
+          "Ground-16"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "AAA",
+        "count": 3,
+        "types": {
+          "ZU-23 Emplacement Closed": 3
+        },
+        "spoken_types": {
+          "ZU-23": 3
+        },
+        "range_nm": 17.6,
+        "clock": "12 o'clock, on the nose",
+        "bearing_mag": "344",
+        "label": "triple A",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Triple A, three contacts, bearing three four four, eighteen miles, ground target, twelve o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-5",
+          "Ground-7",
+          "Ground-9"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "ground vehicle",
+        "count": 11,
+        "types": {
+          "ATZ-10": 4,
+          "ATMZ-5": 2,
+          "Ural-4320 APA-5D": 1,
+          "Ural-4320T": 2,
+          "ZIL-131 KUNG": 2
+        },
+        "spoken_types": {
+          "ATZ-10": 4,
+          "fuel truck": 2,
+          "Ural power truck": 1,
+          "Ural truck": 2,
+          "ZIL-131 truck": 2
+        },
+        "range_nm": 17.8,
+        "clock": "12 o'clock, on the nose",
+        "bearing_mag": "344",
+        "label": "enemy ground vehicle",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Enemy ground vehicle, eleven contacts, bearing three four four, eighteen miles, ground target, twelve o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-1",
+          "Ground-2",
+          "Ground-3"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "SAM",
+        "count": 10,
+        "types": {
+          "SA-18 Igla comm": 2,
+          "S_75M_Volhov": 6,
+          "p-19 s-125 sr": 1,
+          "SNR_75V": 1
+        },
+        "spoken_types": {
+          "SA-18 command post": 2,
+          "SA-2": 6,
+          "P-19 radar": 1,
+          "SA-2 radar": 1
+        },
+        "range_nm": 17.8,
+        "clock": "12 o'clock, on the nose",
+        "bearing_mag": "344",
+        "label": "SAM site",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "SAM site, ten contacts, bearing three four four, eighteen miles, ground target, twelve o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-10",
+          "Ground-6",
+          "Ground-8"
+        ]
+      }
+    ],
+    "friendly_groups": [
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "attack",
+        "count": 1,
+        "types": {
+          "A-10C": 1
+        },
+        "spoken_types": {
+          "A-10C": 1
+        },
+        "range_nm": 15.6,
+        "clock": "1 o'clock, ahead right",
+        "bearing_mag": "010",
+        "alt_ft": 13100,
+        "angels": 13,
+        "vertical": "high",
+        "speed_kt": 311,
+        "heading_true": "119",
+        "aspect": "flanking",
+        "closure_kt": 455,
+        "call": "Friendly A-10C, zero one zero, sixteen, angels thirteen, one o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "R63 #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "attack",
+        "count": 1,
+        "types": {
+          "A-10C": 1
+        },
+        "spoken_types": {
+          "A-10C": 1
+        },
+        "range_nm": 16.8,
+        "clock": "2 o'clock, ahead right",
+        "bearing_mag": "038",
+        "alt_ft": 7500,
+        "angels": 8,
+        "vertical": "high",
+        "speed_kt": 326,
+        "heading_true": "240",
+        "aspect": "flanking",
+        "closure_kt": 475,
+        "call": "Friendly A-10C, zero three eight, seventeen, angels eight, two o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "R63 #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 34.5,
+        "clock": "6 o'clock, behind",
+        "bearing_mag": "176",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 450,
+        "heading_true": "129",
+        "aspect": "cold",
+        "closure_kt": -682,
+        "call": "Friendly IL-76MD, one seven six, thirty five, angels thirty three, six o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #003"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 39.3,
+        "clock": "3 o'clock, right",
+        "bearing_mag": "092",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 444,
+        "heading_true": "238",
+        "aspect": "hot",
+        "closure_kt": 339,
+        "call": "Friendly IL-76MD, zero nine two, thirty nine, angels thirty three, three o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 42.8,
+        "clock": "4 o'clock, behind right",
+        "bearing_mag": "110",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 444,
+        "heading_true": "230",
+        "aspect": "flanking",
+        "closure_kt": 129,
+        "call": "Friendly IL-76MD, one one zero, forty three, angels thirty three, four o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #001"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 53.6,
+        "clock": "6 o'clock, behind",
+        "bearing_mag": "161",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 452,
+        "heading_true": "064",
+        "aspect": "beaming",
+        "closure_kt": -357,
+        "call": "Friendly IL-76MD, one six one, fifty four, angels thirty three, six o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #004"
+        ]
+      }
+    ],
+    "air_traffic": {
+      "blue": [
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "attack",
+          "count": 1,
+          "types": {
+            "A-10C": 1
+          },
+          "spoken_types": {
+            "A-10C": 1
+          },
+          "range_nm": 15.6,
+          "clock": "1 o'clock, ahead right",
+          "bearing_mag": "010",
+          "alt_ft": 13100,
+          "angels": 13,
+          "vertical": "high",
+          "speed_kt": 311,
+          "heading_true": "119",
+          "aspect": "flanking",
+          "closure_kt": 455,
+          "call": "Friendly A-10C, zero one zero, sixteen, angels thirteen, one o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "R63 #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "attack",
+          "count": 1,
+          "types": {
+            "A-10C": 1
+          },
+          "spoken_types": {
+            "A-10C": 1
+          },
+          "range_nm": 16.8,
+          "clock": "2 o'clock, ahead right",
+          "bearing_mag": "038",
+          "alt_ft": 7500,
+          "angels": 8,
+          "vertical": "high",
+          "speed_kt": 326,
+          "heading_true": "240",
+          "aspect": "flanking",
+          "closure_kt": 475,
+          "call": "Friendly A-10C, zero three eight, seventeen, angels eight, two o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "R63 #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 34.5,
+          "clock": "6 o'clock, behind",
+          "bearing_mag": "176",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 450,
+          "heading_true": "129",
+          "aspect": "cold",
+          "closure_kt": -682,
+          "call": "Friendly IL-76MD, one seven six, thirty five, angels thirty three, six o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #003"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 39.3,
+          "clock": "3 o'clock, right",
+          "bearing_mag": "092",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 444,
+          "heading_true": "238",
+          "aspect": "hot",
+          "closure_kt": 339,
+          "call": "Friendly IL-76MD, zero nine two, thirty nine, angels thirty three, three o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 42.8,
+          "clock": "4 o'clock, behind right",
+          "bearing_mag": "110",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 444,
+          "heading_true": "230",
+          "aspect": "flanking",
+          "closure_kt": 129,
+          "call": "Friendly IL-76MD, one one zero, forty three, angels thirty three, four o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #001"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 53.6,
+          "clock": "6 o'clock, behind",
+          "bearing_mag": "161",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 452,
+          "heading_true": "064",
+          "aspect": "beaming",
+          "closure_kt": -357,
+          "call": "Friendly IL-76MD, one six one, fifty four, angels thirty three, six o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #004"
+          ]
+        }
+      ]
+    },
+    "hostile_air_groups": 0,
+    "hostile_groups_total": 5,
+    "picture_top3": [],
+    "air_picture_radius_nm": 50.0,
+    "picture_long_range_top3": [],
+    "long_range_radius_nm": 150.0,
+    "air_picture_empty_call": "No bandits within one hundred fifty miles.",
+    "ground_targets_within_20nm": [
+      {
+        "call": "Triple A, three contacts, bearing three one four, thirteen miles, ground target, eleven o'clock.",
+        "category": "AAA",
+        "member_categories": [
+          "AAA"
+        ]
+      },
+      {
+        "call": "Enemy armor, six contacts, bearing three one four, thirteen miles, ground target, eleven o'clock.",
+        "category": "armor",
+        "member_categories": [
+          "armor"
+        ]
+      },
+      {
+        "call": "Triple A, three contacts, bearing three four four, eighteen miles, ground target, twelve o'clock.",
+        "category": "AAA",
+        "member_categories": [
+          "AAA"
+        ]
+      },
+      {
+        "call": "Enemy ground vehicle, eleven contacts, bearing three four four, eighteen miles, ground target, twelve o'clock.",
+        "category": "ground vehicle",
+        "member_categories": [
+          "ground vehicle"
+        ]
+      },
+      {
+        "call": "SAM site, ten contacts, bearing three four four, eighteen miles, ground target, twelve o'clock.",
+        "category": "SAM",
+        "member_categories": [
+          "SAM"
+        ]
+      }
+    ],
+    "ground_empty_call": "No ground targets within twenty miles.",
+    "working_target": null,
+    "airbases": {
+      "count": 17,
+      "nearest": [
+        {
+          "name": "Creech",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 4.8,
+          "clock": "3 o'clock, right",
+          "bearing_mag": "069",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Creech, bearing zero six nine, five miles, at your three o'clock."
+        },
+        {
+          "name": "North Las Vegas",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 34.4,
+          "clock": "5 o'clock, behind right",
+          "bearing_mag": "137",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "North Las Vegas, bearing one three seven, thirty four miles, at your five o'clock."
+        },
+        {
+          "name": "Nellis",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 39.9,
+          "clock": "5 o'clock, behind right",
+          "bearing_mag": "130",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Nellis, bearing one three zero, forty miles, at your five o'clock."
+        },
+        {
+          "name": "McCarran International",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 40.5,
+          "clock": "5 o'clock, behind right",
+          "bearing_mag": "145",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "McCarran International, bearing one four five, forty one miles, at your five o'clock."
+        },
+        {
+          "name": "Groom Lake",
+          "owner": "neutral",
+          "category": "airdrome",
+          "range_nm": 40.7,
+          "clock": "1 o'clock, ahead right",
+          "bearing_mag": "011",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Groom Lake, bearing zero one one, forty one miles, at your one o'clock."
+        }
+      ],
+      "nearest_friendly": [
+        {
+          "name": "Creech",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 4.8,
+          "bearing_mag": "069",
+          "clock": "3 o'clock, right",
+          "call": "Creech, bearing zero six nine, five miles, at your three o'clock."
+        },
+        {
+          "name": "North Las Vegas",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 34.4,
+          "bearing_mag": "137",
+          "clock": "5 o'clock, behind right",
+          "call": "North Las Vegas, bearing one three seven, thirty four miles, at your five o'clock."
+        },
+        {
+          "name": "Nellis",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 39.9,
+          "bearing_mag": "130",
+          "clock": "5 o'clock, behind right",
+          "call": "Nellis, bearing one three zero, forty miles, at your five o'clock."
+        }
+      ],
+      "at_or_near": {
+        "name": "Creech",
+        "owner": "blue",
+        "category": "airdrome",
+        "range_nm": 4.8,
+        "clock": "3 o'clock, right",
+        "bearing_mag": "069",
+        "traffic": {
+          "count": 0,
+          "aircraft": []
+        },
+        "call": "Creech, bearing zero six nine, five miles, at your three o'clock.",
+        "on_ground": false
+      }
+    },
+    "cockpit": {
+      "available": true,
+      "fresh": true,
+      "age_s": 0.1,
+      "aircraft": "F-4E-45MC",
+      "pilot": "Prometheus",
+      "config": {
+        "gear": "up",
+        "flaps_pct": 0,
+        "speedbrake": "in",
+        "canopy": "closed",
+        "wheel_brakes": false
+      },
+      "flight": {
+        "ias_kt": 292,
+        "tas_kt": 321,
+        "gs_kt": 317,
+        "mach": 0.5,
+        "alt_msl_ft": 6270,
+        "agl_ft": 2590,
+        "vs_fpm": -5310,
+        "g": 1.0,
+        "aoa_deg": 1.8,
+        "heading_true": 337,
+        "heading_mag": 325,
+        "pitch_deg": -8,
+        "bank_deg": 6
+      },
+      "engine": {
+        "rpm_pct": [
+          68.4,
+          68.5
+        ],
+        "note": "RPM changes are secondary clues, not proof of a hit.",
+        "rpm_change": [
+          -5.1,
+          -5.2
+        ],
+        "window_s": 58.8
+      },
+      "fuel_trend": {
+        "window_s": 58.8,
+        "loss_lb_per_min": 0.0,
+        "note": "Observed fuel loss (burn, leak or jettison), not a confirmed leak; engine fuel-flow telemetry unavailable."
+      },
+      "fuel": {
+        "internal_pct": 30,
+        "total_lb": 3640,
+        "internal_lb": 3640,
+        "source": "cockpit fraction x DCS fuelMassMax for F-4E-45MC",
+        "estimated": false,
+        "spoken": "3,640 pounds"
+      },
+      "payload": {
+        "age_s": 0.8,
+        "stations": [
+          {
+            "station": 6,
+            "weapon": "Pave Spike pod",
+            "count": 1
+          },
+          {
+            "station": 14,
+            "weapon": "chaff/flare pod",
+            "count": 1
+          }
+        ],
+        "by_weapon": {
+          "Pave Spike pod": 1,
+          "chaff/flare pod": 1
+        },
+        "gun_rounds": 639,
+        "selected_station": 0
+      },
+      "rwr": {
+        "available": false,
+        "reason": "no RWR data (aircraft without exportable RWR, or sensor export disabled on the server)"
+      },
+      "locked_target": null,
+      "locked_note": "nothing locked"
+    },
+    "threats": {
+      "rwr_source": "grpc_inferred",
+      "rwr_export_by_module": {
+        "F-4E-45MC": false
+      },
+      "sam_source": "dcs_radar",
+      "sam_radar": {
+        "available": true,
+        "age_s": 0.8,
+        "source": "DCS Unit:getRadar() + group radar detection (Eval, 1 Hz)",
+        "confidence": "DCS truth",
+        "tracking_you": [],
+        "radars_on": 1
+      },
+      "missile_scan": "on",
+      "sam_in_range": [
+        {
+          "group": "Ground-8",
+          "type": "S_75M_Volhov",
+          "sam": "SA-2",
+          "ewr": false,
+          "range_nm": 17.9,
+          "nominal_range_nm": 23.0,
+          "clock": 12,
+          "call": "SAM SA-2 radar sees you, your twelve o'clock, eighteen miles.",
+          "confidence": "DCS radar: sees you"
+        }
+      ],
+      "missiles_inbound": [],
+      "missiles_in_flight": [],
+      "note": "no RWR feed from this aircraft. sam_in_range confidence 'DCS radar: ...' is DCS's own radar state; 'range only' rows are inferred from nominal range: say 'could be' for those"
+    },
+    "rwr_alert_to_announce": [
+      "SAM SA-2 radar sees you, your twelve o'clock, eighteen miles."
+    ],
+    "my_shots_last_15_min": {
+      "total": 1,
+      "by_result": {
+        "kill": 1
+      },
+      "shots": [
+        {
+          "weapon": "AGM-65A",
+          "kind": "missile",
+          "age_s": 190,
+          "result": "kill",
+          "count": 1,
+          "intended_target": {
+            "id": 17182,
+            "type": "ZU-23 Emplacement Closed",
+            "name": "Ground-13-1",
+            "group": "Ground-13",
+            "category": "AAA",
+            "coalition": "red",
+            "player": null,
+            "range_nm_at_launch": 28.6,
+            "off_nose_deg": 4,
+            "method": "guess: enemy nearest the nose at launch",
+            "group_count_at_launch": 1
+          },
+          "hit": {
+            "id": 8129,
+            "type": "T 55",
+            "name": "63-12 SFW Target #017",
+            "kind": "static",
+            "coalition": "red",
+            "category": "scenery",
+            "player": null
+          }
+        }
+      ]
+    },
+    "last_attack_age_s": 190.2,
+    "my_kills_this_mission": [
+      {
+        "target": "T-55",
+        "target_id": 11987,
+        "target_kind": "unit",
+        "category": "armor",
+        "weapon": "AGM-65A",
+        "seq": 663,
+        "t": 1794440205.2031627,
+        "mission_time": 558.23,
+        "shooter_id": "17084",
+        "age_s": 1501,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8126,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 804,
+        "t": 1794440335.7831144,
+        "mission_time": 688.814,
+        "shooter_id": "17084",
+        "age_s": 1370,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8113,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 948,
+        "t": 1794440465.6731431,
+        "mission_time": 818.714,
+        "shooter_id": "17084",
+        "age_s": 1241,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 162,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "my_kills_recent": [
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 162,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "friendly_kills_this_mission": [
+      {
+        "target": "T-55",
+        "target_id": 11987,
+        "target_kind": "unit",
+        "category": "armor",
+        "weapon": "AGM-65A",
+        "seq": 663,
+        "t": 1794440205.2031627,
+        "mission_time": 558.23,
+        "shooter_id": "17084",
+        "age_s": 1501,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8126,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 804,
+        "t": 1794440335.7831144,
+        "mission_time": 688.814,
+        "shooter_id": "17084",
+        "age_s": 1370,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8113,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 948,
+        "t": 1794440465.6731431,
+        "mission_time": 818.714,
+        "shooter_id": "17084",
+        "age_s": 1241,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      },
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 162,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "friendly_kills_recent": [
+      {
+        "target": "T 55",
+        "target_id": 8129,
+        "target_kind": "static",
+        "category": "scenery",
+        "weapon": "AGM-65A",
+        "seq": 2036,
+        "t": 1794441544.2277226,
+        "mission_time": 948.106,
+        "shooter_id": "17084",
+        "age_s": 162,
+        "confidence": "confirmed",
+        "inferred": false,
+        "how": "kill event"
+      }
+    ],
+    "kill_seq": 2036,
+    "kill_tallies": {
+      "me": {
+        "total": 4,
+        "confirmed": 4,
+        "likely": 0,
+        "by_category": {
+          "armor": 1,
+          "AAA": 0,
+          "SAM": 0,
+          "infantry": 0,
+          "vehicles": 0,
+          "scenery": 3
+        },
+        "by_type": {
+          "T-55": 1,
+          "T 55": 3
+        }
+      },
+      "all_friendly": {
+        "total": 4,
+        "confirmed": 4,
+        "likely": 0,
+        "by_category": {
+          "armor": 1,
+          "AAA": 0,
+          "SAM": 0,
+          "infantry": 0,
+          "vehicles": 0,
+          "scenery": 3
+        },
+        "by_type": {
+          "T-55": 1,
+          "T 55": 3
+        }
+      },
+      "by_shooter": {
+        "17084": {
+          "total": 4,
+          "confirmed": 4,
+          "likely": 0,
+          "by_category": {
+            "armor": 1,
+            "AAA": 0,
+            "SAM": 0,
+            "infantry": 0,
+            "vehicles": 0,
+            "scenery": 3
+          },
+          "by_type": {
+            "T-55": 1,
+            "T 55": 3
+          },
+          "shooter": {
+            "type": "F-4E-45MC",
+            "name": "Aerial-1-2",
+            "coalition": "blue",
+            "category": "fighter",
+            "player": "Prometheus"
+          },
+          "flight_member": true
+        }
+      }
+    },
+    "my_weapons_used_this_mission": {
+      "source": "stores (loadout diff)",
+      "by_weapon": {
+        "AGM-65A": 4
+      }
+    },
+    "recent_kills_and_losses_last_10_min": [
+      {
+        "age_s": 162,
+        "event": "destroyed",
+        "victim": {
+          "type": "unknown",
+          "name": "",
+          "coalition": "unknown",
+          "category": "unknown"
+        },
+        "friendly_loss": false
+      },
+      {
+        "age_s": 162,
+        "event": "lost",
+        "victim": {
+          "type": "AGM-65A",
+          "name": "",
+          "coalition": "unknown",
+          "category": "weapon"
+        },
+        "where": {
+          "range_nm": 12.5,
+          "clock": "3 o'clock, right",
+          "bearing_mag": "082"
+        },
+        "friendly_loss": false
+      },
+      {
+        "age_s": 162,
+        "event": "killed",
+        "victim": {
+          "type": "T 55",
+          "name": "63-12 SFW Target #017",
+          "coalition": "red",
+          "category": "scenery"
+        },
+        "killer": {
+          "type": "F-4E-45MC",
+          "name": "Aerial-1-2",
+          "coalition": "blue",
+          "category": "fighter",
+          "player": "Prometheus"
+        },
+        "weapon": "AGM-65A",
+        "by_me": true,
+        "where": {
+          "range_nm": 12.5,
+          "clock": "3 o'clock, right",
+          "bearing_mag": "082"
+        },
+        "friendly_loss": false
+      }
+    ],
+    "recent_events_last_10_min": [
+      "162s ago: red T 55 hit red T 55 with T-55",
+      "162s ago: blue Prometheus (F-4E-45MC) hit red T 55 with AGM-65A",
+      "162s ago: blue Prometheus (F-4E-45MC) hit red T 55 with AGM-65A",
+      "162s ago: blue Prometheus (F-4E-45MC) hit red T 55 with AGM-65A",
+      "176s ago: blue A-10C fired BDU-33",
+      "190s ago: blue Prometheus (F-4E-45MC) fired AGM-65A"
+    ],
+    "alive_totals_by_coalition": {
+      "blue": {
+        "fighter": 1,
+        "transport": 4,
+        "attack": 2
+      },
+      "red": {
+        "ground vehicle": 11,
+        "SAM": 10,
+        "armor": 6,
+        "AAA": 6
+      }
+    },
+    "_memory_generation": 1,
+    "memory": {
+      "coverage": {
+        "audit_claim_limit": 256,
+        "audit_claims_truncated": false,
+        "note": "Recent evidence window only. Older claims/evidence are not fully audited; missing evidence is inconclusive.",
+        "raw_event_limit": 2048,
+        "raw_events_truncated": false
+      },
+      "kill_loss_timeline": [
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #014",
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43102,
+          "time": 1794440335.7928607,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": null,
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43103,
+          "time": 1794440335.79348,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "Aerial-1-2",
+            "target": "63-12 SFW Target #001",
+            "type": "kill",
+            "weapon": "AGM-65A"
+          },
+          "raw_id": 43238,
+          "time": 1794440465.675768,
+          "type": "kill"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #001",
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43239,
+          "time": 1794440465.6765802,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": 4294967275,
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43240,
+          "time": 1794440465.6775393,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #001",
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43241,
+          "time": 1794440465.6787543,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": null,
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43242,
+          "time": 1794440465.6796083,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "Aerial-1-2",
+            "target": "63-12 SFW Target #017",
+            "type": "kill",
+            "weapon": "AGM-65A"
+          },
+          "raw_id": 43376,
+          "time": 1794441544.2281542,
+          "type": "kill"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #017",
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43377,
+          "time": 1794441544.2289662,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": 4294967268,
+            "target": null,
+            "type": "unit_lost",
+            "weapon": null
+          },
+          "raw_id": 43380,
+          "time": 1794441544.2327,
+          "type": "unit_lost"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": "63-12 SFW Target #017",
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43382,
+          "time": 1794441544.2350829,
+          "type": "dead"
+        },
+        {
+          "claim": {
+            "airfield": null,
+            "initiator": null,
+            "target": null,
+            "type": "dead",
+            "weapon": null
+          },
+          "raw_id": 43383,
+          "time": 1794441544.2360065,
+          "type": "dead"
+        }
+      ],
+      "mission_key": "mission-056721f5024fb7d3e68d76e1b9e649cb9667b30782c6c48d78fe9886f403f0e9",
+      "recent_disagreements": [
+        {
+          "bug_note": "Replay raw event unknown with Eye observation 7216119c-4470-4870-88f0-a319f2b8e0a5; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 558.23,
+            "place": null,
+            "seq": 667,
+            "t": 1794440205.2061763,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        },
+        {
+          "bug_note": "Replay raw event unknown with Eye observation 22a9f0bd-3bfb-4f7e-a3bc-0d1d4586018d; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 688.814,
+            "place": null,
+            "seq": 812,
+            "t": 1794440335.7860441,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        },
+        {
+          "bug_note": "Replay raw event unknown with Eye observation 23d6bd98-f5e3-4baa-adea-760d36c65f5d; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 818.714,
+            "place": null,
+            "seq": 952,
+            "t": 1794440465.6746418,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        },
+        {
+          "bug_note": "Replay raw event unknown with Eye observation e6965f4c-155a-4a2f-b2e9-a28992006701; DCS mission time. Missing or ambiguous identity/time evidence; no attribution error established. Missing stream evidence is not proof of survival.",
+          "correlation": "DCS mission time",
+          "evidence_truncated": false,
+          "eye_claim": {
+            "initiator": {
+              "alt_m": null,
+              "category": "unknown",
+              "coalition": "unknown",
+              "id": 0,
+              "kind": "unknown",
+              "lat": null,
+              "lon": null,
+              "name": "",
+              "player": null,
+              "type": "unknown"
+            },
+            "kind": "dead",
+            "mine": false,
+            "mission_time": 948.106,
+            "place": null,
+            "seq": 2043,
+            "t": 1794441544.230754,
+            "target": null,
+            "weapon": null,
+            "weapon_id": null
+          },
+          "memory_claim": {
+            "status": "not interpreted or not uniquely correlated"
+          },
+          "raw_evidence": [],
+          "suggested_fix": "Missing or ambiguous identity/time evidence; no attribution error established.",
+          "verdict": "unclear"
+        }
+      ],
+      "takeoff_airfield": null,
+      "weapons_used_this_mission": {
+        "by_weapon": {
+          "AGM-65A": 4
+        },
+        "source": "stores (loadout diff)"
+      }
+    }
+  },
+  "w03": {
+    "source": "Athena Eye (DCS-gRPC 10.90.10.113:50051)",
+    "connected": true,
+    "data_age_s": {
+      "units": 0.3,
+      "last_event": 81.6,
+      "airbases": 50.5,
+      "ownship": 0.3
+    },
+    "event_stream": {
+      "state": "live",
+      "last_event_age_s": 0.9,
+      "events_per_min": 62.6,
+      "events_total": 376,
+      "units_age_s": 0.3,
+      "last_mission_event_age_s": 81.6,
+      "resubscribes": {
+        "reconnect:events": 1
+      },
+      "kinds_total": {
+        "simulation_fps": 363,
+        "birth": 5,
+        "weapon_add": 4,
+        "shot": 3,
+        "player_enter_unit": 1
+      }
+    },
+    "data_health": {
+      "connected": true,
+      "streams": {
+        "events": "up",
+        "units-air": "up",
+        "units-ground": "up",
+        "units-helo": "down 378s (units-helo: _InactiveRpcError StatusCode.UNAVAILABLE)",
+        "units-ship": "down 378s (units-ship: _InactiveRpcError StatusCode.UNAVAILABLE)",
+        "world": "up"
+      },
+      "events": "live",
+      "combat_events": "ok",
+      "unit_sync": {
+        "category": "GROUP_CATEGORY_AIRPLANE",
+        "removed": 0,
+        "age_s": 278.0
+      }
+    },
+    "theatre": "Nevada",
+    "bearings": "magnetic (declination -11.9 deg from DCS)",
+    "notes": [
+      "Every unit listed in contacts/totals is ALIVE as of data_age_s.",
+      "Kills, losses and deaths come ONLY from recent_kills_and_losses / my_shots / my_kills. A kill with confidence confirmed is a kill (say splash, no 'likely'); only confidence likely is 'likely'.",
+      "Mission totals come from kill_tallies / my_kills_this_mission, never recent lists. For fresh confirmations use my_kills_recent seq after your last confirmation cursor.",
+      "clock is relative to Prometheus' nose (12 = ahead).",
+      "Each group/airbase 'call' is the ready radio call in the required order; read it as written.",
+      "picture_top3 = the three closest hostile air groups within 50 nm, verbatim. No extra-group count.",
+      "Traffic means aircraft (including helos), not ground units. Use air_traffic and airbase traffic.",
+      "Never say overhead unless the contact has overhead_allowed true (within 3 nm).",
+      "cockpit = live data from Prometheus' own aircraft (DCS Export.lua, about 5 per second): config, flight, payload, warning_lights; rwr/locked_target only when cockpit.rwr.available is true (no module has exported them so far). Fuel: ownship.fuel."
+    ],
+    "ownship": {
+      "type": "F-4E-45MC",
+      "coalition": "blue",
+      "group": "Aerial-1 Mavs A's x4",
+      "player_name": "Prometheus",
+      "alt_ft": 11360,
+      "speed_kt": 590,
+      "heading_true": "085",
+      "fuel": {
+        "internal_pct": 30,
+        "total_lb": 3640,
+        "internal_lb": 3640,
+        "source": "cockpit fraction x DCS fuelMassMax for F-4E-45MC",
+        "estimated": false,
+        "spoken": "3,640 pounds"
+      },
+      "fuel_fraction": 0.3,
+      "loadout": {
+        "available": true,
+        "age_s": 0.6,
+        "weapons": [
+          {
+            "weapon": "AGM-65A",
+            "type": "AGM-65A",
+            "raw_weapon": "AGM-65A",
+            "raw_type": "AGM-65A",
+            "spoken_name": "AGM-65A",
+            "kind": "missile",
+            "count": 4
+          },
+          {
+            "weapon": "chaff/flare pod",
+            "type": "chaff/flare pod",
+            "raw_weapon": "HB_ALE_40_30_60",
+            "raw_type": "HB_ALE_40_30_60",
+            "spoken_name": "chaff/flare pod",
+            "kind": "missile",
+            "count": 1
+          },
+          {
+            "weapon": "Pave Spike pod",
+            "type": "Pave Spike pod",
+            "raw_weapon": "HB_ORD_Pave_Spike_Fast",
+            "raw_type": "HB_ORD_Pave_Spike_Fast",
+            "spoken_name": "Pave Spike pod",
+            "kind": "missile",
+            "count": 1
+          }
+        ],
+        "gun_rounds": 639,
+        "source": "cockpit (Export.lua payload)"
+      },
+      "damage": {
+        "life_available": true,
+        "events": [],
+        "note": "No warnings does not mean no damage. Hit events and life drops are primary evidence.",
+        "life_percent": 100,
+        "life_age_s": 2.5,
+        "secondary": {
+          "warning_lights": [],
+          "engine": {
+            "rpm_pct": [
+              99.9,
+              99.9
+            ],
+            "note": "RPM changes are secondary clues, not proof of a hit.",
+            "rpm_change": [
+              1.9,
+              1.7
+            ],
+            "window_s": 58.4
+          },
+          "fuel_trend": {
+            "window_s": 58.4,
+            "loss_lb_per_min": 0.0,
+            "note": "Observed fuel loss (burn, leak or jettison), not a confirmed leak; engine fuel-flow telemetry unavailable."
+          }
+        }
+      },
+      "lat": 36.6167,
+      "lon": -115.6444,
+      "heading_mag": "097"
+    },
+    "contacts_within_nm": 150.0,
+    "hostile_groups": [
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "armor",
+        "count": 1,
+        "types": {
+          "T-55": 1
+        },
+        "spoken_types": {
+          "T-55": 1
+        },
+        "range_nm": 17.1,
+        "clock": "10 o'clock, ahead left",
+        "bearing_mag": "045",
+        "label": "enemy armor",
+        "moving": true,
+        "vertical": "ground target",
+        "call": "Enemy armor, bearing zero four five, seventeen miles, ground target, ten o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "62-08 Moving Target"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "AAA",
+        "count": 3,
+        "types": {
+          "ZU-23 Emplacement Closed": 3
+        },
+        "spoken_types": {
+          "ZU-23": 3
+        },
+        "range_nm": 17.3,
+        "clock": "6 o'clock, behind",
+        "bearing_mag": "290",
+        "label": "triple A",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Triple A, three contacts, bearing two nine zero, seventeen miles, ground target, six o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-13",
+          "Ground-14",
+          "Ground-15"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "armor",
+        "count": 6,
+        "types": {
+          "BTR-80": 4,
+          "T-90": 1,
+          "Grad_FDDM": 1
+        },
+        "spoken_types": {
+          "BTR-80": 4,
+          "T-90": 1,
+          "Grad FDDM": 1
+        },
+        "range_nm": 17.3,
+        "clock": "6 o'clock, behind",
+        "bearing_mag": "290",
+        "label": "enemy armor",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Enemy armor, six contacts, bearing two nine zero, seventeen miles, ground target, six o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-11",
+          "Ground-12",
+          "Ground-16"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "AAA",
+        "count": 3,
+        "types": {
+          "ZU-23 Emplacement Closed": 3
+        },
+        "spoken_types": {
+          "ZU-23": 3
+        },
+        "range_nm": 18.1,
+        "clock": "7 o'clock, behind left",
+        "bearing_mag": "319",
+        "label": "triple A",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Triple A, three contacts, bearing three one nine, eighteen miles, ground target, seven o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-5",
+          "Ground-7",
+          "Ground-9"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "ground vehicle",
+        "count": 11,
+        "types": {
+          "ATZ-10": 4,
+          "ATMZ-5": 2,
+          "Ural-4320 APA-5D": 1,
+          "ZIL-131 KUNG": 2,
+          "Ural-4320T": 2
+        },
+        "spoken_types": {
+          "ATZ-10": 4,
+          "fuel truck": 2,
+          "Ural power truck": 1,
+          "ZIL-131 truck": 2,
+          "Ural truck": 2
+        },
+        "range_nm": 18.2,
+        "clock": "7 o'clock, behind left",
+        "bearing_mag": "320",
+        "label": "enemy ground vehicle",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "Enemy ground vehicle, eleven contacts, bearing three two zero, eighteen miles, ground target, seven o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-1",
+          "Ground-2",
+          "Ground-3"
+        ]
+      },
+      {
+        "side": "hostile",
+        "coalition": "red",
+        "domain": "ground",
+        "category": "SAM",
+        "count": 10,
+        "types": {
+          "SA-18 Igla comm": 2,
+          "S_75M_Volhov": 6,
+          "p-19 s-125 sr": 1,
+          "SNR_75V": 1
+        },
+        "spoken_types": {
+          "SA-18 command post": 2,
+          "SA-2": 6,
+          "P-19 radar": 1,
+          "SA-2 radar": 1
+        },
+        "range_nm": 18.2,
+        "clock": "7 o'clock, behind left",
+        "bearing_mag": "320",
+        "label": "SAM site",
+        "moving": false,
+        "vertical": "ground target",
+        "call": "SAM site, ten contacts, bearing three two zero, eighteen miles, ground target, seven o'clock.",
+        "overhead_allowed": false,
+        "groups": [
+          "Ground-10",
+          "Ground-6",
+          "Ground-8"
+        ]
+      }
+    ],
+    "friendly_groups": [
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "attack",
+        "count": 2,
+        "types": {
+          "A-10C": 2
+        },
+        "spoken_types": {
+          "A-10C": 2
+        },
+        "range_nm": 5.5,
+        "clock": "10 o'clock, ahead left",
+        "bearing_mag": "029",
+        "alt_ft": 8000,
+        "angels": 8,
+        "vertical": "low",
+        "speed_kt": 356,
+        "heading_true": "142",
+        "aspect": "flanking",
+        "closure_kt": 424,
+        "call": "Friendly A-10C, two contacts, zero two nine, six miles, angels eight, ten o'clock low.",
+        "overhead_allowed": false,
+        "groups": [
+          "R63 #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 28.9,
+        "clock": "2 o'clock, ahead right",
+        "bearing_mag": "166",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 452,
+        "heading_true": "058",
+        "aspect": "beaming",
+        "closure_kt": 254,
+        "call": "Friendly IL-76MD, one six six, twenty nine, angels thirty three, two o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #002"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 41.9,
+        "clock": "2 o'clock, ahead right",
+        "bearing_mag": "160",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 446,
+        "heading_true": "309",
+        "aspect": "hot",
+        "closure_kt": 689,
+        "call": "Friendly IL-76MD, one six zero, forty two, angels thirty three, two o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #003"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 45.0,
+        "clock": "2 o'clock, ahead right",
+        "bearing_mag": "143",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 444,
+        "heading_true": "244",
+        "aspect": "flanking",
+        "closure_kt": 586,
+        "call": "Friendly IL-76MD, one four three, forty five, angels thirty three, two o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #004"
+        ]
+      },
+      {
+        "side": "friendly",
+        "coalition": "blue",
+        "domain": "air",
+        "category": "transport",
+        "count": 1,
+        "types": {
+          "IL-76MD": 1
+        },
+        "spoken_types": {
+          "IL-76MD": 1
+        },
+        "range_nm": 45.2,
+        "clock": "2 o'clock, ahead right",
+        "bearing_mag": "153",
+        "alt_ft": 33000,
+        "angels": 33,
+        "vertical": "high",
+        "speed_kt": 452,
+        "heading_true": "050",
+        "aspect": "beaming",
+        "closure_kt": 333,
+        "call": "Friendly IL-76MD, one five three, forty five, angels thirty three, two o'clock high.",
+        "overhead_allowed": false,
+        "groups": [
+          "Contrail Traffic #001"
+        ]
+      }
+    ],
+    "air_traffic": {
+      "blue": [
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "attack",
+          "count": 2,
+          "types": {
+            "A-10C": 2
+          },
+          "spoken_types": {
+            "A-10C": 2
+          },
+          "range_nm": 5.5,
+          "clock": "10 o'clock, ahead left",
+          "bearing_mag": "029",
+          "alt_ft": 8000,
+          "angels": 8,
+          "vertical": "low",
+          "speed_kt": 356,
+          "heading_true": "142",
+          "aspect": "flanking",
+          "closure_kt": 424,
+          "call": "Friendly A-10C, two contacts, zero two nine, six miles, angels eight, ten o'clock low.",
+          "overhead_allowed": false,
+          "groups": [
+            "R63 #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 28.9,
+          "clock": "2 o'clock, ahead right",
+          "bearing_mag": "166",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 452,
+          "heading_true": "058",
+          "aspect": "beaming",
+          "closure_kt": 254,
+          "call": "Friendly IL-76MD, one six six, twenty nine, angels thirty three, two o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #002"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 41.9,
+          "clock": "2 o'clock, ahead right",
+          "bearing_mag": "160",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 446,
+          "heading_true": "309",
+          "aspect": "hot",
+          "closure_kt": 689,
+          "call": "Friendly IL-76MD, one six zero, forty two, angels thirty three, two o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #003"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 45.0,
+          "clock": "2 o'clock, ahead right",
+          "bearing_mag": "143",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 444,
+          "heading_true": "244",
+          "aspect": "flanking",
+          "closure_kt": 586,
+          "call": "Friendly IL-76MD, one four three, forty five, angels thirty three, two o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #004"
+          ]
+        },
+        {
+          "side": "friendly",
+          "coalition": "blue",
+          "domain": "air",
+          "category": "transport",
+          "count": 1,
+          "types": {
+            "IL-76MD": 1
+          },
+          "spoken_types": {
+            "IL-76MD": 1
+          },
+          "range_nm": 45.2,
+          "clock": "2 o'clock, ahead right",
+          "bearing_mag": "153",
+          "alt_ft": 33000,
+          "angels": 33,
+          "vertical": "high",
+          "speed_kt": 452,
+          "heading_true": "050",
+          "aspect": "beaming",
+          "closure_kt": 333,
+          "call": "Friendly IL-76MD, one five three, forty five, angels thirty three, two o'clock high.",
+          "overhead_allowed": false,
+          "groups": [
+            "Contrail Traffic #001"
+          ]
+        }
+      ]
+    },
+    "hostile_air_groups": 0,
+    "hostile_groups_total": 6,
+    "picture_top3": [],
+    "air_picture_radius_nm": 50.0,
+    "picture_long_range_top3": [],
+    "long_range_radius_nm": 150.0,
+    "air_picture_empty_call": "No bandits within one hundred fifty miles.",
+    "ground_targets_within_20nm": [
+      {
+        "call": "Enemy armor, bearing zero four five, seventeen miles, ground target, ten o'clock.",
+        "category": "armor",
+        "member_categories": [
+          "armor"
+        ]
+      },
+      {
+        "call": "Triple A, three contacts, bearing two nine zero, seventeen miles, ground target, six o'clock.",
+        "category": "AAA",
+        "member_categories": [
+          "AAA"
+        ]
+      },
+      {
+        "call": "Enemy armor, six contacts, bearing two nine zero, seventeen miles, ground target, six o'clock.",
+        "category": "armor",
+        "member_categories": [
+          "armor"
+        ]
+      },
+      {
+        "call": "Triple A, three contacts, bearing three one nine, eighteen miles, ground target, seven o'clock.",
+        "category": "AAA",
+        "member_categories": [
+          "AAA"
+        ]
+      },
+      {
+        "call": "Enemy ground vehicle, eleven contacts, bearing three two zero, eighteen miles, ground target, seven o'clock.",
+        "category": "ground vehicle",
+        "member_categories": [
+          "ground vehicle"
+        ]
+      },
+      {
+        "call": "SAM site, ten contacts, bearing three two zero, eighteen miles, ground target, seven o'clock.",
+        "category": "SAM",
+        "member_categories": [
+          "SAM"
+        ]
+      }
+    ],
+    "ground_empty_call": "No ground targets within twenty miles.",
+    "working_target": null,
+    "airbases": {
+      "count": 17,
+      "nearest": [
+        {
+          "name": "Creech",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 2.8,
+          "clock": "5 o'clock, behind right",
+          "bearing_mag": "238",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Creech, bearing two three eight, three miles, at your five o'clock."
+        },
+        {
+          "name": "North Las Vegas",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 32.8,
+          "clock": "2 o'clock, ahead right",
+          "bearing_mag": "149",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "North Las Vegas, bearing one four nine, thirty three miles, at your two o'clock."
+        },
+        {
+          "name": "Groom Lake",
+          "owner": "neutral",
+          "category": "airdrome",
+          "range_nm": 36.8,
+          "clock": "9 o'clock, left",
+          "bearing_mag": "001",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Groom Lake, bearing zero zero one, thirty seven miles, at your nine o'clock."
+        },
+        {
+          "name": "Nellis",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 37.3,
+          "clock": "1 o'clock, ahead right",
+          "bearing_mag": "141",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "Nellis, bearing one four one, thirty seven miles, at your one o'clock."
+        },
+        {
+          "name": "McCarran International",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 39.9,
+          "clock": "2 o'clock, ahead right",
+          "bearing_mag": "156",
+          "traffic": {
+            "count": 0,
+            "aircraft": []
+          },
+          "call": "McCarran International, bearing one five six, forty miles, at your two o'clock."
+        }
+      ],
+      "nearest_friendly": [
+        {
+          "name": "Creech",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 2.8,
+          "bearing_mag": "238",
+          "clock": "5 o'clock, behind right",
+          "call": "Creech, bearing two three eight, three miles, at your five o'clock."
+        },
+        {
+          "name": "North Las Vegas",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 32.8,
+          "bearing_mag": "149",
+          "clock": "2 o'clock, ahead right",
+          "call": "North Las Vegas, bearing one four nine, thirty three miles, at your two o'clock."
+        },
+        {
+          "name": "Nellis",
+          "owner": "blue",
+          "category": "airdrome",
+          "range_nm": 37.3,
+          "bearing_mag": "141",
+          "clock": "1 o'clock, ahead right",
+          "call": "Nellis, bearing one four one, thirty seven miles, at your one o'clock."
+        }
+      ],
+      "at_or_near": {
+        "name": "Creech",
+        "owner": "blue",
+        "category": "airdrome",
+        "range_nm": 2.8,
+        "clock": "5 o'clock, behind right",
+        "bearing_mag": "238",
+        "traffic": {
+          "count": 0,
+          "aircraft": []
+        },
+        "call": "Creech, bearing two three eight, three miles, at your five o'clock.",
+        "on_ground": false
+      }
+    },
+    "cockpit": {
+      "available": true,
+      "fresh": true,
+      "age_s": 0.2,
+      "aircraft": "F-4E-45MC",
+      "pilot": "Prometheus",
+      "config": {
+        "gear": "up",
+        "flaps_pct": 0,
+        "speedbrake": "in",
+        "canopy": "closed",
+        "wheel_brakes": false
+      },
+      "flight": {
+        "ias_kt": 494,
+        "tas_kt": 591,
+        "gs_kt": 590,
+        "mach": 0.93,
+        "alt_msl_ft": 11370,
+        "agl_ft": 8240,
+        "vs_fpm": 3110,
+        "g": 1.7,
+        "aoa_deg": -0.2,
+        "heading_true": 85,
+        "heading_mag": 73,
+        "pitch_deg": 3,
+        "bank_deg": -61
+      },
+      "engine": {
+        "rpm_pct": [
+          99.9,
+          99.9
+        ],
+        "note": "RPM changes are secondary clues, not proof of a hit.",
+        "rpm_change": [
+          1.9,
+          1.7
+        ],
+        "window_s": 58.4
+      },
+      "fuel_trend": {
+        "window_s": 58.4,
+        "loss_lb_per_min": 0.0,
+        "note": "Observed fuel loss (burn, leak or jettison), not a confirmed leak; engine fuel-flow telemetry unavailable."
+      },
+      "fuel": {
+        "internal_pct": 30,
+        "total_lb": 3640,
+        "internal_lb": 3640,
+        "source": "cockpit fraction x DCS fuelMassMax for F-4E-45MC",
+        "estimated": false,
+        "spoken": "3,640 pounds"
+      },
+      "payload": {
+        "age_s": 0.6,
+        "stations": [
+          {
+            "station": 3,
+            "weapon": "AGM-65A",
+            "count": 2
+          },
+          {
+            "station": 6,
+            "weapon": "Pave Spike pod",
+            "count": 1
+          },
+          {
+            "station": 11,
+            "weapon": "AGM-65A",
+            "count": 2
+          },
+          {
+            "station": 14,
+            "weapon": "chaff/flare pod",
+            "count": 1
+          }
+        ],
+        "by_weapon": {
+          "AGM-65A": 4,
+          "Pave Spike pod": 1,
+          "chaff/flare pod": 1
+        },
+        "gun_rounds": 639,
+        "selected_station": 0
+      },
+      "rwr": {
+        "available": false,
+        "reason": "no RWR data (aircraft without exportable RWR, or sensor export disabled on the server)"
+      },
+      "locked_target": null,
+      "locked_note": "nothing locked"
+    },
+    "threats": {
+      "rwr_source": "grpc_inferred",
+      "rwr_export_by_module": {
+        "F-4E-45MC": false
+      },
+      "sam_source": "dcs_radar",
+      "sam_radar": {
+        "available": true,
+        "age_s": 0.7,
+        "source": "DCS Unit:getRadar() + group radar detection (Eval, 1 Hz)",
+        "confidence": "DCS truth",
+        "tracking_you": [],
+        "radars_on": 1
+      },
+      "missile_scan": "on",
+      "sam_in_range": [
+        {
+          "group": "Ground-8",
+          "type": "S_75M_Volhov",
+          "sam": "SA-2",
+          "ewr": false,
+          "range_nm": 18.4,
+          "nominal_range_nm": 23.0,
+          "clock": 7,
+          "call": "SAM SA-2 radar sees you, your seven o'clock, eighteen miles.",
+          "confidence": "DCS radar: sees you"
+        }
+      ],
+      "missiles_inbound": [],
+      "missiles_in_flight": [],
+      "note": "no RWR feed from this aircraft. sam_in_range confidence 'DCS radar: ...' is DCS's own radar state; 'range only' rows are inferred from nominal range: say 'could be' for those"
+    },
+    "my_shots_last_15_min": {
+      "total": 0,
+      "by_result": {},
+      "shots": []
+    },
+    "last_attack_age_s": null,
+    "my_kills_this_mission": [],
+    "my_kills_recent": [],
+    "friendly_kills_this_mission": [],
+    "friendly_kills_recent": [],
+    "kill_seq": 0,
+    "kill_tallies": {
+      "me": {
+        "total": 0,
+        "confirmed": 0,
+        "likely": 0,
+        "by_category": {
+          "armor": 0,
+          "AAA": 0,
+          "SAM": 0,
+          "infantry": 0,
+          "vehicles": 0,
+          "scenery": 0
+        },
+        "by_type": {}
+      },
+      "all_friendly": {
+        "total": 0,
+        "confirmed": 0,
+        "likely": 0,
+        "by_category": {
+          "armor": 0,
+          "AAA": 0,
+          "SAM": 0,
+          "infantry": 0,
+          "vehicles": 0,
+          "scenery": 0
+        },
+        "by_type": {}
+      },
+      "by_shooter": {
+        "17084": {
+          "total": 0,
+          "confirmed": 0,
+          "likely": 0,
+          "by_category": {
+            "armor": 0,
+            "AAA": 0,
+            "SAM": 0,
+            "infantry": 0,
+            "vehicles": 0,
+            "scenery": 0
+          },
+          "by_type": {},
+          "shooter": {
+            "type": "F-4E-45MC",
+            "name": "Aerial-1-2",
+            "coalition": "blue",
+            "category": "fighter",
+            "player": "Prometheus"
+          },
+          "flight_member": true
+        }
+      }
+    },
+    "my_weapons_used_this_mission": {
+      "source": "shot events",
+      "by_weapon": {}
+    },
+    "recent_kills_and_losses_last_10_min": [],
+    "recent_events_last_10_min": [
+      "167s ago: blue A-10C fired BDU-33",
+      "293s ago: blue Prometheus (F-4E-45MC) entered aircraft",
+      "293s ago: blue Prometheus (F-4E-45MC) spawned"
+    ],
+    "alive_totals_by_coalition": {
+      "blue": {
+        "fighter": 1,
+        "transport": 4,
+        "attack": 2
+      },
+      "red": {
+        "ground vehicle": 11,
+        "SAM": 10,
+        "armor": 7,
+        "AAA": 6
+      }
+    },
+    "_memory_generation": 1,
+    "memory": {
+      "coverage": {
+        "audit_claim_limit": 256,
+        "audit_claims_truncated": false,
+        "note": "Recent evidence window only. Older claims/evidence are not fully audited; missing evidence is inconclusive.",
+        "raw_event_limit": 2048,
+        "raw_events_truncated": false
+      },
+      "kill_loss_timeline": [],
+      "mission_key": "mission-056721f5024fb7d3e68d76e1b9e649cb9667b30782c6c48d78fe9886f403f0e9",
+      "recent_disagreements": [],
+      "takeoff_airfield": null,
+      "weapons_used_this_mission": {
+        "by_weapon": {},
+        "source": "shot events"
+      }
+    }
+  }
+}

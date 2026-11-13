@@ -678,6 +678,22 @@ def _raw_compact(value):
 
 
 # ----------------------------------------------------------------------------- the eye
+def pilot_identity(own, previous=None):
+    """Last non-null identity; cockpit id -1 is a feed fallback, not a spawn.
+
+    Preserve a real id across fallback so a different real id still means respawn.
+    Name/type changes mean a slot/aircraft change even across source switching.
+    """
+    if not own:
+        return previous, False
+    unit = tuple(own.get(k) for k in ("id", "name", "type"))
+    same_aircraft = previous is not None and unit[1:] == previous[1:]
+    same = same_aircraft and (unit[0] == previous[0] or -1 in (unit[0], previous[0]))
+    if same and unit[0] == -1:
+        return previous, False
+    return unit, not same
+
+
 class Eye:
     def __init__(self, player=PLAYER, *, clock=time.time, source="unconfigured", stores_dir=None, test_ownship=None):
         self.player, self.clock, self.source = player, clock, source
@@ -944,10 +960,9 @@ class Eye:
         if cached is not None:
             return cached[0]  # picture() resolves ownship once per build (busy maps: thousands of _is_me calls)
         own = self._resolve_own()
-        unit = (own.get("id"), own.get("name"), own.get("type")) if own else None
-        if unit is not None and unit != self._chat_unit:
+        self._chat_unit, changed = pilot_identity(own, self._chat_unit)
+        if changed:
             self.chat_generation += 1
-        self._chat_unit = unit
         if own is not None:
             if self._stand_in(own):
                 self._stand_used = True

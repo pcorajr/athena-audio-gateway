@@ -16,12 +16,12 @@ import unicodedata
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
 from .cockpit import spoken_name
 from .codex_llm import read_chunks
-from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words
+from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words, pilot_identity
 
 PROMPT = """GROUNDING (most important):
 - The PICTURE (JSON) is your only source of facts. Say only names, numbers, bearings and ranges that are in it.
 - Before saying "unknown", "unavailable", "not connected" or "nothing showing", look again: if the field has a value, give the value. ownship.fuel.spoken is the fuel; airbases.nearest_friendly is the friendly airfield list; air_traffic is the friendly air traffic; connected true means the picture is live.
-- Never invent clearances ("cleared to land/for takeoff"), runways, winds, altimeter, times or units. You are not a tower: for landing give the airfield call and its traffic, then "your discretion".
+- Never invent clearances ("cleared to land/for takeoff"), runways, winds, altimeter, times or units. You are not a tower: for landing give the airfield call and its traffic.
 - Never read JSON key names, codes or ids aloud.
 - Every unit in contacts and totals is alive. Dead only from my_kills_this_mission, recent_kills_and_losses or a shot result kill. confidence confirmed = say it plainly; likely = "likely".
 - If ownship is null you have no position for Prometheus: no range or bearing answers; totals and kills are still fine.
@@ -44,7 +44,7 @@ Facts that matter:
 - cockpit is live aircraft data: config, flight, payload, rwr, locked_target and warning_lights. Prefer it when cockpit.fresh is true; if unavailable or stale and needed for the question, say "no cockpit data". Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
 - RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. missile_scan not on: say missile tracking is limited and why."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
-- If the picture has rwr_alert_to_announce, START the answer with it, before anything else, e.g. "Prometheus, Athena, spike, SA-11 at your three o'clock." Then answer the question.
+- Pending rwr_alert_to_announce calls are context: the controller speaks them before your text. Do not repeat or contradict them.
 
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups. Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
@@ -59,7 +59,7 @@ How to talk:
   Air picture: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
   Close bandit or traffic: "Bandit MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level."
   Ground: "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock."
-- If the picture has splash_to_announce, start the answer with it once, e.g. "Prometheus, Athena, splash one T-72." (keep "likely" only when it says so).
+- Pending splash_to_announce calls are context: the controller speaks them before your text. Do not repeat or contradict them.
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
 - No markdown, no lists, no parentheses, no abbreviations with periods. Write numbers so a text-to-speech voice reads them well.
 - Follow-up questions refer to the previous exchanges.
@@ -86,8 +86,19 @@ MIN_MODEL_S = 2.0  # less than this left (the request waited behind another one)
 FALLBACK = "Prometheus, Athena, say again."
 # Missing-data/link statements become false after connecting or spawning (11-11 preflight).
 STALE_CHAT = re.compile(r"unknown|unavailable|not available|not connected|disconnected|"
-                        r"no .{0,60}(showing|reading|data)|no cockpit|not showing|don['’]t have|do not have|"
-                        r"no position|say again|ask again for", re.I)
+                        r"no (?:connected )?picture|no cockpit|don['’]t (?:have|know)|do not (?:have|know)|"
+                        r"no position|not (?:showing )?in an aircraft|last known picture|say again|ask again for|"
+                        r"no (?:fuel|loadout|position|friendly airfield|friendly aircraft).{0,40}(?:data|reading|showing)", re.I)
+REPEAT_ASK = re.compile(r"^\W*(?:athena[ ,]+)?(?:say again|repeat|say that again|repeat last)[.!? ]*$", re.I)
+
+
+def factual_history(answer):
+    """Keep useful sentences, not missing-data caveats; legitimate negatives remain."""
+    from .reply_guardrails import sentences
+    body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer or "", flags=re.I)
+    kept = [s for s in sentences(body) if not STALE_CHAT.search(s)]
+    return ADDRESS + " ".join(kept) if kept else ""
+
 
 # Question focus (round 3): a one-line hint telling the model which picture section answers the question.
 FOCUS_RULES = (
@@ -1147,161 +1158,11 @@ def words_to_numbers(text):
     return found
 
 
-def picture_numbers(pic):
-    nums = set()
-
-    def walk(v):
-        if isinstance(v, bool):
-            return
-        if isinstance(v, (int, float)):
-            for x in (v, round(v), int(v), int(v) + 1):
-                nums.add(float(x))
-        elif isinstance(v, str):
-            for n in words_to_numbers(v):
-                nums.add(float(n))
-            for m in re.finditer(r"\d+", v):
-                nums.add(float(m.group(0)))
-        elif isinstance(v, dict):
-            for x in v.values():
-                walk(x)
-        elif isinstance(v, list):
-            for x in v:
-                walk(x)
-    walk(pic)
-    return nums
-
-
-
-# Mechanical grounding (the study's variant c), no model call or I/O.
-# Number parsing is shared with the offline scorer; the live path never imports the study runner.
-PHONETIC = dict(zip("alpha bravo charlie delta echo foxtrot golf hotel india juliett kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu".split(), "abcdefghijklmnopqrstuvwxyz"))
-
-
-def _ground_name(text):
-    text = str(text).lower().replace("’", "'")
-    text = re.sub(r"\b(" + "|".join(PHONETIC) + r")s?\b", lambda m: PHONETIC[m[1]], text)
-    text = re.sub(r"\b(" + "|".join(list(UNITS) + list(TENS)) + r")s\b", r"\1", text)
-    text = NUMWORD.sub(lambda m: " ".join(str(n) for n in words_to_numbers(m.group(0))), text)
-    return re.sub(r"[^a-z0-9]", "", text)
-
-
-RADIO_GRAMMAR = frozenset((
-    "missile missiles their them theirs these those "
-    'prometheus athena test pilot i your you my we our the a an no not unknown unavailable friendly enemy '
-    'bandit sam rwr awacs gci dcs fuel bearing range heading angels copy roger negative affirm unable '
-    'nothing tracking contact air ground mission kill kills confirmed likely splash total nearest left '
-    'right behind ahead at from to for with on in and but it that this there they one two three four five '
-    'six seven eight nine ten eleven twelve zero twenty thirty forty fifty sixty seventy eighty ninety '
-    'hundred thousand say ask loud clear read ready good morning afternoon evening hello hi thanks thank '
-    'yes flying still currently all last known only also plus about approximately weapons weapon maverick '
-    'mavericks loadout stores guns gun pounds percent internal aircraft airfield airbase traffic '
-    "information data position clock would could can do don't have stand by check checking see looks "
-    "looking that's correct report reporting call tally remaining its nearby sorry another continue "
-    "proceed understood apologies appreciate glad you're i'll i've "
-).split())
-
-
 def reply_check(reply, pic, ask):
-    """Return the mechanical rejection reason, or None. Clearance/key guards stay at their existing call site."""
-    text = (reply or "").lower().replace("’", "'")
-    # Validate explicit type designators and proper names, including spoken type numbers.
-    strings = []
-    def collect(value):
-        if isinstance(value, str):
-            strings.extend((value, spoken_name(value)))
-        elif isinstance(value, dict):
-            for k, v in value.items():
-                if k in ("types", "spoken_types") and isinstance(v, dict): strings.extend(v)
-                collect(v)
-        elif isinstance(value, list):
-            for v in value: collect(v)
-    collect(pic)
-    source = " ".join(strings).lower()
-    normalized = {}  # most replies have no type designator; normalize lazily, once per value
-    def has_type(name):
-        for value in strings:
-            if value not in normalized:
-                normalized[value] = _ground_name(value)
-            if name in normalized[value]:
-                return True
-        return False
-    number = "(?:" + "|".join(list(UNITS) + list(TENS) + ["niner", "hundred", "thousand"]) + ")"
-    suffix = "(?:[A-Z]|(?:" + "|".join(PHONETIC) + ")s?)"
-    types = re.findall(r"\b(?:[a-z]{1,4}-?\d+[a-z0-9-]*|(?:[FAETB]|MiG|Su|SA|AGM|AIM)[ -]+%s(?:[ -]+%s)*s?(?:[ -]+%s)?)\b" %
-                       (number, number, suffix), reply or "", re.I)
-    types = [name for name in types if not (re.fullmatch(r"a (one|two|three|four)", name, re.I)
-             and re.search(re.escape(name) + r"[- ]ship", reply, re.I))]
-    for name in types:
-        n = _ground_name(name).rstrip("s")
-        if re.search(r"no\s+" + re.escape(name.lower()) + r".{0,20}showing", text):
-            continue  # an explicit absence is not an invented contact
-        if not has_type(n):
-            return "unit not in picture: " + name
-    # Proper names must occur in the picture (or its spoken-name aliases). Common
-    # radio/grammar words are not entity names; explicit type designators above
-    # are never exempted by this vocabulary.
-    body = reply or ""
-    for name in types: body = body.replace(name, "")
-    names = re.findall(r"\b([A-Z][A-Za-z'-]+)(?=,?\s+bearing)|\b([A-Za-z][A-Za-z'-]+)(?=\s+(?:airfield|airbase|airport)\b)", body)
-    names = [a or b for a, b in names]
-    names += re.findall(r"\b[A-Z][a-z]+(?:[-'][A-Z]?[a-z]+)*\b", NUMWORD.sub("", body))
-    for name in names:
-        if name.lower() not in RADIO_GRAMMAR and not re.search(r"\b" + re.escape(name.lower()) + r"\b", source):
-            return "name not in picture: " + name
-    body = re.sub(r"\b(?:prometheus|athena|test pilot)\b", "", body, flags=re.I)
-    nums = picture_numbers(pic)
-    # Counts of returned rows are facts too; clocks are conventional directions, not invented ranges.
-    def counts(value):
-        if isinstance(value, list):
-            nums.add(float(len(value)))
-            for v in value: counts(v)
-        elif isinstance(value, dict):
-            for v in value.values(): counts(v)
-    counts(pic)
-    body = re.sub(r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|\d+) o'clock\b", "", body)
-    for n in words_to_numbers(body):
-        if n not in nums and not any(abs(n-p) <= max(1.0, 0.02*p) for p in nums if p > 50):
-            return "number not in picture: %s" % n
-    own = pic.get("ownship") or {}
-    fuel = own.get("fuel") or {}
-    for clause in re.split(r"[.;]", text):
-        if not re.search(r"unknown|unavailable|not available|no (connected )?picture|not connected|disconnected|"
-                         r"(?:can't|cannot|unable to) (confirm|see|tell)|no data|no .{0,50}(showing|available|reading)|"
-                         r"don't have|do not have|nothing showing|not showing", clause):
-            continue
-        if pic.get("connected", pic.get("available", False)) and re.search(r"not connected|disconnected|no (connected )?picture", clause):
-            return "claims not connected while connected"
-        if re.search(r"no longer showing|intent|weather|wind|runway|cockpit|radar|missile inbound", clause) or ("no live" in clause and not pic.get("connected", True)):
-            continue  # these are not assertions that fuel/airfields/traffic are absent
-        if re.search(r"missile tracking data|weapon status", clause) and (pic.get("my_shots_last_15_min") or {}).get("shots"):
-            return "claims no weapon data while shot results are present"
-        subject = clause if re.search(r"fuel|gas|bingo|joker|airfield|airbase|air field|air base|traffic|friendly|"
-                                     r"friendlies|weapons?|loadout|maverick|ammo|stores|aircraft|pounds|percent", clause) else ask.lower()
-        # One subject, not all overlapping ask keywords: 'friendly airfield' is not friendly traffic.
-        if re.search(r"air ?fields?|air ?bases?|home ?plate|rtb|nelli'?s|creech|divert", subject):
-            present = bool((pic.get("airbases") or {}).get("nearest_friendly"))
-        elif re.search(r"\b(fuel|gas|bingo|joker|pounds|percent)\b", subject):
-            present = (fuel.get("total_lb") is not None if "pounds" in clause else
-                       fuel.get("internal_pct") is not None if "percent" in clause else
-                       fuel.get("total_lb") is not None or fuel.get("internal_pct") is not None)
-        elif re.search(r"\b(mavericks?)\b", subject):
-            present = any(("agm-65" in str(w).lower() or "maverick" in str(w).lower()) and w.get("count", 0)
-                          for w in (own.get("loadout") or {}).get("weapons", []))
-        elif re.search(r"weapons?|loadout|ammo|stores|carrying", subject):
-            present = bool((own.get("loadout") or {}).get("available"))
-        elif re.search(r"tanker|awacs", subject):
-            # Named role absence cannot be contradicted by unrelated friendly traffic.
-            traffic = (pic.get("air_traffic") or {}).get(own.get("coalition") or "blue") or []
-            present = any(re.search(r"kc-?135|kc-?130|s-?3b|tanker" if "tanker" in subject else r"e-?3|a-?50|awacs", str(r), re.I) for r in traffic)
-        elif re.search(r"friendl\w*|traffic|wing ?m[ae]n|awacs", subject) and not re.search(r"ground|target|convoy", subject):
-            present = bool((pic.get("air_traffic") or {}).get(own.get("coalition") or "blue"))
-        elif re.search(r"what am i flying|aircraft am i|airplane am i", subject):
-            present = bool(own.get("type"))
-        else:
-            present = False
-        if present:
-            return "claims unknown while the picture has it"
-    return None
+    """Compatibility entry for offline checks; live revision is per sentence."""
+    from .reply_guardrails import revise
+    _, changes = revise(reply, pic, ask)
+    return "; ".join(reason for change in changes for reason in change["reasons"]) or None
 
 class SimpleController:
     # RadioServer: hold concurrent transmissions for this controller (answered in turn) instead of 503.
@@ -1317,6 +1178,7 @@ class SimpleController:
         self.timeout = timeout
         self.history = deque(maxlen=8)
         self._chat_state = None
+        self._last_delivered = None  # actual/assumed-sent speech, independent of reasoning history
         self.speaker = speaker
         self._llm = llm or self.ask
         self._turn = threading.Lock()  # one exchange at a time; later arrivals wait their turn
@@ -1847,10 +1709,12 @@ class SimpleController:
         and leaves the chat history. No record (no gateway, other transcript dir) = assumed delivered."""
         last, self._last_exchange = self._last_exchange, None
         outcome_of = getattr(self.transcript, "outcome_of", None)
-        if not last or outcome_of is None:
+        if not last:
             return
-        outcome = outcome_of(last["id"])
+        outcome = outcome_of(last["id"]) if outcome_of is not None else None
         if outcome is None or outcome == "sent":
+            if last.get("delivery"):
+                self._last_delivered = last["delivery"]
             return
         if last["keys"]:
             self._rearm(last["keys"])
@@ -1870,6 +1734,7 @@ class SimpleController:
         if self._mission is not None and marker != self._mission:
             self.history.clear()
             self._chat_state = None
+            self._last_delivered = None
             self._confirmed_kills = []
             self._reported_missiles = {}
             self._last_launch_reply = 0.0
@@ -1884,13 +1749,15 @@ class SimpleController:
         event subscription (11-11 18:26). Never depend on that event for chat safety.
         """
         own = pic.get("ownship") or {}
-        unit = (tuple(own.get(k) for k in ("id", "name", "type", "group")) if own else None)
+        old = self._chat_state
+        unit, changed = pilot_identity(own, old[2] if old else None)
         state = (getattr(self.eye, "session_id", None), pic.get("connected", pic.get("available")),
                  unit, getattr(self.eye, "chat_generation", None))
         old = self._chat_state
         if old is not None and (state[0] != old[0] or (state[1] and not old[1]) or
-                                (unit and unit != old[2]) or state[3] != old[3]):
+                                changed or state[3] != old[3]):
             self.history.clear()
+            self._last_delivered = None
             self._log(request, "route", route="reset", outcome="chat_context_cleared")
         self._chat_state = state
 
@@ -1920,7 +1787,8 @@ class SimpleController:
                 self._log(request, "tool", tool="reply_budget", args={}, outcome="trimmed", result={"trimmed": True},
                           trimmed=True, route="debrief")
             keys = self._mark_said(marks, answer)
-            self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": None, "history": None}
+            self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": None, "history": None,
+                                   "delivery": (text, answer, time.monotonic())}
             if memory is not None:
                 memory.publish("radio_call", {"request": text, "reply": answer, "report_status": "queued" if queued else "unavailable"},
                                generation=generation)
@@ -1935,6 +1803,15 @@ class SimpleController:
                 report = None
         pic, error = self._picture_with_retry()
         self._check_chat(request, pic)
+        repeat_answer = None
+        if REPEAT_ASK.fullmatch(text):
+            last = self._last_delivered
+            if last and time.monotonic() - last[2] <= 120 and not re.search(r"say again", last[1], re.I):
+                repeat_answer = last[1]
+            elif last:
+                text = last[0]  # re-answer the original question from this fresh picture
+            else:
+                repeat_answer = FALLBACK
         pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
         klass = call_class(text, pic, [q for q, _ in list(self.history)[-3:]])
         if klass is None and time.time() - self._last_launch_reply <= 90 and LAUNCH_FOLLOWUP.search(text):
@@ -1955,7 +1832,9 @@ class SimpleController:
         stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
         if age is not None and age > 60:
             stale.append("Contact data is %s seconds old." % words(age))
-        if klass == "launch" and pic.get("ownship"):
+        if repeat_answer is not None:
+            calls = [re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", repeat_answer, flags=re.I)]
+        elif klass == "launch" and pic.get("ownship"):
             calls = self.launch_calls(text, pic)
         elif klass == "kill_confirm" and pic.get("ownship") and "my_kills_this_mission" in pic:
             # the real room: a close bandit call goes first and takes its share (grouped kill wording then)
@@ -2071,27 +1950,57 @@ class SimpleController:
                 meta["fallback_reason"] = "parroted_picture_text"
                 route, answer = "fallback", (ADDRESS + NO_POSITION if not pic.get("ownship") else FALLBACK)
                 self._log(request, "controller_error", outcome="parroted_picture_text", route=route, llm=meta)
-            reason = reply_check(answer, pic, text) if answer and route == "llm" else None
-            if reason:
-                meta["fallback_reason"] = "reply_check: " + reason
-                fallback_calls = requested_calls(klass, text, pic)
-                if fallback_calls is None and AIRCRAFT_ASK.search(text):
-                    # Reuse the aircraft-only lead of the existing loadout sentence.
-                    fallback_calls = loadout_calls({"type": (pic.get("ownship") or {}).get("type")}, text)
-                route = "fallback"
-                answer = ADDRESS + " ".join(fallback_calls) if fallback_calls else FALLBACK
-                self._log(request, "controller_error", outcome="reply_check_rejected", route=route, llm=meta)
-            if answer:  # the model was given the splash / RWR calls to say first: marked only if it said them
-                for field, keys in (("splash_to_announce", splash_keys), ("rwr_alert_to_announce", rwr_keys)):
-                    for alert, key in zip(pic.get(field) or [], keys or []):
-                        marks.append((key, _alert_needle(alert, field)))
-            else:
+            if answer and route == "llm":
+                from .reply_guardrails import revise
+                self._guard_pic_time = pic_time
+                answer, changes = revise(answer, pic, text, self)
+                if changes:
+                    meta["fallback_reason"] = "reply_check: " + "; ".join(
+                        reason for change in changes for reason in change["reasons"])
+                    meta["reply_changes"] = changes
+                    route = "fallback"
+                    self._log(request, "controller_error", outcome="reply_check_rejected", route=route, llm=meta)
+            if not answer:
                 route, answer = "fallback", FALLBACK
                 meta.setdefault("fallback_reason", "empty answer")
                 self._log(request, "controller_error", outcome=meta["fallback_reason"], route=route,
                           llm=meta, timings_ms={"llm": llm_ms, "total": round((time.monotonic() - start) * 1000)})
-            # a close bandit goes first; fit_reply trims the model's tail to make room
-            answer = self._with_close_bandits(answer, close_bandits, marks, MAX_SPEECH_CHARS)
+        if calls is None:
+            # Same priority as fixed routes: close bandit, pending threats, splash,
+            # then the model's answer. Reserve the deferral before admitting alerts;
+            # never let final fitting cut a controller-owned call in half.
+            from .reply_guardrails import sentences
+            lead = [row["call"] for row in (close_bandits or [])[:1]]
+            for row in (close_bandits or [])[:1]:
+                marks.append((row["key"], row["call"]))
+            pending = []
+            for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
+                pending.extend(_alert_rows(pic.get(field), keys, field))
+            body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer, flags=re.I)
+            echoes = {a.rstrip(". ").casefold() for a, _ in pending} | {a.rstrip(". ").casefold() for a in lead}
+            tail = [s for s in sentences(body) if s.rstrip(". ").casefold() not in echoes]
+            defer = DEFER.get(klass, ASK_REST)
+            alerts = []
+            for alert, key in pending:
+                if alert in lead + alerts:
+                    if key:
+                        marks.append((key, alert))
+                    continue
+                if len(prefix + " ".join(lead + alerts + [alert, defer])) <= MAX_REPLY_CHARS:
+                    alerts.append(alert)
+                    if key:
+                        marks.append((key, alert))
+            first = lead + alerts
+            if first:
+                room = MAX_REPLY_CHARS - len(prefix + " ".join(first)) - 1
+                if len(" ".join(tail)) > room:
+                    kept = []
+                    for sentence in tail:
+                        if len(" ".join(kept + [sentence, defer])) > room:
+                            break
+                        kept.append(sentence)
+                    tail, trimmed = kept + [defer], True
+                answer = prefix + " ".join(first + tail)
         answer, net_trimmed = fit_marked(answer, test)  # fixed replies already carry it; model / fallback get it here
         trimmed = trimmed or net_trimmed
         if trimmed:
@@ -2103,11 +2012,14 @@ class SimpleController:
         self._pending_ack = None
         keys = self._mark_said(marks, answer)
         said = None
-        if route != "fallback" and not STALE_CHAT.search(answer):  # keep complete factual pairs only
-            said = (text, answer)
+        factual = factual_history(answer)
+        if factual:  # only the final spoken factual sentences, including repaired answers
+            said = (text, factual)
             self.history.append(said)
         self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": kills, "history": said,
-                               "missiles": self._launch_undo}
+                               "missiles": self._launch_undo,
+                               "delivery": (self._last_delivered[0] if repeat_answer is not None and self._last_delivered else text,
+                                            answer, time.monotonic())}
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery
             memory.publish("radio_call", {"request": text, "reply": answer, "delivery": "generated"},
                            generation=pic.get("_memory_generation") if isinstance(pic, dict) else None)

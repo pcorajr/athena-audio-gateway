@@ -155,7 +155,7 @@ type replySender = func(context.Context, simpleradio.Audio, time.Time) simplerad
 // reply cannot be spoken (bridge error, TTS failure, too long) Athena says a
 // short fixed line instead of going silent. Outcome is "sent" only when every
 // part was sent.
-func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmission, req bridge.Request, expires time.Time, valid func() bool, client bridge.StreamClient, timing *Timing) {
+func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmission, req bridge.Request, expires time.Time, valid func() bool, client bridge.StreamClient, timing *Timing, speech *string) {
 	radio, ok := r.Radio.(interface {
 		BeginMVPReply(simpleradio.Transmission) replySender
 	})
@@ -175,7 +175,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 		if errors.Is(err, bridge.ErrInvalidResponse) {
 			return
 		} // incompatible wire contract fails SILENT
-		r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing)
+		r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing, speech)
 		return
 	}
 	timing.ReplyReceived = time.Since(t.ReceivedAt).Milliseconds()
@@ -190,6 +190,11 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 	}
 	r.activeThreat.Store(protected)
 	r.noteTestPilot(parts[0])
+	var words []string
+	for _, part := range parts {
+		words = append(words, part.Speech)
+	}
+	*speech = strings.Join(words, " ")
 	for i, resp := range parts {
 		r.recordFrame(t, "reply_intended", resp, "generated", i+1, map[string]int64{"reply_received": timing.ReplyReceived})
 	}
@@ -211,7 +216,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 			}
 			timing.Outcome = "tts_failed_or_empty"
 			r.recordFrame(t, "delivery", resp, timing.Outcome, i+1, nil)
-			r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing)
+			r.fallback(ctx, t, send, expires, SayAgainLine, "say_again_fallback", timing, speech)
 			return
 		}
 		audios[i] = audio
@@ -222,7 +227,7 @@ func (r *Runner) streamReply(ctx, workCtx context.Context, t simpleradio.Transmi
 		for i, resp := range parts {
 			r.recordFrame(t, "delivery", resp, timing.Outcome, i+1, map[string]int64{"audio_ms": int64(len(audios[i])) * 1000 / 16000})
 		}
-		r.fallback(ctx, t, send, expires, TooLongLine, "too_long_fallback", timing)
+		r.fallback(ctx, t, send, expires, TooLongLine, "too_long_fallback", timing, speech)
 		return
 	}
 	if !valid() {
@@ -277,13 +282,14 @@ func (r *Runner) markTestPilot(line string) string {
 
 // fallback speaks one short fixed line on the still-unused reply sender. A
 // "say again" is never stale, so it may start slightly after the expiry.
-func (r *Runner) fallback(ctx context.Context, t simpleradio.Transmission, send replySender, expires time.Time, line, label string, timing *Timing) {
+func (r *Runner) fallback(ctx context.Context, t simpleradio.Transmission, send replySender, expires time.Time, line, label string, timing *Timing, speech *string) {
 	if ctx.Err() != nil {
 		timing.Outcome = "canceled"
 		return
 	}
 	reason := timing.Outcome
 	line = r.markTestPilot(line)
+	*speech = line
 	synthCtx, cancel := context.WithTimeout(ctx, fallbackTimeout)
 	audio, err := r.Synthesize(synthCtx, line)
 	cancel()

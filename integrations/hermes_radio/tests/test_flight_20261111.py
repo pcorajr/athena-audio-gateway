@@ -28,8 +28,7 @@ EXPECTED = {
     "18:30:05": "Prometheus, Athena, SAM SA-2 tracking you, your eleven o'clock, nineteen miles. Friendly A-10C, two "
                 "five one, five miles, angels eight, nine o'clock level. Friendly A-10C, two seven eight, thirteen, "
                 "angels eight, ten o'clock level. Plus one more.",
-    "18:30:45": "Prometheus, Athena, SA-2 in the air, your three o'clock, thirteen miles. Also SA-2, your three "
-                "o'clock, fifteen miles.",
+    "18:30:45": "Prometheus, Athena, Two SA-2 missiles, three o'clock.",
     "18:32:05": "Prometheus, Athena, Fuel 3,640 pounds.",
     "18:35:00": "Prometheus, Athena, Creech, bearing two zero nine, twenty seven miles, at your six o'clock.",
     "18:59:23": "Prometheus, Athena, Mission total: four T-55.",
@@ -121,7 +120,8 @@ class LiveMissTests(unittest.TestCase):
         self.assertEqual(len(pic["rwr_alert_to_announce"]), 2)  # live: both alerts AND both launch lines spoken
         pic["_rwr_keys"] = ["missile-16865792", "missile-16935936"]
         spoken, _, _, eye, _ = answer(pic, "Launch, launch, launch.")
-        self.assertEqual(spoken.count("SA-2"), 2)
+        self.assertEqual(spoken.count("SA-2"), 1)
+        self.assertIn("Two SA-2 missiles", spoken)
         self.assertNotIn("Missile launch", spoken)
         self.assertEqual(eye.announced, {"missile-16865792", "missile-16935936"})
 
@@ -130,7 +130,7 @@ class LiveMissTests(unittest.TestCase):
         pic["_rwr_keys"] = ["missile-16865792", "missile-16935936"]
         pic["threats"]["missiles_in_flight"][1]["spoken_name"] = "Stinger " + "x" * 260
         spoken, _, _, eye, _ = answer(pic, "Launch, launch, launch.")
-        self.assertIn("SA-2 in the air, your three o'clock, thirteen miles.", spoken)
+        self.assertIn("Two SA-2 missiles, three o'clock.", spoken)
         self.assertNotIn("xxx", spoken)
         self.assertEqual(eye.announced, {"missile-16865792", "missile-16935936"})
 

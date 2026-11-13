@@ -41,13 +41,11 @@ class LaunchInFlightTests(unittest.TestCase):
         c.eye.pic = pic
         third = " ".join(frames(c, "Athena, another missile?"))
         self.assertNotIn("Same", third)
-        self.assertIn("New launch, SA-2 in the air, your three o'clock, fourteen miles.", third)
-        self.assertIn("Also SA-2, your ten o'clock, six miles.", third)
+        self.assertIn("Two SA-2 missiles, ten and three o'clock.", third)
 
     def test_two_ids_both_called(self):
         said = " ".join(frames(controller(picture([row("1", 1, 6.0), row("2", 3, 9.0)])), "Athena, missile launch."))
-        self.assertIn("SA-2 in the air, your one o'clock, six miles.", said)
-        self.assertIn("Also SA-2, your three o'clock, nine miles.", said)
+        self.assertIn("Two SA-2 missiles, one and three o'clock.", said)
 
     def test_spoken_name_wins_over_raw_type(self):
         pic = picture([row("5", 2, 4.0, name="Stinger", raw="weapons.missiles.Stinger")])
@@ -62,7 +60,7 @@ class LaunchInFlightTests(unittest.TestCase):
     def test_falls_back_to_inbound_without_in_flight(self):
         pic = deepcopy(LIVE["launch_2038"])
         pic["threats"].pop("missiles_in_flight", None)
-        self.assertIn("SA-2 in the air", " ".join(frames(controller(pic), "Athena, missile launch.")))
+        self.assertIn("Two SA-2 missiles", " ".join(frames(controller(pic), "Athena, missile launch.")))
 
 
 class SpokenNamesTests(unittest.TestCase):

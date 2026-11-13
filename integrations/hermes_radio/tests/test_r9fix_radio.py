@@ -189,14 +189,13 @@ class LaunchTests(unittest.TestCase):
 
     def test_reports_every_missile(self):
         said = " ".join(frames(controller(LIVE["launch_2038"]), "Athena, missile launch."))
-        self.assertIn("SA-2 in the air, your one o'clock, six miles.", said)
-        self.assertIn("Also SA-2, your one o'clock, nine miles.", said)
+        self.assertIn("Two SA-2 missiles, one o'clock.", said)
         self.assertNotIn("Negative", said)
 
     def test_named_type_present(self):
         said = " ".join(frames(controller(LIVE["launch_2038"]), "Athena, SA-2 launch."))
         self.assertNotIn("Negative", said)
-        self.assertIn("SA-2 in the air", said)
+        self.assertIn("Two SA-2 missiles", said)
 
     def test_none_in_flight(self):
         pic = deepcopy(LIVE["launch_2038"])
@@ -214,12 +213,12 @@ class LaunchTests(unittest.TestCase):
         c.eye.pic = pic
         third = " ".join(frames(c, "Athena, another missile?"))
         self.assertNotIn("Same", third)
-        self.assertIn("your three o'clock", third)
+        self.assertIn("three o'clock", third)
 
     def test_followup_do_you_see_it(self):
         c = controller(LIVE["launch_2038"])
         frames(c, "Athena, stinger, launch.")
-        self.assertIn("SA-2 in the air", " ".join(frames(c, "Do you see it?")))
+        self.assertIn("Two SA-2 missiles", " ".join(frames(c, "Do you see it?")))
 
 
 class AircraftLoadoutTests(unittest.TestCase):

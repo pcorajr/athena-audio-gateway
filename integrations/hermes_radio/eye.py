@@ -263,6 +263,14 @@ ROCKET_PAT = re.compile(r"(hydra|s-5|s_5|s-8|s_8|s-13|s_13|s-24|s_24|s-25|s_25|z
 
 
 SHELL_PAT = re.compile(r"(shells?\.|\buor\b|-uor-|uor-|uof|ubr|ofz|bzt|ozt|\d+\s?mm)", re.I)
+def alert_keys(keys):
+    """Flatten grouped presentation keys before any state mutation."""
+    out = []
+    for key in keys:
+        out.extend(alert_keys(key) if isinstance(key, list) else [key])
+    return out
+
+
 def group_alerts(alerts, limit=2):
     """(calls, keys): identical words are spoken once with all their keys acknowledged together; at most
     ``limit`` distinct calls per reply. Keys of calls not chosen are not returned, so they stay pending."""
@@ -374,6 +382,33 @@ def missile_spoken_name(weapon, launcher=None):
     if re.fullmatch(r"(?:AIM|R|AA|PL)-\d+[A-Z0-9-]*|Stinger|Igla|Strela|MANPADS|Patriot|Hawk|NASAMS|Roland|Rapier|HQ-7", name, re.I):
         return name
     return "missile"
+
+
+def short_launch_call(rows):
+    """Speak structured launch evidence, shared by prompted and unprompted paths."""
+    groups = {}
+    for row in rows:
+        groups.setdefault(row.get("spoken_name") or "missile", []).append(row)
+    calls = []
+    for name, group in groups.items():
+        clocks = list(dict.fromkeys(words(r["clock"]) for r in group if r.get("clock") is not None))
+        where = (", " + " and ".join(clocks) + " o'clock") if clocks else ""
+        if len(group) > 1:
+            calls.append("%s %s missiles%s." % (words(len(group)).capitalize(), name, where))
+        else:
+            calls.append("%s launch%s." % ("Missile" if name == "missile" else name + " missile", where))
+    return " ".join(calls)
+
+
+def sam_launcher(type_name):
+    """Positive shooter evidence, not merely a system/radar association."""
+    attrs = type_attributes(type_name)
+    if attrs:
+        return bool(attrs & {"SAM LL", "AA_missile", "IR Guided SAM", "MANPADS"})
+    return bool(re.search(r"\bln\b|5p85|5p73|2p25|9a310|9a331|9a33|9a35|9p31|"
+                          r"s_75m_volhov|strela-10|strela-1|tunguska|2s6|pantsir|"
+                          r"^tor(?:\b|_)|^osa(?:\b|_)|^roland ads$|rapier_fsa_launcher|"
+                          r"avenger|chaparral|soldier stinger|^sa-18 igla manpad$", type_name or "", re.I))
 
 
 # DCS attributes of air-defence support vehicles (command post, comm, auxiliaries): no range warning on their own.
@@ -1222,7 +1257,9 @@ class Eye:
     def _apply(self, ev):
         """Apply one event; returns True when a player fired (stores refresh wanted)."""
         kind, ini, tgt = ev["kind"], ev["initiator"], ev["target"]
-        if kind in ("crash", "pilot_dead", "ejection") and self._is_me(ini) and self.own_loss is None:
+        own = self._own_locked()
+        current_unit = not own or (ini and ini.get("id") == own.get("id"))
+        if kind in ("crash", "pilot_dead", "ejection") and current_unit and self._is_me(ini) and self.own_loss is None:
             self.own_loss = {"key": "own-loss-%s" % ev["seq"], "kind": kind, "t": ev["t"],
                              "unit_id": ini.get("id"), "call": "you're down."}
         if kind == "birth" and ini and ini.get("kind") == "unit":
@@ -1860,6 +1897,7 @@ class Eye:
         best = {}
         own_alt = own.get("alt_m") or 0.0
         radar = self._radar_groups(now)
+
         for u in self.units.values():
             if u["category"] not in ("SAM", "AAA") or u.get("lat") is None:
                 continue
@@ -1872,6 +1910,8 @@ class Eye:
                 continue  # optical triple A: not a radar threat
             key = u.get("group") or str(u["id"])
             state = radar.get(key)
+            if all_sites and not sam_launcher(u["type"]):
+                continue  # a standalone radar establishes no live firing system
             limit = nominal + (RANGE_HYST_NM if key in self._sam_listed else 0.0)
             _, rng = bearing_range(own["lat"], own["lon"], u["lat"], u["lon"])
             slant = math.hypot(rng, (own_alt - (u.get("alt_m") or 0.0)) / NM)
@@ -2036,7 +2076,7 @@ class Eye:
             row['announced'] = original.get('_alert') in self.announced
         return sorted(rows.values(), key=lambda m: (not m.get("targeting_me"), m.get("range_nm") or 0))
 
-    def _pending_threat_alerts(self, now, sams=None, flight=None):
+    def _pending_threat_alerts(self, now, sams=None, flight=None, include_announced=False):
         """Alerts not yet announced. Pure read. A missile alert whose missile is gone is dropped and a live one is
         re-worded from the live row (R3 T5); a SAM alert only while that group is still listed."""
         cockpit_launch = any(a["signal"] == "launch" and now - a["t"] <= 15 for a in self.cockpit.alerts)
@@ -2045,7 +2085,7 @@ class Eye:
         approaches = {r["group"]: r for r in (sams or []) if r.get("inside_caution_range") and r.get("outside_weapon_range")}
         out = []
         for a in self.threat_alerts:
-            if a["key"] in self.announced or (a["kind"] != "SAM approach" and now - a["t"] > THREAT_ANNOUNCE_S):
+            if (not include_announced and a["key"] in self.announced) or (a["kind"] != "SAM approach" and now - a["t"] > THREAT_ANNOUNCE_S):
                 continue
             if a["kind"] == "SAM approach":
                 r = approaches.get(a.get("group"))
@@ -2486,12 +2526,57 @@ class Eye:
     def mark_announced(self, keys):
         """The controller gave these splash calls to the model; don't ask for them again."""
         with self.lock:
-            self.announced.update(keys)
+            self.announced.update(set(alert_keys(keys)))  # validate the whole batch before mutating
 
     def unmark_announced(self, keys):
         """The reply carrying these calls was never transmitted: make them pending again."""
         with self.lock:
-            self.announced.difference_update(keys)
+            self.announced.difference_update(set(alert_keys(keys)))
+
+    def unprompted_events(self, include_announced=False):
+        """Eligible event facts before presentation caps, also for pre-send revalidation.
+
+        Shot-only/RWR evidence expires after BRIDGE_S (2.5 s), enough for the
+        1 Hz scan handoff, not a twenty-second inferred missile. A newer empty
+        scan revokes immediately through _pending_threat_alerts.
+        """
+        with self.lock:
+            own, now = self._own_locked(), self.clock()
+            if own is None or own.get("lat") is None:
+                return []
+            _, sams, flight = self._threats_json(own, now)
+            missiles = {m["id"]: m for m in flight}
+            tracks = {s["group"]: s for s in sams if s["confidence"] == "DCS radar: tracking you"}
+            armed = {s["group"] for s in sams if "caution_range_nm" in s}
+            rows = []
+            for a in self._pending_threat_alerts(now, sams, flight, include_announced):
+                if a["kind"] == "missile launch":
+                    m = missiles.get(a.get("id"))
+                    if m is None or (m.get("from") == "shot event" and now - m["first_seen"] > BRIDGE_S):
+                        continue
+                    rows.append(dict(a, spoken_name=m.get("spoken_name") or missile_spoken_name(m.get("type"), m.get("launcher_type")), clock=m.get("clock")))
+                elif a["kind"] == "SAM tracking" and a.get("group") in tracks:
+                    if a["group"] not in armed:
+                        s = tracks[a["group"]]
+                        a = dict(a, call="%s radar active, your %s o'clock, %s." %
+                                 (s["sam"], words(s["clock"]), range_words(s["range_nm"])))
+                    rows.append(a)
+            # Current group/arm state, not the bounded diagnostic deque: a large
+            # mission must not lose its nearest caution when that deque fills.
+            for s in sams:
+                if not s.get("inside_caution_range") or not s.get("outside_weapon_range"):
+                    continue
+                key = "approach-%s-%d" % (s["group"], self._sam_caution_arm[s["group"]])
+                if s["group"] in self._sam_cautioned and (include_announced or key not in self.announced):
+                    rows.append(dict(key=key, kind="SAM approach", call=s["caution_call"], group=s["group"]))
+            if self.cockpit.fresh(now):
+                for a in self.cockpit.pending_alerts(set() if include_announced else self.announced, now):
+                    if a["signal"] == "launch" and 0 <= now - a["t"] <= BRIDGE_S:
+                        rows.append(dict(a, kind="missile launch", spoken_name=missile_spoken_name(a["type"])))
+            if self.own_loss and self.own_loss["unit_id"] == own["id"]:
+                if include_announced or self.own_loss["key"] not in self.announced:
+                    rows.append(dict(self.own_loss, kind="own loss", call="Prometheus, Athena, you're down."))
+            return rows
 
     def _loadout_json(self, own, now):
         snap = self.stores.get(own["id"]) if own else None
@@ -2562,7 +2647,7 @@ class Eye:
             self._own_cache = (own,)
             try:
                 pic = self._picture_locked(own)
-                if self.own_loss:
+                if self.own_loss and (own is None or self.own_loss["unit_id"] == own["id"]):
                     pic["own_loss"] = dict(self.own_loss)
                     if self.own_loss["key"] not in self.announced:
                         pic["own_loss_to_announce"] = self.own_loss["call"]

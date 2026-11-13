@@ -18,10 +18,11 @@ const MaxMVPReplySamples = 30 * 16000
 func (c *Client) UnpromptedMVP(last Transmission, id string) (Transmission, bool) {
 	c.clientsLock.RLock()
 	defer c.clientsLock.RUnlock()
-	if id == "" || !c.validMVPLocked(last) || c.mvpInterlockReason() != "" {
+	t := last
+	t.route.unprompted = true
+	if id == "" || !c.validMVPLocked(t) || c.mvpInterlockReason() != "" {
 		return Transmission{}, false
 	}
-	t := last
 	t.TraceID, t.ReceivedAt, t.Audio = id, time.Now(), nil
 	t.route.used = &atomic.Bool{}
 	return t, true

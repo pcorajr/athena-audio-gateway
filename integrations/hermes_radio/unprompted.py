@@ -7,11 +7,11 @@ both the last-heard route and outstanding reservations.
 """
 from datetime import datetime
 import os
-import re
 import threading
 import time
 
 from .contract import ContractError, safe_text, strict_json, response
+from .eye import short_launch_call
 
 
 class Unprompted:
@@ -20,6 +20,7 @@ class Unprompted:
         self.lock = threading.RLock()
         self.heard = None
         self.claims = {}
+        self.retry_after = {}
         self.last = -float('inf')
 
     def marker(self):
@@ -47,14 +48,20 @@ class Unprompted:
     def current(pic):
         cp, own = pic.get('cockpit') or {}, pic.get('ownship') or {}
         age = (pic.get('data_age_s') or {}).get('units')
+        own_age = (pic.get('data_age_s') or {}).get('ownship')
         return bool(own and pic.get('connected') and isinstance(age, (float, int)) and 0 <= age <= 10
+                    and isinstance(own_age, (float, int)) and 0 <= own_age <= 10
                     and not (cp.get('fresh') and cp.get('aircraft') and own.get('type')
                              and cp['aircraft'] != own['type']))
 
     def _finish(self, ident, outcome):
         claim = self.claims.pop(ident, None)
+        if claim and outcome == 'sent':
+            self.last = self.clock()
         if claim and claim['marker'] == self.marker() and outcome != 'sent':
             self.controller.eye.unmark_announced(claim['keys'])
+            if claim['priority'] == 'launch':
+                self.retry_after.update((key, self.clock() + 1) for key in claim['keys'])
         return claim is not None
 
     def poll(self, ident, reply_to):
@@ -81,43 +88,38 @@ class Unprompted:
                     pic = c.eye.picture()
                     if not self.current(pic):
                         return None
-                    rows = list(zip(pic.get('rwr_alert_to_announce') or [], pic.get('_rwr_keys') or []))
-                    allowed = [(call, key, 'launch' if call.startswith('Missile launch,') else 'threat')
-                               for call, key in rows if call.startswith(('Missile launch,', 'Caution,'))
-                               or (' tracking you,' in call and call.startswith('SAM '))]
-                    if pic.get('_own_loss_key'):
-                        allowed.append(("Prometheus, Athena, you're down.", pic['_own_loss_key'], 'threat'))
+                    self.retry_after = {k: t for k, t in self.retry_after.items() if t > self.clock()}
+                    allowed = [a for a in c.eye.unprompted_events() if a['key'] not in self.retry_after]
                     if not allowed:
                         return None
-                    call, key, priority = min(allowed, key=lambda row: row[2] != 'launch')
+                    event = min(allowed, key=lambda row: row['kind'] != 'missile launch')
+                    priority = 'launch' if event['kind'] == 'missile launch' else 'threat'
                     if self.claims and priority != 'launch':
                         return None  # a new launch may jump an already queued caution
                     if priority != 'launch' and self.clock() - self.last < 5:
                         return None
-                    keys = [key]
-                    # Up to two same-type launches share one short call. Different
-                    # types retain their own designation in separate short calls.
+                    selected = [a for a in allowed if a['kind'] == event['kind'] and a['call'] == event['call']]
+                    call = event['call']
                     if priority == 'launch':
-                        call = call.replace('Missile launch, ', '').replace(', your ', ', ')
-                        call = re.sub(r'^([^,]+),', r'\1 launch,', call)
-                        launches = [(a, k) for a, k, p in allowed if p == 'launch'][:2]
-                        parsed = [re.fullmatch(r"Missile launch, ([^,]+), your (.+) o'clock, .+\.", a) for a, _ in launches]
-                        if len(parsed) == 2 and parsed[0] is not None and parsed[1] is not None and parsed[0][1] == parsed[1][1]:
-                            call = "Two %s missiles, %s and %s o'clock." % (parsed[0][1], parsed[0][2], parsed[1][2])
-                            keys = [k for _, k in launches]
+                        launches = [a for a in allowed if a['kind'] == 'missile launch']
+                        names = list(dict.fromkeys(a['spoken_name'] for a in launches))[:2]
+                        selected = [a for a in launches if a['spoken_name'] in names]
+                        call = short_launch_call(selected)
+                    keys = list(dict.fromkeys(a['key'] for a in selected))
                     if pic.get('test_ownship'):
                         from .simple_controller import with_test_marker
                         call = with_test_marker(call, True)
                     if len(call) > 280:
                         return None
-                    c.eye.mark_announced(keys)
-                    self.last = self.clock()
-                    self.claims[ident] = dict(keys=keys, marker=marker, at=self.clock(), request=request, speech=call, priority=priority)
                     frame = response(request, speech=call, state='ok', route='unprompted', priority=priority,
                                      test_pilot=bool(pic.get('test_ownship')) if getattr(c.eye, 'test_ownship', None) else None)
                     frame['transmission_id'] = ident
                     c.transcript.log(kind='unprompted_generated', request=request, text=call, route='unprompted',
                                      outcome='reserved', alert_id=ident)
+                    # Construct and journal before changing announcement state.
+                    c.eye.mark_announced(keys)
+                    self.last = self.clock()
+                    self.claims[ident] = dict(keys=keys, marker=marker, at=self.clock(), request=request, speech=call, priority=priority)
                     return frame
         finally:
             c._turn.release()
@@ -128,10 +130,15 @@ class Unprompted:
             claim = self.claims.get(ident)
             if claim:
                 if outcome == 'check':
-                    return bool(self.enabled() and claim['marker'] == self.marker()
-                                and self.clock() - claim['at'] < 5 and self.heard
-                                and self.heard[0].transmission_id == claim['request'].transmission_id
-                                and self.current(c.eye.picture()))
+                    with c.eye.lock:
+                        valid = bool(self.enabled() and claim['marker'] == self.marker()
+                                     and self.clock() - claim['at'] < 5 and self.heard
+                                     and self.heard[0].transmission_id == claim['request'].transmission_id
+                                     and self.current(c.eye.picture())
+                                     and set(claim['keys']) <= {a['key'] for a in c.eye.unprompted_events(include_announced=True)})
+                        if not valid:
+                            self._finish(ident, 'revoked')
+                        return valid
                 if outcome == 'sent' and claim['marker'] == self.marker():
                     self.last = self.clock()  # floor from actual completion, not reservation/TTS start
                     if c._turn.acquire(blocking=False):

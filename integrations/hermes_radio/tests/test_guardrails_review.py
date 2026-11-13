@@ -16,7 +16,7 @@ class ReviewTests(unittest.TestCase):
                 for prose in ("Stay sharp.", call + " Stay sharp.", "Fuel unknown. Stay sharp."):
                     ctl = self.make(pic, sc.ADDRESS + prose)
                     r = ctl.exchange(_request("give me your assessment"))
-                    self.assertEqual(r["speech"].count(call), 1)
+                    self.assertEqual(r["speech"].count(call), 2 if call in prose else 1)
                     self.assertIn("Stay sharp.", r["speech"])
                     self.assertIn("alert", ctl.eye.announced)
 
@@ -113,7 +113,7 @@ class ReviewTests(unittest.TestCase):
                 ctl = self.make(pic, sc.ADDRESS + prose)
                 r = ctl.exchange(_request("give me your assessment"))
                 self.assertIn(alert, r["speech"])
-                self.assertEqual(r["speech"].count(alert), 1)
+                self.assertEqual(r["speech"].count(alert), 2 if alert in prose else 1)
                 self.assertIn("Stay sharp.", r["speech"])
                 self.assertLessEqual(len(r["speech"]), 280)
                 self.assertTrue(ctl.eye.announced)

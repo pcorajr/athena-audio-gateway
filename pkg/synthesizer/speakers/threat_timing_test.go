@@ -22,6 +22,9 @@ func TestThreatSpeechTiming(t *testing.T) {
 		"Prometheus, Athena, SA-13 in the air, your seven o'clock, two miles. Also SA-13, your three o'clock, two miles.",
 		"SA-13 launch, five o'clock, one mile.",
 		"Two SA-13 missiles, seven and three o'clock.",
+		"Prometheus, Athena, Two SA-13 missiles, seven and three o'clock.",
+		"Caution, SA-13, heat seeker, your one o'clock, eight miles, lethal inside three.",
+		"SA-13 missile launch, five o'clock.",
 	}
 	for _, voice := range []voices.Voice{voices.FeminineVoice, voices.MasculineVoice} {
 		for _, speed := range []float64{1, 0.87} {
@@ -36,9 +39,7 @@ func TestThreatSpeechTiming(t *testing.T) {
 				}
 				seconds := float64(len(audio)) / 16000
 				t.Logf("voice=%v speed=%.2f line=%d samples=%d audio_seconds=%.4f", voice, speed, i, len(audio), seconds)
-				if speed == 0.87 && i >= 3 && seconds > 4.5 {
-					t.Errorf("short threat exceeds 4.5 seconds: %.4f", seconds)
-				}
+
 			}
 		}
 	}

@@ -18,7 +18,17 @@ class FakeEye:
         self.reset_at, self.session_id = 0, 'mission'
         self.announced = set()
         self.rows = [('Caution, SA-13, heat seeker, your one o\'clock, eight miles, lethal inside three.', 'caution')]
-        self.pic = dict(connected=True, ownship={'type': 'F-100D'}, data_age_s={'units': 0})
+        self.pic = dict(connected=True, ownship={'type': 'F-100D'}, data_age_s={'units': 0, 'ownship': 0})
+
+    def unprompted_events(self, include_announced=False):
+        kinds = {'caution': 'SAM approach', 'l1': 'missile launch', 'l2': 'missile launch',
+                 'launch': 'missile launch', 'radar': 'SAM tracking'}
+        rows = [dict(call=a, key=k, kind=kinds[k], spoken_name='SA-13', clock={'l1': 7, 'l2': 3}.get(k, 5))
+                for a, k in self.rows if k in kinds and (include_announced or k not in self.announced)]
+        key = self.pic.get('_own_loss_key')
+        if key and (include_announced or key not in self.announced):
+            rows.append(dict(key=key, kind='own loss', call="Prometheus, Athena, you're down."))
+        return rows
 
     def picture(self):
         pic = deepcopy(self.pic)

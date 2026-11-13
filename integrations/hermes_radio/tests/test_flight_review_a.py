@@ -296,7 +296,7 @@ class ClearanceGuardTests(unittest.TestCase):
                 self.assertFalse(clearance_in(text))
                 self.assertEqual(strip_clearance(text), text)
 
-    def test_an_atc_ask_gets_the_fixed_field_answer_and_others_lose_the_sentence(self):
+    def test_atc_is_fixed_but_other_model_sentences_are_unfiltered(self):
         pic = live("19:01:46")
         pic.pop("rwr_alert_to_announce", None)
         fixed = ("Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. No traffic. "
@@ -315,7 +315,7 @@ class ClearanceGuardTests(unittest.TestCase):
                            ("Prometheus, Athena, radio check, loud and clear, good to go.",
                             "Prometheus, Athena, radio check, loud and clear, good to go.")):
             with self.subTest(said=said):
-                self.assertEqual(answer(deepcopy(pic), "Athena, radio check", Stub(answer=said))[0], want)
+                self.assertEqual(answer(deepcopy(pic), "Athena, radio check", Stub(answer=said))[0], said)
 
 
 class MinorTests(unittest.TestCase):

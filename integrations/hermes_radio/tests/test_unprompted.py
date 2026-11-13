@@ -150,6 +150,21 @@ class UnpromptedTests(unittest.TestCase):
         self.assertEqual(frame['priority'], 'launch')
         self.assertEqual(len(self.u.claims), 2)
 
+    def test_stand_in_stays_explicitly_marked(self):
+        self.u.remember(self.req)
+        self.eye.test_ownship = 'fixture-unit'
+        self.eye.pic['test_ownship'] = True
+        frame = self.poll()
+        self.assertTrue(frame['speech'].startswith('Prometheus, Athena, Test pilot. '))
+        self.assertIs(frame['test_pilot'], True)
+
+    def test_nonstream_reply_preserves_priority(self):
+        from integrations.hermes_radio.tests.test_p1_radio import controller, Stub, req
+        c, _ = controller({}, Stub())
+        c._wire_priority = True
+        frame = c.exchange(req('Athena, radio check'))
+        self.assertIn(frame['priority'], ('normal', 'threat'))
+
     def test_real_eye_scan_inherits_announced_shot_key(self):
         from integrations.hermes_radio.tests.test_p1_eye import MissileTests, f4e_eye, f4e_packet, SA11_SR, SA11_LN
         eye, clock = f4e_eye(extra=(SA11_SR, SA11_LN))

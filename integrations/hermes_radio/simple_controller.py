@@ -2222,4 +2222,4 @@ class SimpleController:
             return parts[0]
         return response(request, speech=" ".join(p["speech"] for p in parts), state="ok",
                         route=parts[0].get("route"), model=parts[0].get("model"),
-                        test_pilot=parts[0].get("test_pilot"))
+                        test_pilot=parts[0].get("test_pilot"), priority=parts[0].get("priority"))

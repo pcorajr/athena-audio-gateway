@@ -105,12 +105,16 @@ class Unprompted:
                         if len(parsed) == 2 and parsed[0] is not None and parsed[1] is not None and parsed[0][1] == parsed[1][1]:
                             call = "Two %s missiles, %s and %s o'clock." % (parsed[0][1], parsed[0][2], parsed[1][2])
                             keys = [k for _, k in launches]
+                    if pic.get('test_ownship'):
+                        from .simple_controller import with_test_marker
+                        call = with_test_marker(call, True)
                     if len(call) > 280:
                         return None
                     c.eye.mark_announced(keys)
                     self.last = self.clock()
                     self.claims[ident] = dict(keys=keys, marker=marker, at=self.clock(), request=request, speech=call, priority=priority)
-                    frame = response(request, speech=call, state='ok', route='unprompted', priority=priority)
+                    frame = response(request, speech=call, state='ok', route='unprompted', priority=priority,
+                                     test_pilot=bool(pic.get('test_ownship')) if getattr(c.eye, 'test_ownship', None) else None)
                     frame['transmission_id'] = ident
                     c.transcript.log(kind='unprompted_generated', request=request, text=call, route='unprompted',
                                      outcome='reserved', alert_id=ident)

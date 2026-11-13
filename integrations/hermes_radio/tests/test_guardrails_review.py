@@ -20,21 +20,6 @@ class ReviewTests(unittest.TestCase):
                     self.assertIn("Stay sharp.", r["speech"])
                     self.assertIn("alert", ctl.eye.announced)
 
-    def test_subject_checks_keep_other_sentences(self):
-        pic = {"connected": True, "ownship": {"id": 1, "type": "F-4E", "fuel": {"total_lb": 3640}},
-               "threats": {"sam_in_range": [{"call": "SAM SA-2 could be tracking you."}]},
-               "my_kills_this_mission": [{"target": "Ural-375", "confidence": "confirmed"}]}
-        for bad in ("Fuel unknown, radar unavailable.", "Fuel unknown, cockpit unavailable.", "No fuel data.",
-                    "No SAM threats.", "Splash nine kills."):
-            ctl = self.make(pic, sc.ADDRESS + bad + " Stay sharp.")
-            r = ctl.exchange(_request("give me your assessment"))
-            self.assertNotIn(bad, r["speech"])
-            self.assertIn("Stay sharp.", r["speech"])
-            self.assertNotEqual(r["speech"], sc.FALLBACK)
-        for good in ("F-4E Phantom.", "Ural three seven fives.", "Eighteen friendly aircraft.", "Running in, copy."):
-            self.assertIsNone(sc.reply_check(good, pic, "assessment"))
-        for absent in ("Fuel unknown, radar unavailable.", "No fuel data.", "No SAM threats.", "No kills showing."):
-            self.assertIsNone(sc.reply_check(absent, {}, "assessment"))
 
     def test_identity_null_and_pseudo_flaps_do_not_clear(self):
         from integrations.hermes_radio.eye import Eye as LiveEye
@@ -95,19 +80,6 @@ class ReviewTests(unittest.TestCase):
             r = ctl.exchange(_request("give me your assessment"))
             self.assertIn(call, r["speech"])
 
-    def test_unknown_subject_and_named_clearance_boundaries(self):
-        pic = {"connected": True, "ownship": {"type": "F-4E", "fuel": {"total_lb": 3640}},
-               "threats": {"sam_in_range": [{"call": "SAM SA-2 could be tracking you."}]}}
-        for reply in ("Fuel is fine but radar unavailable.", "Fuel is fine and cockpit unavailable.",
-                      "You are clear of the SA-2.", "Enemy position unknown."):
-            self.assertIsNone(sc.reply_check(reply, pic, "assessment"), reply)
-        for reply in ("Position unavailable.", "I don't know.", "I do not know."):
-            self.assertIsNotNone(sc.reply_check(reply, pic, "fuel state"), reply)
-        for reply in ("No tanker is showing in the traffic picture.", "No missile track is available in this picture."):
-            scoped = dict(pic, air_traffic={"blue": [{"call": "Friendly A-10C."}]},
-                          threats={"missiles_inbound": [{"call": "Missile launch, SA-2."}]})
-            self.assertIsNone(sc.reply_check(reply, scoped, "tracking my weapon?"), reply)
-        self.assertIsNone(sc.reply_check("I don't know.", {}, "fuel state"))
 
     def test_repeat_fallback_reanswers_previous_question(self):
         ctl = self.make({"ownship": {"type": "F-4E"}}, "")
@@ -129,17 +101,6 @@ class ReviewTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             cached.answer_by([{"role": "user", "content": "kill"}], 0)
 
-    def test_all_clear_scope_does_not_borrow_another_subject(self):
-        pic = {"ownship": {"type": "F-4E"}, "threats": {
-            "sam_in_range": [{"call": "Early warning radar could be watching you.", "range_nm": 39},
-                             {"call": "SAM SA-2 could be tracking you.", "range_nm": 18}],
-            "missiles_inbound": [{"call": "Missile launch, SA-2."}]}}
-        self.assertIsNone(sc.reply_check("No SAM within ten miles.", pic, "assessment"))
-        self.assertIsNone(sc.reply_check("No missile tracking data available.", pic, "tracking my weapon?"))
-        self.assertIsNotNone(sc.reply_check("No SAM threats.", pic, "assessment"))
-        self.assertIsNotNone(sc.reply_check("No missiles.", pic, "assessment"))
-        pic["threats"]["sam_in_range"].pop()
-        self.assertIsNone(sc.reply_check("No SAM in range.", pic, "assessment"))
 
     def test_exact_recorded_sam_and_splash_survive_harmless_tail(self):
         import json
@@ -157,20 +118,6 @@ class ReviewTests(unittest.TestCase):
                 self.assertLessEqual(len(r["speech"]), 280)
                 self.assertTrue(ctl.eye.announced)
 
-    def test_real_sa2_false_clear_and_kill_number(self):
-        import json
-        from pathlib import Path
-        pic = json.loads((Path(__file__).parent / "fixtures/guardrails-review.json").read_text())["w03"]
-        for prose in ("No SAM threats.", "No SAMs in range.", "Clear.", "No threats."):
-            ctl = self.make(pic, prose + " Stay sharp.")
-            r = ctl.exchange(_request("give me your assessment"))
-            self.assertIn(pic["threats"]["sam_in_range"][0]["call"], r["speech"])
-            self.assertNotIn(prose, r["speech"])
-            self.assertIn("Stay sharp.", r["speech"])
-        ctl = self.make(pic, "Splash nine kills. Stay sharp.")
-        r = ctl.exchange(_request("give me your assessment"))
-        self.assertIn("No kills yet.", r["speech"])
-        self.assertIn("Stay sharp.", r["speech"])
 
     def test_close_bandit_and_alerts_are_whole_under_budget(self):
         close = "Bandit MiG-29, zero nine zero, eight miles, angels ten, three o'clock."
@@ -187,31 +134,6 @@ class ReviewTests(unittest.TestCase):
             self.assertEqual(key in ctl.eye.announced, alert in r["speech"])
         self.assertNotIn("seventeen", r["speech"].replace(alerts[2], ""))
 
-    def test_all_clear_collections_and_kill_scope(self):
-        cases = [
-            ("Nothing tracking you.", {"threats": {"sam_radar": {"tracking_you": [{"type": "SA-2"}]}}}, "Radar tracking you."),
-            ("No threats.", {"threats": {"sam_radar": {"tracking_you": [{"type": "SA-2"}]}}}, "Radar tracking you."),
-            ("No hostiles within fifty miles.", {"hostile_groups": [{"category": "fighter", "range_nm": 40, "call": "Bandit F-5, forty miles."}]}, "Bandit F-5, forty miles."),
-            ("No ground targets.", {"ground_targets_within_20nm": [{"call": "Enemy armor, ten miles."}]}, "Enemy armor, ten miles."),
-            ("No kills.", {"recent_kills_and_losses_last_10_min": [{"by_me": True, "event": "killed", "victim": {"type": "Ural-375", "category": "vehicles"}}]}, "Ural-375"),
-        ]
-        for prose, pic, expected in cases:
-            ctl = self.make(dict(pic, ownship={"type": "F-4E"}), prose + " Stay sharp.")
-            r = ctl.exchange(_request("give me your assessment"))
-            self.assertIn(expected, r["speech"])
-            self.assertNotIn(prose, r["speech"])
-        self.assertIsNone(sc.reply_check("No bandits within twenty miles.", cases[2][1], "assessment"))
-        pic = {"ownship": {"type": "F-4E"}, "my_kills_this_mission": [
-            {"seq": 1, "target": "Ural-375", "age_s": 10, "confidence": "confirmed"},
-            {"seq": 2, "target": "T-55", "age_s": 5, "confidence": "confirmed"}]}
-        ctl = self.make(pic, "Two new kills.")
-        ctl._remember("me", ctl._kill_rows(pic, False, 1)[:1], [])
-        r = ctl.exchange(_request("give me your assessment"))
-        self.assertNotIn("Two new kills.", r["speech"])
-        self.assertIn("splash one T-55", r["speech"])
-        ctl._llm = lambda m: "Two total kills."
-        r = ctl.exchange(_request("give me your assessment"))
-        self.assertIn("Two total kills.", r["speech"])
 
     def test_repeat_skips_failed_delivery_and_reanswers_expired(self):
         import time

@@ -126,9 +126,8 @@ class AtcTests(unittest.TestCase):
         for text in LEGIT:
             for ask in ("Athena, radio check", "Athena, any threats near Creech?", "Athena, on final to the target, any SAMs?"):
                 with self.subTest(text=text, ask=ask):
-                    # No generic name guard remains; a false field denial gets its fixed answer.
-                    expected = ADDRESS + (pic["airbases"]["nearest_friendly"][0]["call"]
-                                          if "no friendly airfield" in text else text)
+                    # Model facts are not checked; existing clearance/key guards remain.
+                    expected = ADDRESS + text
                     self.assertEqual(answer(deepcopy(pic), ask, Stub(answer=ADDRESS + text))[0], expected)
 
     def test_athena_never_clears_weapons(self):

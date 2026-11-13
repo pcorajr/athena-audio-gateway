@@ -44,7 +44,7 @@ Facts that matter:
 - cockpit is live aircraft data: config, flight, payload, rwr, locked_target and warning_lights. Prefer it when cockpit.fresh is true; if unavailable or stale and needed for the question, say "no cockpit data". Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
 - RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. missile_scan not on: say missile tracking is limited and why."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
-- Pending rwr_alert_to_announce calls are context: the controller speaks them before your text. Do not repeat or contradict them.
+- The controller speaks rwr_alert_to_announce and splash_to_announce BEFORE your text. Do NOT mention these alerts at all: no repetition, paraphrase or contradiction.
 
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups. Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
@@ -59,7 +59,6 @@ How to talk:
   Air picture: "Su-27 two-ship, zero three eight, twelve, angels fifteen, ten o'clock high."
   Close bandit or traffic: "Bandit MiG-29S, two seven zero, eight miles, angels twelve, nine o'clock level."
   Ground: "Enemy armor, bearing zero three eight, three miles, ground target, eleven o'clock."
-- Pending splash_to_announce calls are context: the controller speaks them before your text. Do not repeat or contradict them.
 - "bandit" only for enemy aircraft. Enemy ground units are "enemy armor", "SAM site", "triple A", "enemy trucks" and so on. Friendly aircraft are "friendly".
 - No markdown, no lists, no parentheses, no abbreviations with periods. Write numbers so a text-to-speech voice reads them well.
 - Follow-up questions refer to the previous exchanges.
@@ -89,14 +88,24 @@ STALE_CHAT = re.compile(r"unknown|unavailable|not available|not connected|discon
                         r"no (?:connected )?picture|no cockpit|don['’]t (?:have|know)|do not (?:have|know)|"
                         r"no position|not (?:showing )?in an aircraft|last known picture|say again|ask again for|"
                         r"no (?:fuel|loadout|position|friendly airfield|friendly aircraft).{0,40}(?:data|reading|showing)", re.I)
-REPEAT_ASK = re.compile(r"^\W*(?:athena[ ,]+)?(?:say again|repeat|say that again|repeat last)[.!? ]*$", re.I)
+REPEAT_ASK = re.compile(r"^\W*(?:athena[ ,]+)?(?:say again(?: your last)?|repeat(?: your last)?|say that again|say your last again|repeat last)[.!? ]*$", re.I)
+
+
+def sentences(text):
+    return [s.strip() for s in re.split(r"(?<=[.!?;])\s+", text or "") if s.strip()]
 
 
 def factual_history(answer):
     """Keep useful sentences, not missing-data caveats; legitimate negatives remain."""
-    from .reply_guardrails import sentences
     body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer or "", flags=re.I)
-    kept = [s for s in sentences(body) if not STALE_CHAT.search(s)]
+    kept, removed = [], False
+    for sentence in sentences(body):
+        identity = re.match(r"unknown aircraft,? bearing\b", sentence, re.I)
+        stale = bool(STALE_CHAT.search(sentence)) and not identity
+        dependent = removed and re.match(r"(?:it\b|that\b|turn\b.*\bit\b)", sentence, re.I)
+        if not stale and not dependent:
+            kept.append(sentence)
+        removed = stale
     return ADDRESS + " ".join(kept) if kept else ""
 
 
@@ -1158,11 +1167,41 @@ def words_to_numbers(text):
     return found
 
 
-def reply_check(reply, pic, ask):
-    """Compatibility entry for offline checks; live revision is per sentence."""
-    from .reply_guardrails import revise
-    _, changes = revise(reply, pic, ask)
-    return "; ".join(reason for change in changes for reason in change["reasons"]) or None
+def announcement_echo(sentence, alerts, pic):
+    """Only suppress a named event the controller actually admitted to speech."""
+
+    def normal(text):
+        text = re.sub(r"[^a-z0-9 ]", " ", text.lower())
+        text = NUMWORD.sub(lambda m: " ".join(map(str, words_to_numbers(m.group()))), text)
+        return " ".join(re.sub(r"\b(?:a|an|the)\b", " ", text).split())
+
+    text = normal(sentence)
+    for alert in alerts:
+        call = normal(alert)
+        if text == call:
+            return True
+        if call.startswith("splash ") and re.search(r"\b(?:splash|destroyed|kills?)\b", text):
+            target = re.match(r"splash \d+ (.+)", call)
+            if target and target[1] not in ("unknown", "target", "unit"):
+                if re.search(r"\b" + re.escape(target[1]) + r"\b", text):
+                    return True
+        elif not call.startswith("splash ") and re.search(r"\b(?:radar|tracking|launch|sees you)\b", text):
+            # Only the designation before the alert's action/geometry is a name.
+            header = re.split(r"\b(?:radar|could|is|tracking|sees|your|at)\b", call, maxsplit=1)[0]
+            names = set(re.findall(r"\b[a-z]+ \d+\b", header))
+            for row in (pic.get("threats") or {}).get("sam_in_range") or []:
+                if normal(row.get("sam", "")) not in names:
+                    continue
+                raw = row.get("type", "")
+                names.update((normal(raw), normal(spoken_name(raw))))
+                # Eye's row supplies the family, e.g. S_75M_Volhov / SA-2.
+                family = re.match(r"([a-z]+)[_ -]*(\d+)", raw.lower())
+                if family:
+                    names.add(family[1] + " " + family[2])
+            if any(name and re.search(r"\b" + re.escape(name) + r"\b", text) for name in names):
+                return True
+    return False
+
 
 class SimpleController:
     # RadioServer: hold concurrent transmissions for this controller (answered in turn) instead of 503.
@@ -1950,16 +1989,6 @@ class SimpleController:
                 meta["fallback_reason"] = "parroted_picture_text"
                 route, answer = "fallback", (ADDRESS + NO_POSITION if not pic.get("ownship") else FALLBACK)
                 self._log(request, "controller_error", outcome="parroted_picture_text", route=route, llm=meta)
-            if answer and route == "llm":
-                from .reply_guardrails import revise
-                self._guard_pic_time = pic_time
-                answer, changes = revise(answer, pic, text, self)
-                if changes:
-                    meta["fallback_reason"] = "reply_check: " + "; ".join(
-                        reason for change in changes for reason in change["reasons"])
-                    meta["reply_changes"] = changes
-                    route = "fallback"
-                    self._log(request, "controller_error", outcome="reply_check_rejected", route=route, llm=meta)
             if not answer:
                 route, answer = "fallback", FALLBACK
                 meta.setdefault("fallback_reason", "empty answer")
@@ -1969,7 +1998,6 @@ class SimpleController:
             # Same priority as fixed routes: close bandit, pending threats, splash,
             # then the model's answer. Reserve the deferral before admitting alerts;
             # never let final fitting cut a controller-owned call in half.
-            from .reply_guardrails import sentences
             lead = [row["call"] for row in (close_bandits or [])[:1]]
             for row in (close_bandits or [])[:1]:
                 marks.append((row["key"], row["call"]))
@@ -1977,8 +2005,7 @@ class SimpleController:
             for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                 pending.extend(_alert_rows(pic.get(field), keys, field))
             body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer, flags=re.I)
-            echoes = {a.rstrip(". ").casefold() for a, _ in pending} | {a.rstrip(". ").casefold() for a in lead}
-            tail = [s for s in sentences(body) if s.rstrip(". ").casefold() not in echoes]
+            tail = sentences(body)
             defer = DEFER.get(klass, ASK_REST)
             alerts = []
             for alert, key in pending:
@@ -1992,6 +2019,7 @@ class SimpleController:
                         marks.append((key, alert))
             first = lead + alerts
             if first:
+                tail = [s for s in tail if not announcement_echo(s, first, pic)]
                 room = MAX_REPLY_CHARS - len(prefix + " ".join(first)) - 1
                 if len(" ".join(tail)) > room:
                     kept = []
@@ -2000,7 +2028,7 @@ class SimpleController:
                             break
                         kept.append(sentence)
                     tail, trimmed = kept + [defer], True
-                answer = prefix + " ".join(first + tail)
+            answer = (prefix if first else ADDRESS) + " ".join(first + tail)
         answer, net_trimmed = fit_marked(answer, test)  # fixed replies already carry it; model / fallback get it here
         trimmed = trimmed or net_trimmed
         if trimmed:

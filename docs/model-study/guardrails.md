@@ -1,173 +1,97 @@
-# Model guardrails — review rework, branch only
+# Guardrails — controller-owned alerts, not sentence fact-checking
 
-## Status
+## Status and scope decision
 
-This rework supersedes the generic checker and the conclusions in the earlier guardrails report.
-It is built and tested on `feature/model-guardrails`, compared with `ee138de`; it is **not deployed**.
-No adapter requests, DCS operations, service restarts, releases, merges or pushes were made.
-Independent re-review and an actual flight remain acceptance gates. **No model-accuracy improvement is demonstrated.**
+Branch `feature/model-guardrails`, compared with `ee138de`; **not deployed**.
+The re-review exposed false corrections of fuel flow, another aircraft's position and
+range-qualified negatives. The owner chose deletion over more semantic regexes:
+**A1 missing-data checks, A2 all-clear checks and A3 kill-count checks are removed**.
+`integrations/hermes_radio/reply_guardrails.py`, its live call sites and its tests are gone.
+The independent offline study scorer retains its own historical checks for measurement only.
+Earlier `guardrails-review-*` artifacts describe the superseded checks, not current guarantees.
 
-## What the live code does
+The five November 11 missing-data failures are no longer mechanically corrected. Neither
+are “negative threats”, incorrect kill totals or other false all-clears. Clearing stale
+conversation history and putting grounding rules first may help the model, but **no
+accuracy improvement is demonstrated**. Pending Eye calls remain protected independently.
 
-- **No generic name or number validation remains.** Capitalized words, aircraft aliases, locations, bearings,
-  ranges, weapon counts and arbitrary numeric tokens are not checked against a bag of picture values.
-  The old bag-of-numbers helper survives only in the offline study scorer, not the controller.
-- **Missing-data contradictions:** `reply_guardrails.py` examines model sentences, with separate negative clauses,
-  against the stated subject: ownship fuel, available loadout, ownship/position/type, connection,
-  nearest friendly field or friendly air traffic. Fuel presence is checked for the stated units when supplied.
-  A different absent radar/cockpit feed cannot excuse a false fuel denial. An unqualified “I don't know” uses
-  the question's subject. Named tanker/AWACS absence is not contradicted by unrelated friendly traffic.
-  Contradicted sentences are replaced with the existing fixed subject wording when available, otherwise dropped.
-  Other sentences survive. If nothing remains, the route is `fallback`, saying “say again”, with reasons logged.
-- **Explicit false all-clears:** supported no-SAM/in-range, no-tracking, no-missile, no-bandit/hostile/air-contact,
-  no-ground-target and general “all clear”/“you're clear”/“no threats” forms are tested against their corresponding
-  collections. Air contacts use the stated numeric tier, default 50 nm (long range 150); ground targets use
-  `ground_targets_within_20nm`. SAM range negatives use `sam_in_range`; an early-warning radar alone is not a SAM.
-  Radar tracking uses `sam_radar.tracking_you` and DCS-radar tracking confidence, not mere range inference.
-  Inbound missiles use `missiles_inbound`, not the pilot's own weapon track. Corrections use complete Eye `call`
-  strings; a tracking row without geometry has the factual fallback “Radar tracking you.” These replacements
-  are not replaced by “say again” alone while a matching threat call is available.
-- **Kill counts only:** explicit numeric counts before “kills” and explicit no-kill claims are compared with
-  the pilot's kill list, not unrelated picture numbers. “New” uses the controller's delivered read-back ledger;
-  mission totals use the complete pilot list. Recent `by_me` killed rows provide an absence-check fallback when
-  the cumulative list is empty. Existing fixed kill sentences supply the correction, retaining likely/confirmed
-  wording. No guessed dead units or inferred counts are invented by this checker.
-- **Controller-owned announcements:** on model routes (including model failure or a request too old to call the
-  model), the controller puts a close-bandit call first, then pending SAM/launch and splash calls, before prose.
-  Existing `_alert_rows` count-merging is reused. Exact model echoes of inserted sentences are removed.
-  Whole calls reserve room first; a deferred model answer includes “Ask again for the rest.” or the existing
-  subject-specific deferral. Unsqueezable announcements stay pending, never half-spoken or marked as delivered.
-  Fixed-route assembly is unchanged. Marks and kill acknowledgements commit only for wording actually included;
-  a failed/expired/unsent delivery re-arms them on the next exchange.
-- **Dialogue and repeats:** Eye/controller retain the last non-null pilot identity. Same unit → null → same
-  unit does not clear history; cockpit id -1 ↔ real gRPC id for the same name/type is a feed change, not a spawn.
-  A real new unit id, name or type still clears; the remembered real id survives fallback. First session and
-  disconnected→connected transitions clear dialogue, not kill/launch state. Existing mission reset is unchanged.
-  History keeps up to eight complete question/answer pairs, using final spoken sentences after correction and
-  budgeting. Stale unknown/unavailable/not-connected/no-position/not-in-an-aircraft/don't-know/say-again/deferral
-  sentences are excluded without discarding a factual sentence next to them. Valid current “No kills showing”
-  and “No traffic” remain. This is an availability filter, **not proof that every retained model claim is true**.
-  Last-delivered speech is separate: “say again”, “repeat”, “say that again” and “repeat last” use a fixed route
-  to repeat it; a say-again fallback or delivery older than two minutes re-answers its original question.
-  Failed delivery is not the repeat target. As before, absent gateway outcome records mean assumed delivery.
-- **Existing guards remain:** clearance-family sentence removal, spoken-key rejection, 280-character speech cap,
-  and Test-pilot marking. The seven grounding rules lead the prompt; the contradictory “your discretion”
-  instruction is gone. Measured prompt length: **9,686 characters**, below the 10,124-character baseline.
-- **Eval provenance:** cached rechecks require SHA-256 equality of the complete ordered messages, including
-  prompt, picture, user request and history. Equal-length but different messages fail.
+## Current behavior and deliberate limits
 
-## What it does not guarantee
+| Live behavior | What it catches/does | What it deliberately leaves alone |
+|---|---|---|
+| Pending announcements | On the model path, including model failure, speaks close-bandit then pending SAM/launch/splash calls before model prose. Whole calls reserve space; unspoken calls remain pending. | Does not repeatedly inject all in-range threats; fixed-route assembly is unchanged. |
+| Alert-specific echo removal | Removes a model sentence naming an actually inserted alert: same threat designation plus radar/tracking/launch/sees-you wording, or same splash target plus splash/destroyed/kill wording. Normalizes articles, punctuation, hyphens and spoken numbers. Eye row type supplies known family aliases such as S-75 / SA-2. | Different threats/kills survive, including different threats sharing geometry. Unknown identity and unsupported paraphrases are not guessed. No generic name/number validation. Whole-sentence suppression can also remove a weapon detail or tally attached to that same alert. |
+| Conversation lifecycle | Clears on first session, reconnect, real spawn/name/type change; keeps stable real identity across null and pseudo-ID feed flaps. | Does not clear combat bookkeeping on chat-only resets. |
+| Sentence history filter | Excludes unavailable/unknown, don't-know, disconnected, no-position, say-again and deferral sentences. Drops an immediately dependent pronoun sentence; preserves a bogey's unknown identity. | Does not judge truth: “No threats” and other negatives may remain. Useful neighboring sentences survive. |
+| Repeat-last | Fixed playback for say again, repeat, say that again, repeat last, say again your last, say your last again, repeat your last. Failed delivery is not selected; expired (>2 minutes) or fallback speech re-asks the original question. | “Say again fuel/bearing” is a new question. Literal playback can repeat stale information; repeating stores it again and renews its delivery time. Missing gateway outcomes mean assumed sent. |
+| Existing guards | Clearance-family removal, spoken internal-key rejection, 280-character cap, Test-pilot marker. | No factual validation of the model's fuel, loadout, airfield, traffic, positions, scopes, names or kill counts. |
+| Prompt | Seven grounding rules first; no “your discretion”. Pending to-announce fields are explicitly controller-owned: model must not mention, paraphrase or contradict them. 9,596 characters (limit 9,686). | Prompt compliance is not assured; fresh model outputs still attempted echoes. |
 
-This is a narrow contradiction filter, not a semantic fact-checker. It does not validate arbitrary names,
-locations, clock positions, vectors, weapon codes, non-kill counts, mission summaries or pilot-report attribution.
-It does not recognize every paraphrase. “You are clear of the SA-2” and directional ahead/behind negatives are
-left alone because these rules cannot establish their scoped truth. A no-data statement about a particular
-weapon track is not refuted by an unrelated inbound missile. A correct airborne count cannot be inferred from
-alive category totals alone. Named-role/type absence and fine-grained equipment status are not generally checked.
-A kill tied in prose to a specific secondary explosion can still be attribution-ambiguous; correction supplies
-recorded kills, not proof of that explosion's cause. No-position geometry claims and invented dead-unit assertions
-outside the listed negatives/count forms are not mechanically validated. Speech can still be incomplete or wrong.
-The existing raw-key guard does not reliably catch spoken internal weapon/pod codes.
+Only inserted calls participate in echo removal. Alert keys are marked only for spoken
+calls; failed/expired delivery re-arms them. Transcript snapshots omit private event keys,
+so offline replays use exchange + field + index, never call text as identity. Distinct live
+Eye kill keys with identical splash wording are separately tested. Snapshot replay cannot
+prove historical event-level deduplication or real SRS delivery.
 
-The guarantee is that **recognized contradictions are revised sentence by sentence**, with authoritative
-controller-owned calls protected from unrelated bad prose; not that every dangerous statement is recognized.
+## Verification of this scope cut
 
-## Verification
+Private Athena processes, project virtualenv, `umask 077`, `TMPDIR=~/.p1/rework3`.
+No requests to the live adapter, DCS operations, service changes, push or merge.
 
-Both runners used the project virtualenv, `umask 077`, private `TMPDIR=~/.p1gr`, and project-src/worktree PYTHONPATH.
+- pytest: **612 passed, 6 skipped, 2,075 subtests**; unittest: **615 tests, OK, 6 skipped**.
+  Count reduction from 621/624 is deliberate removal of sentence-check tests, offset by
+  new echo/repeat/no-fact-check regressions. Existing ResourceWarnings remain.
+- Both original threat-survival suites still use actual threats; whole-call/cap assertions remain.
+- **319 recorded exchanges:** all **149 fixed** outputs/routes identical to ee138de;
+  **23 model replies** gain only pending announcements, retaining `MODEL.`. Maximum 276 chars.
+- **2 preflight + 37 flight exchanges:** all **25 fixed** identical; only model exchange
+  `20261111:1630` gains its pending SA-2 call. Maximum 246 chars.
+- Cap-only replay of **284 recorded + 394 study saved replies:** maxima **280 / 278** chars.
+  This is not a factual-accuracy sweep and makes no claim to correct the five old failures.
+- All ten reviewer's pending-call raw generations are deterministic regression fixtures.
+  The four exact duplicate cases (three SA-2 paraphrases and spoken-number T-55 splash)
+  are eliminated. Counting the three additional same-target kill reiterations gives
+  **7/10 before → 0/10 after**. Controller's exact alert survives once; different named alerts survive.
+- **10 fresh model calls**, five varied asks on recorded 11-11:1890 SAM and five on
+  11-11:1834 pending kill, through the repository eval tool. Locked HTTP-attempt budget
+  records **10/30 used**, including fallbacks (none needed). Final duplicate threat/kill
+  speech **0/10**; no factual replacements (those checks no longer exist). Manual inspection
+  of raw/final text found no unrelated-alert removal. Maximum final length **255** chars.
+  Model latency median **2.501 s**, p95/max **3.126 s**. A final mechanical narrowing was
+  exact-message-hash cached-rechecked: all ten final outputs unchanged, no extra model calls.
 
-- pytest: **621 passed, 6 skipped, 2,059 subtests**.
-- unittest: **624 tests, OK, 6 skipped**. Existing ResourceWarnings remain; no failing tests.
-- The recorded 11-11 line-1890 SAM and line-1834 splash survive “Stay sharp.” and unrelated clearance prose.
-  Real w03 tests reject false no-SAM/no-threats/clear replies and “Splash nine kills”, preserving good sentences.
-  Fuel-present/absent paraphrases, scoped negatives, null/pseudo identity flaps, real respawns, final history,
-  repeat-last, expired/failed delivery, cache hashes, whole-call budgeting and re-arming are covered.
-  ClearanceGuardTests/AtcTests again assert threat survival with an actual threat in their fixtures.
-- **319 real exchanges replayed with a stub against ee138de:** all **149 fixed replies unchanged**.
-  **23 model replies** gain controller-owned Eye announcements, with unchanged `MODEL.` content and no route change.
-  Every inserted whole call was checked against the picture. The exhaustive table is in `guardrails-review-audit.md`.
-- **2 preflight + 37 flight exchanges:** all **25 fixed replies unchanged**; only model exchange 20261111:1630
-  gains its pending SAM sentence. Maximum replay lengths: 276 (all) / 246 (flight).
-- The initially differing fixed splash at 20261108:303 was a **replay-key collision**, not live suppression.
-  The harness used splash wording as identity; a previous model-route delivery consumed that same synthetic key.
-  Transcript snapshots omit private keys, so the replay now uses transmission id + field + index when keys are
-  absent, preserving supplied real keys. Eye uses target kind/id/time, not splash wording. A regression creates
-  two real Eye kill records with identical wording and distinct keys, then proves both are spoken in succession.
-  Stripped historical keys cannot establish event-by-event live deduplication; this snapshot replay is not such proof.
-  Also, the historical transcripts predate ee138de: 89 baseline fixed outputs differ from original recorded speech,
-  including newly fixed routes. The acceptance comparison here is candidate versus **ee138de**, not historical audio.
+Evidence: private `~/.p1/rework3/{verification.json,real-new.jsonl,budget.json,pytest.txt,unittest.txt}`;
+regression fixtures `tests/fixtures/guardrails-review.json` and `guardrails-real-extra.jsonl`.
+No statistically meaningful model-quality result, real audio/delivery verification or flight
+acceptance is claimed. Independent review and a live sortie remain necessary.
 
-## All stored model replies and checker cost
+## Every changed model-route stub reply
 
-The stateless sweep uses cleaning and clearance removal before the narrow checker; it deliberately tests all saved
-model outputs even when today's controller would take a fixed route. Rejections are not new model calls.
-`guardrails-review-audit.md` lists **every** removed/replaced sentence, replacement and manual judgment.
+Every old reply was `Prometheus, Athena, MODEL.`; every new reply retains `MODEL.` after
+the following whole pending calls. Raw historical weapon labels are preserved, not validated.
 
-| Corpus | Replies | Narrowly changed replies | Incremental after existing key guard | Identified false rejections |
-|---|---:|---:|---:|---:|
-| Recorded 11-08 / 11-09 / 11-11 | 284 | 8 | 6 | 0 |
-| Study results, all variants/repetitions | 394 | 25 | 25 | 0 |
-
-Two recorded “No position call” removals were already spoken-key violations, not new safety catches. The 6 other
-recorded corrections include all **five required 11-11 failures**: no connected picture, fuel unknown twice,
-no friendly airfield twice; plus the 11-09:535 false new-kill denial. The study's secondary-explosion denial
-(11-09:409) is a valid no-new-kill correction under its rubric, but its causal qualifier is ambiguous as noted above;
-zero identified false rejects is a manual sample judgment, not a universal claim. Stateless “new” checks use recent
-kill ages and cannot reconstruct all historic delivery bookkeeping; their replacement is a mission tally.
-Existing clearance removals (5 recorded, 11 study) are not counted as new-check successes.
-
-“F-4E Phantom”, “Ural three seven fives”, the correct eighteen-aircraft total and “Running in, copy” all pass.
-Two overbroad development matches (a missing tanker with unrelated traffic, and a missing own-missile track with
-an inbound missile present) were narrowed and covered by regression tests before final verification.
-
-Final-code checker-only timing over three passes per saved reply (not network latency):
-- 284 recorded: median **0.026 ms**, p95 **0.093 ms**, maximum **0.624 ms**.
-- 394 study: median **0.036 ms**, p95 **0.087 ms**, maximum **0.189 ms**.
-All 678 outputs were also injected through the normal controller with stub model text: maximum final speech
-**280 chars recorded / 278 study**, never over 280. Some requests now route fixed; this cap exercise is distinct
-from the direct checker sweep.
-
-## Fresh real-model results — 56 of at most 80 calls
-
-The reviewer's exact 25-item Appendix C selection was generated once on each path, interleaved old/new.
-Each item reached the normal model route in a dry run; no fixed route was bypassed. Both paths also ran the
-poisoned-history trio after the actual line-1624 preflight reply and a first-session change without a mission reset:
-“anybody blue up here with me”, “how's the gas holding up”, “is there somewhere friendly I can put down”.
-Preflight replies were fixed and cost no calls. A locked budget counted HTTP attempts before sending.
-All **56** attempts succeeded without extra fallback attempts; no live adapter or DCS endpoint was contacted.
-
-| Sample | Audited right | Wrong/incomplete | Narrow rejections | Median / p95 model seconds |
-|---|---:|---:|---:|---:|
-| ee138de fresh 25 | 21 | 4 | 0 | 1.781 / 3.333 |
-| Candidate fresh 25 | 20 | 5 | 1 | 1.782 / 4.949 |
-| ee138de poisoned-history trio | 3 | 0 | 0 | 2.632 / 4.685 |
-| Candidate poisoned-history trio | 3 | 0 | 0 | 1.788 / 2.041 |
-
-Original scorer outputs remain separate: old 19 right / 2 wrong / 4 manual; candidate 20 / 1 / 4.
-The stricter audit rejects incomplete friendly counts, omitted EWR calls and incomplete mission-status answers;
-old also invented gun hits on 11-09:147, while new correctly reported pending shots. Candidate additionally
-invented “eighteen already handled” and spoke raw HB pod codes. The candidate's one mechanical correction
-removed the false no-new-kill sentence at 11-09:409 while keeping the factual next sentence.
-These unfiltered mistakes are outside the narrow guarantees and are not hidden by the historical scorer.
-
-The candidate sent no stale disconnected preflight assistant history after the first-session transition;
-the old path did. Both still answered the trio correctly. **No accuracy improvement is shown**: this single
-paired sample is noisy, and its audited candidate score is slightly lower. No flight-quality claim follows.
-After the final mechanical-only corrections, all **28 candidate generations** were cached-rechecked with exact
-ordered-message hashes; final spoken outputs were unchanged. These are rechecks, not extra fresh calls.
-Maximum speech across the fresh trials and both stub replays was 276 characters.
-
-## Evidence and remaining limits
-
-- `guardrails-review-audit.md`: exhaustive sentence revisions, all 23 model-route replay differences, all fresh
-  replies/latencies and original/audited judgments.
-- `guardrails-review-evidence.json.gz`: raw fresh replies and metadata, ordered-message hashes, rechecks, both
-  old/new replay sets, sweep changes, summary and baseline-versus-recorded mismatches.
-- `guardrails-review-verification.json`: separate 678-output cap, checker-cost and static-scan results.
-- Private scripts/logs: Athena `~/.p1gr/`; local continuation evidence `athena-p1/rework2/`.
-  Earlier `guardrails-*` study artifacts describe the superseded generic-check implementation and are not
-  evidence that this narrower implementation validates arbitrary names/numbers.
-
-Not proven: actual SRS delivery/timing, real speech recognition, event-level identity/reconnection behavior in
-missing historical logs, full live deduplication from stripped snapshots, or statistically meaningful accuracy.
-No deployment is authorized by this report; independent re-review and a real sortie are still needed.
+| Exchange | Added calls |
+|---|---|
+| 20261108:123 | Splash one Ural-375 |
+| 20261108:169 | Splash one Ural-375; four Paratrooper AKS-74 |
+| 20261108:405 | Splash one T-55; one unknown |
+| 20261108:453 | Splash one T-55; two unknown |
+| 20261108:536 | Splash one unknown; one VAZ NEW |
+| 20261108:560 | Splash one T-55 |
+| 20261108:755 | Two 53-UOR-281U launch calls |
+| 20261108:865 | Two 53-UOR-281U launch calls; Ural-375 ZU-23 splash |
+| 20261108:886 | Four 53-UOR-281U launch calls |
+| 20261108:894 | One 53-UOR-281U launch call |
+| 20261108:903 | One 53-UOR-281U launch call |
+| 20261108:914 | One 53-UOR-281U launch call |
+| 20261108:973 | Three 53-UOR-281U launch calls |
+| 20261108:996 | Two 53-UOR-281U launch calls; PT splash |
+| 20261108:1244 | Splash one F-5E-3 |
+| 20261108:1253 | Splash two F-5E-3 |
+| 20261109:272 | SA-2 could be tracking, eleven o'clock, 23 miles |
+| 20261109:328 | SA2V755 launch, two o'clock, seven miles |
+| 20261109:361 | SA2V755 launch, ten o'clock, seven miles |
+| 20261109:377 | SA2V755 launch, nine o'clock, nine miles |
+| 20261109:401 | Splash one Ural-4320T |
+| 20261109:527 | Splash two ZIL-131 KUNG |
+| 20261111:1630 | SA-2 could be tracking, eleven o'clock, 23 miles |

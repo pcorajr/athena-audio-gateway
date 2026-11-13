@@ -410,6 +410,11 @@ def _landing_class(t, pic, recent):
 SAM_SUBJECT = re.compile(r"\b(?:sams?|sa[- ]?\d+|strela)(?:\s+site)?\b", re.I)
 SAM_QUIET = re.compile(r"\b(?:dormant|quiet|silent|not (?:shooting|firing)|(?:looks?|seems?|appears?)(?: to be)? (?:dead|inactive))\b", re.I)
 SAM_CLOSING = re.compile(r"\b(?:going (?:in |to get )?closer|getting closer|closing (?:in|on)|pressing|running in|run in)\b", re.I)
+SAM_REFERENT = re.compile(r"\b(?:headed? (?:towards?|for) it|going in|going (?:towards?|for) it)\s*[.!]?$", re.I)
+FLIGHT_ASK = re.compile(r"\b(?:(?:my|our) (?:air ?speed|speed|altitude|heading)|how (?:fast|high)|(?:indicated|true) airspeed|ground ?speed|altitude|heading|agl)\b", re.I)
+IDENTITY_ASK = re.compile(r"\b(?:what (?:am i|are we) flying|what (?:aircraft|airplane|jet) (?:am i|are we))\b", re.I)
+LOSS_ASK = re.compile(r"\b(?:i (?:lost all|crashed|ejected)|(?:am i|are we) (?:down|dead|alive)|(?:i'm|i am|we're|we are) (?:down|dead))\b", re.I)
+MODEL_OWN_LOSS = re.compile(r"\b(?:you(?:'re|’re| are| were| have| haven't| have not)?|your (?:aircraft|airframe|jet)(?: is| was| has been)?|pilot(?: is| was)?)\s+(?:(?:not|never|no longer|still|been|confirmed|definitely)\s+)*(?:down|dead|alive|crash\w*|eject\w*|destroyed|lost)\b", re.I)
 PERMISSION_ASK = re.compile(r"\b(?:permission|clearance|request\w*|can i|clear(?:ed)?)\b", re.I)
 
 
@@ -428,6 +433,15 @@ def call_class(text, pic=None, recent=()):
         return "dev_note"
     if TALLY_ASK.search(t):
         return "kill_confirm"  # TOTAL_ASK (tally) makes it the mission total
+    if LOSS_ASK.search(t):
+        return "own_loss"
+    if IDENTITY_ASK.search(t):
+        cp, own = (pic or {}).get("cockpit") or {}, (pic or {}).get("ownship") or {}
+        if cp.get("fresh") and cp.get("aircraft") and own.get("type") and cp["aircraft"] != own["type"]:
+            return "identity_refresh"
+    if FLIGHT_ASK.search(t) and (_QUESTION.search(t) or re.search(r"\b(?:my|our|check|report)\b", t, re.I)
+            or re.fullmatch(r"(?:Athena,?\s*)?(?:airspeed|speed|altitude|heading|AGL)[.?!]?", t, re.I)) and not re.search(r"\b(?:bandit|target|enemy|friendly|vector|runway)\b", t, re.I):
+        return "flight"
     if KILL_REPORT.search(t) and not _QUESTION.search(t):
         return "kill_report"
     if pic is not None and sam_statement(t, recent):
@@ -458,6 +472,10 @@ def call_class(text, pic=None, recent=()):
         return "atc"  # never the model: the fixed field + traffic answer (re-review AB2)
     if TRAFFIC_ASK.search(t) and not GROUND_ASK.search(t):
         return "traffic"  # "blue traffic in the area": the pilot asked for aircraft
+    if FRIENDLY_WORD.search(t) and re.search(r"\b(?:aircrafts?|airplanes?|jets?)\b", t, re.I) and not (
+            GROUND_ASK.search(t) or KILL_ASK.search(t) or TOTALS_ASK.search(t) or FRIENDLY_FIRE.search(
+                re.sub(r"\bin the area\b", "", t, flags=re.I))):
+        return "traffic"
     if FRIENDLY_WORD.search(t) and FRIENDLY_PLACE.search(t) and not FRIENDLY_HIT.search(t):
         return "friendlies_near"  # "any friendlies near the convoy": never the air-traffic list (re-review AB2)
     if FRIENDLY_AIR_ASK.search(t) and not (GROUND_ASK.search(t) or KILL_ASK.search(t) or TOTALS_ASK.search(t)
@@ -887,6 +905,13 @@ NEEDS_POSITION = re.compile(r"\b(threats?|sams?|nearest|closest|nearby|near me|a
 
 def requested_calls(klass, text, pic):
     """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
+    if klass == "identity_refresh":
+        return ["Stand by, aircraft picture refreshing."]
+    if klass == "own_loss":
+        return ["Own-aircraft loss recorded." if pic.get("own_loss") else
+                NO_POSITION if not pic.get("ownship") else "No own-aircraft loss event recorded."]
+    if klass == "flight":
+        return flight_calls(text, pic)
     if not pic.get("ownship"):
         totals = bool(TOTALS_ASK.search(text) or (REPORT_ASK.search(text) and not RANGE_ASK.search(text)))  # kills / counts / reports need no position
         if "ownship" in pic and (klass in POSITION_CLASSES or (klass in (None, "ack") and not totals and (
@@ -967,6 +992,41 @@ def requested_calls(klass, text, pic):
                                           ", ".join("%s %s" % (words(n), t) for t, n in counts.items())))
         return lines
     return None
+
+
+def flight_calls(text, pic):
+    """Only fresh cockpit numbers have cockpit references; gRPC speed is not IAS."""
+    cp, own = pic.get("cockpit") or {}, pic.get("ownship") or {}
+    if cp.get("fresh") and cp.get("aircraft") and own.get("type") and cp["aircraft"] != own["type"]:
+        return ["Stand by, aircraft picture refreshing."]
+    flight = (cp.get("flight") or {}) if cp.get("fresh") else {}
+    t, lines = text.lower(), []
+    if re.search(r"speed|how fast", t):
+        field, label = ("gs_kt", "groundspeed") if re.search(r"ground ?speed", t) else (
+            ("tas_kt", "true airspeed") if "true" in t else ("ias_kt", "indicated"))
+        value = flight.get(field)
+        if isinstance(value, (int, float)):
+            lines.append("%s knots %s." % (words(round(value)).capitalize(), label))
+        elif field == "ias_kt" and not re.search(r"indicated|airspeed", t) and own.get("speed_kt") is not None:
+            lines.append("%s knots DCS velocity; indicated airspeed unavailable." % words(own["speed_kt"]).capitalize())
+        else:
+            lines.append("%s unavailable." % label.capitalize())
+    if re.search(r"altitude|how high|agl", t):
+        agl = bool(re.search(r"agl|above ground", t))
+        value = flight.get("agl_ft" if agl else "alt_msl_ft")
+        if value is None and not agl:
+            value = own.get("alt_ft")
+        lines.append("%s feet %s." % (words(round(value)).capitalize(), "above ground" if agl else "MSL")
+                     if isinstance(value, (int, float)) else "Altitude unavailable.")
+    if "heading" in t:
+        ref = "true" if "true" in t else "magnetic"
+        field = "heading_true" if ref == "true" else "heading_mag"
+        value = flight.get(field)
+        if value is None:  # avoid deriving magnetic heading from a conflicting declination convention
+            value, ref = own.get("heading_true"), "true"
+        lines.append("Heading %s %s." % (" ".join(words(int(d)) for d in "%03d" % (round(float(value)) % 360)), ref)
+                     if value is not None else "Heading unavailable.")
+    return lines or ["Flight data unavailable."]
 
 
 # A spoken reply never carries a picture key name or the words of an old prompt rule (live 2026-11-11 11:19:
@@ -1582,6 +1642,14 @@ class SimpleController:
         missiles = sorted(rows, key=lambda m: m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else 1e9)
         self._last_launch_reply = now
         if not missiles:
+            tracking = [s for s in threats.get("sam_in_range") or [] if s.get("confidence") == "DCS radar: tracking you"]
+            if tracking:
+                site = min(tracking, key=lambda s: s["range_nm"])
+                call = "No missile seen; %s tracking you, your %s o'clock, %s." % (
+                    site["sam"], words(site["clock"]), range_words(site["range_nm"]))
+                if site.get("call"):
+                    self._launch_covered[site["call"]] = call
+                return [call] + (["Missile tracking limited."] if str(threats.get("missile_scan")).startswith("off") else [])
             scan = str(threats.get("missile_scan"))
             if scan.startswith("off"):  # the scan cannot run: never an all-clear; the picture says why
                 return ["No launch seen; missile tracking is limited, %s." % (scan[5:] or "missile scan is not answering")]
@@ -1856,7 +1924,11 @@ class SimpleController:
                 ("Prometheus, Athena, debrief unavailable. " + summary).strip())
             answer, trimmed = fit_reply(answer, DEBRIEF_CHARS)
             marks = []  # a close bandit still goes first; the debrief tail is trimmed to make room
-            answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), marks, MAX_SPEECH_CHARS)
+            if (dpic or {}).get("own_loss_to_announce"):
+                answer = ADDRESS + dpic["own_loss_to_announce"] + " " + answer.removeprefix(ADDRESS)
+                marks.append((dpic.get("_own_loss_key"), dpic["own_loss_to_announce"]))
+            else:
+                answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), marks, MAX_SPEECH_CHARS)
             answer, net_trimmed = fit_marked(answer, isinstance(dpic, dict) and dpic.get("test_ownship"))
             trimmed = trimmed or net_trimmed
             if trimmed:
@@ -1890,12 +1962,19 @@ class SimpleController:
                 repeat_answer = FALLBACK
         pic_time = time.time()  # round 6: kill identities use picture time, never post-LLM time
         klass = call_class(text, pic, [q for q, _ in list(self.history)[-3:]])
+        if (klass in (None, "ack", "intent") and SAM_REFERENT.search(text) and self._last_delivered
+                and not re.search(r"\b(?:not|don't|won't)\b", text, re.I)):
+            previous = self._last_delivered[1]  # ATHENA's immediately preceding reply, not an older pilot mention
+            sites = (pic.get("threats") or {}).get("sam_sites") or []
+            if any(re.search(r"\b%s\b" % re.escape(s["sam"]), previous, re.I) for s in sites):
+                klass = "sam_caution"
         if klass is None and time.time() - self._last_launch_reply <= 90 and LAUNCH_FOLLOWUP.search(text):
             klass = "launch"  # "do you see it?" right after a launch call
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
         close_bandits = pic.pop("_close_bandits", None) if isinstance(pic, dict) else None
         airfields = pic.pop("_airfields", None) if isinstance(pic, dict) else None  # resolved here, never in the prompt
+        loss_key = pic.pop("_own_loss_key", None)
         # Phase 0: the deterministic answer comes FIRST; the model is called only when there is none.
         self._pending_ack = None
         self._launch_undo = None
@@ -1909,7 +1988,12 @@ class SimpleController:
                   "Waiting for current mission picture."] if not pic.get("connected", True) else [])
         if age is not None and age > 60:
             stale.append("Contact data is %s seconds old." % words(age))
-        if repeat_answer is not None:
+        if pic.get("own_loss_to_announce"):
+            klass = "own_loss"
+            calls = [pic["own_loss_to_announce"]]
+            stale, close_bandits, rwr_keys, splash_keys = [], [], None, None
+            pic["rwr_alert_to_announce"], pic["splash_to_announce"] = [], []
+        elif repeat_answer is not None:
             calls = [re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", repeat_answer, flags=re.I)]
         elif klass == "launch" and pic.get("ownship"):
             calls = self.launch_calls(text, pic)
@@ -1920,6 +2004,8 @@ class SimpleController:
             calls = self.kill_confirm_calls(text, pic, pic_time, commit=False, room=room)
         else:
             calls = requested_calls(klass, text, pic if airfields is None else dict(pic, _airfields=airfields))
+        if klass == "identity_refresh":
+            stale = []  # one small transition answer, not contradictory old/new aircraft detail
         clearance = bool(klass in ("landing", "atc") and PERMISSION_ASK.search(text)
                          and re.search(r"\b(?:land(?:ing)?|take ?off|depart\w*)\b", text, re.I))
         if clearance and calls is not None:
@@ -1946,6 +2032,8 @@ class SimpleController:
                   counts={"empty_transcripts": self.empty_transcripts, "transmissions": self.transmissions},
                   timings_ms={"tool": round((time.monotonic() - start) * 1000)})
         marks = []  # (key, needle): announced only if the needle is in the final reply
+        if loss_key:
+            marks.append((loss_key, pic["own_loss_to_announce"]))
         trimmed = False
         llm_ms = 0
         meta = None
@@ -2031,6 +2119,11 @@ class SimpleController:
             answer, meta = self._call_model(messages, deadline)
             llm_ms = round((time.monotonic() - t_llm) * 1000)
             answer = clean(answer)
+            # Own loss is event-owned, not a model diagnosis or denial.
+            if MODEL_OWN_LOSS.search(answer):
+                body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer, flags=re.I)
+                kept = [s for s in sentences(body) if not MODEL_OWN_LOSS.search(s)]
+                answer = ADDRESS + (" ".join(kept) or (NO_POSITION if not pic.get("ownship") else "Say again."))
             if answer and clearance_in(answer):
                 # Athena never clears, approves or invents airfield data (review A 11-11). ATC asks never get here;
                 # any other reply loses only the offending sentences, never swapped for another answer (AB2)
@@ -2056,6 +2149,15 @@ class SimpleController:
             pending = []
             for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
                 pending.extend(_alert_rows(pic.get(field), keys, field))
+            # A current closing shot bridge can precede its scan-owned alert (20:34:31).
+            # Speak its factual launch here, not a model rendition of its raw weapon ID.
+            bridges = [m for m in (pic.get("threats") or {}).get("missiles_in_flight") or []
+                       if m.get("from") == "shot event" and m.get("closing") and m.get("call")]
+            if any(a.lower().startswith("missile launch,") for a, _ in pending):
+                bridges = []  # existing launch batch already owns this turn (including its two-detail cap)
+            for missile in bridges[:2]:
+                if not any(a == missile["call"] for a, _ in pending):
+                    pending.insert(0, (missile["call"], None))
             body = re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", answer, flags=re.I)
             tail = sentences(body)
             defer = DEFER.get(klass, ASK_REST)
@@ -2071,6 +2173,10 @@ class SimpleController:
                         marks.append((key, alert))
             first = lead + alerts
             if first:
+                # The controller owns a pending launch. Drop the model's launch sentence,
+                # even if it used a raw DCS ID; never a generic weapon-name substitution.
+                if any(a.lower().startswith("missile launch,") for a in first):
+                    tail = [s for s in tail if not re.search(r"\b(?:missile launch|new launch|in the air)\b", s, re.I)]
                 tail = [s for s in tail if not announcement_echo(s, first, pic)]
                 room = MAX_REPLY_CHARS - len(prefix + " ".join(first)) - 1
                 if len(" ".join(tail)) > room:

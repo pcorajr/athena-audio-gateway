@@ -1,4 +1,4 @@
-"""11-12 two-flight evidence replay. No model/network access; model bodies are explicit stubs.
+"""11-12 five-flight evidence replay. No model/network access; model bodies are explicit stubs.
 
 The fixture retains the final picture actually used per exchange (the busy launch
 retries used a later picture than the first tool row). Stationary SAM coordinates
@@ -20,6 +20,8 @@ from integrations.hermes_radio.tests.test_p1_radio import Stub, controller, say
 
 DATA = json.loads((Path(__file__).parent / 'fixtures/threat_flights_20261112.json').read_text())
 LIVE = {r['time'][11:19]: r for r in DATA['exchanges']}
+PART_A = json.loads((Path(__file__).parent / 'fixtures/threat_flights_part_a_20261112.json').read_text())
+LATE = {r['time'][11:19]: r for r in PART_A['exchanges']}
 
 
 def stamp(value):
@@ -37,10 +39,11 @@ def move_own(eye, picture):
 def amended_picture(entry, eye):
     """Replay geometry with Eye; preserve unrelated captured data, not a rebuilt fictional world."""
     pic = deepcopy(entry['picture'])
-    move_own(eye, pic)
+    if pic.get('ownship'):
+        move_own(eye, pic)
     eye.tick()
     generated = eye.picture()
-    sites = generated['threats']['sam_sites']
+    sites = generated['threats'].get('sam_sites') or []
     known = {t for g in pic.get('hostile_groups', []) for t in g.get('types', {})}
     # Flight 1 lists its SA-2 in sam_in_range even when the ground picture is capped.
     known.update(r['type'] for r in pic['threats'].get('sam_in_range') or [])
@@ -71,31 +74,47 @@ def amended_picture(entry, eye):
         pic['connected'] = True
         pic['data_age_s']['units'] = generated['data_age_s']['units']
         pic['threats']['sam_in_range'] = []
-    for event in (pic.get('ownship', {}).get('damage') or {}).get('events', []):
+    for event in ((pic.get('ownship') or {}).get('damage') or {}).get('events', []):
         event['call'] = event['call'].replace('You took damage, life down to ', "You're hit, airframe at ")
+    # Naming only; target IDs, confidence, ownership, kill timing and counts are untouched.
+    for field in ('my_kills_this_mission', 'my_kills_recent', 'friendly_kills_this_mission', 'friendly_kills_recent'):
+        for kill in pic.get(field) or []:
+            if kill.get('target') == 'Ural-4320-31':
+                kill['target'] = eye_module.spoken_type(kill['target'])
+            if kill.get('splash_call'):
+                kill['splash_call'] = kill['splash_call'].replace('Ural-4320-31', eye_module.spoken_type('Ural-4320-31'))
+    if pic.get('splash_to_announce'):
+        pic['splash_to_announce'] = [s.replace('Ural-4320-31', eye_module.spoken_type('Ural-4320-31')) for s in pic['splash_to_announce']]
+    for field in ('own_loss', 'own_loss_to_announce', '_own_loss_key'):
+        if field in generated:
+            pic[field] = generated[field]
     return pic, replacements
 
 
-def replay():
+def replay(data=DATA):
     now = [0.0]
     c, stub_eye = controller({}, Stub())
     eye, mission, results = None, None, []
-    for entry in DATA['exchanges']:
-        seq = '13' if entry['picture']['ownship']['type'].startswith('F-4') else '14'
+    for entry in data['exchanges']:
+        seq = str(entry['mission']) if 'mission' in entry else ('13' if entry['picture']['ownship']['type'].startswith('F-4') else '14')
         now[0] = stamp(entry['picture_time'])
         if seq != mission:
             eye = Eye('Prometheus', clock=lambda: now[0])
-            for unit in DATA['missions'][seq]['units']:
+            for unit in data['missions'][seq]['units']:
                 eye.on_units_message(unit)
             mission = seq
             stub_eye.reset_at = now[0]
+            stub_eye.announced.clear()
+            applied = set()
+        for event in data['missions'][seq]['events']:
+            if event.get('kind') in ('pilot_dead', 'crash', 'ejection') and event['received_at'] <= now[0] and event['raw_id'] not in applied:
+                eye.on_event(event['payload'])
+                applied.add(event['raw_id'])
         pic, replacements = amended_picture(entry, eye)
         stub_eye.pic = pic
-        # Real recorded model text is held constant, except item 3's explicit name
-        # substitution. This verifies deterministic envelopes, not model compliance.
+        # Original recorded model text is held constant, including raw IDs. Only
+        # controller-owned calls may replace it; this is not new model inference.
         body = entry['old_reply']
-        for old, new in replacements.items():
-            body = body.replace(old, new).replace(old[0].lower() + old[1:], new[0].lower() + new[1:])
         c._llm = Stub(answer=body)
         with mock.patch.object(sc.time, 'time', return_value=now[0]), mock.patch.object(sc.time, 'monotonic', return_value=now[0]):
             frames, _ = say(c, entry['text'], tid=entry['time'])
@@ -103,7 +122,8 @@ def replay():
         eye.mark_announced(stub_eye.announced)
         # Synthetic keys are only for the current captured pending set.
         stub_eye.announced.difference_update(k for k in list(stub_eye.announced) if k.startswith('recorded-'))
-        results.append({'time': entry['time'][11:19], 'text': entry['text'], 'old': entry['old_reply'],
+        results.append({'time': entry['time'][11:19], 'mission': int(seq), 'picture_row': entry['picture_row'],
+                        'picture_time': entry['picture_time'], 'text': entry['text'], 'old': entry['old_reply'],
                         'new': result['speech'], 'old_route': entry['old_route'], 'route': result['route'],
                         'stub_calls': c._llm.calls})
     return results
@@ -187,11 +207,11 @@ class ApproachTests(unittest.TestCase):
 
     def test_formula_all_range_tiers(self):
         for _, nominal, name in eye_module.SAM_RANGES:
-            distance = min(150, max(3 * nominal, 8))
+            distance = min(150, max(1.5 * nominal, 8))
             self.assertGreater(distance, nominal)
             self.assertLessEqual(distance, 150)
-        self.assertAlmostEqual(min(150, max(3 * sam_profile('Strela-10M3')[0], 8)), 8.1)
-        self.assertEqual(min(150, max(3 * sam_profile('S_75M_Volhov')[0], 8)), 69)
+        self.assertEqual(min(150, max(1.5 * sam_profile('Strela-10M3')[0], 8)), 8)
+        self.assertEqual(min(150, max(1.5 * sam_profile('S_75M_Volhov')[0], 8)), 34.5)
 
     def test_once_per_approach_and_delivery_rearm(self):
         pic = self.site()
@@ -410,3 +430,243 @@ class NarrowReplyTests(unittest.TestCase):
         eye.on_life(eye.ownship(), {'life': 100, 'life0': 100})
         eye.on_life(eye.ownship(), {'life': 97, 'life0': 100})
         self.assertEqual(eye.damage_events[-1]['call'], "You're hit, airframe at ninety seven percent.")
+
+
+class PartARecordedTests(unittest.TestCase):
+    def test_five_flights_and_exact_scoped_fixed_changes(self):
+        results = replay() + replay(PART_A)
+        self.assertEqual(len(results), 94)
+        self.assertEqual({r['mission'] for r in results}, {13, 14, 15, 16, 17})
+        rows = {r['time']: r for r in results}
+        expected = {
+            '21:19:37': "No missile seen; SA-2 tracking you, your twelve o'clock, four miles.",
+            '21:06:00': 'Stand by, aircraft picture refreshing.',
+            '21:33:07': 'Four hundred eighty nine knots indicated.',
+            '21:38:43': 'Confirmed, splash one Ural truck.',
+            '21:42:49': "you're down.", '21:24:06': "you're down.",
+        }
+        for t, body in expected.items():
+            self.assertEqual(rows[t]['new'], sc.ADDRESS + body)
+            self.assertEqual(rows[t]['stub_calls'], 0)
+        self.assertIn('Negative, SA-13 is alive', rows['21:41:00']['new'])
+        self.assertEqual(rows['21:41:00']['stub_calls'], 0)
+        for t in ('21:35:44', '21:35:58'):
+            self.assertEqual(rows[t]['route'], 'fixed')
+            self.assertIn('Friendly A-10C', rows[t]['new'])
+            self.assertNotIn("can't see your target", rows[t]['new'])
+        self.assertEqual(rows['21:42:14']['new'], rows['21:42:14']['old'])
+        changed_fixed = {'21:19:37', '21:24:06', '21:28:31', '21:35:44', '21:38:43', '21:40:45'}
+        for row in results:
+            self.assertLessEqual(len(row['new']), 280)
+            if row['mission'] >= 15 and row['old_route'] == 'fixed' and row['time'] not in changed_fixed:
+                self.assertEqual(row['new'], row['old'], row['time'])
+            lines = sc.sentences(row['new'].removeprefix(sc.ADDRESS))
+            self.assertEqual(len(lines), len(set(lines)), row['time'])
+
+    def test_sa2_recorded_geometry_admitted_bridge_then_scan_disappearance(self):
+        mission = PART_A['missions']['16']
+        shot = next(e for e in mission['events'] if e['kind'] == 'shot' and
+                    e['payload']['shot']['weapon']['type'] == 'SA2V755')
+        packet = next(o['payload']['packet'] for o in mission['observations'] if o['type'] == 'cockpit_input')
+        body = shot['payload']['shot']
+        self.assertEqual(body['initiator']['unit']['name'], 'Ground-8-7')
+        self.assertEqual(body['weapon']['id'], 4294967294)
+        brg, rng = eye_module.bearing_range(packet['lat'], packet['lon'],
+            body['weapon']['position']['lat'], body['weapon']['position']['lon'])
+        angle = abs(((brg + 180 - body['weapon']['orientation']['heading']) + 180) % 360 - 180)
+        self.assertLess(rng, eye_module.MISSILE_ALERT_NM)
+        self.assertLess(angle, 45)
+        now = [shot['received_at']]
+        eye = Eye('Prometheus', clock=lambda: now[0])
+        eye.on_units_message({'unit': fx.unit(17091, 'Aerial-3-2', packet['ac'], 'blue', packet['group'],
+            'AIRPLANE', packet['lat'], packet['lon'], packet['alt'], packet['hdg'], packet['gs'], player='Prometheus')})
+        eye.on_weapons([])  # explicit boundary probe: recent pre-shot scan, not recorded raw Eval
+        eye.on_event(shot['payload'])
+        bridge = eye.missile_shots['4294967294']
+        self.assertTrue(bridge['closing'])
+        self.assertEqual(bridge['spoken_name'], 'SA-2')
+        now[0] += 1
+        eye.on_weapons([])  # an answered post-shot empty scan cannot outlive the bridge floor
+        self.assertTrue(eye._shot_live(bridge, now[0]))
+        now[0] += 2
+        self.assertFalse(eye._shot_live(bridge, now[0]))
+        observed = [o for o in mission['observations'] if o['type'] == 'sam_threat']
+        live = [o for o in observed if o['payload']['value']['missiles_in_flight']]
+        first = live[0]['payload']['value']['missiles_in_flight'][0]
+        last = live[-1]['payload']['value']['missiles_in_flight'][0]
+        self.assertEqual(first['id'], '16906496')
+        self.assertAlmostEqual(first['first_seen'], shot['received_at'], places=3)  # bridge really merged
+        self.assertEqual((first['range_nm'], last['range_nm']), (5.8, 1.4))
+        gone = next(o for o in observed if o['time'] > live[-1]['time'])
+        self.assertEqual(gone['payload']['value']['missiles_in_flight'], [])
+        self.assertEqual(gone['payload']['value']['missile_scan'], 'on')
+        self.assertLess(gone['time'] - shot['received_at'], eye_module.EVAL_OFF_KEEP_S)
+        self.assertEqual(LATE['21:19:37']['picture']['threats']['sam_in_range'][0]['confidence'], 'DCS radar: tracking you')
+
+    def test_sa13_latest_picture_is_after_hit_not_launch_time(self):
+        entry = LATE['21:42:14']
+        self.assertEqual(entry['picture_time'][11:19], '21:42:26')
+        mission = PART_A['missions']['17']
+        hits = [e for e in mission['events'] if e['kind'] == 'hit' and e['payload']['hit'].get('weapon_name') == 'SA9M333']
+        self.assertEqual(len(hits), 1)
+        self.assertGreater(stamp(entry['picture_time']) - hits[0]['received_at'], 15)
+        th = entry['picture']['threats']
+        self.assertEqual(th['missile_scan'], 'on')
+        self.assertEqual(th['missiles_in_flight'], [])
+        self.assertEqual(th['sam_in_range'][0]['confidence'], 'range only: could be tracking')
+
+    def test_speed_was_real_cockpit_ias_not_invented_from_velocity(self):
+        pic = LATE['21:33:07']['picture']
+        self.assertEqual(pic['ownship']['speed_kt'], 590)
+        self.assertTrue(pic['cockpit']['fresh'])
+        self.assertEqual(pic['cockpit']['flight']['ias_kt'], 489)
+        self.assertEqual(pic['cockpit']['flight']['tas_kt'], 589)
+        self.assertEqual(sc.flight_calls("what's my speed", pic), ['Four hundred eighty nine knots indicated.'])
+
+    def test_ural_naming_only_preserves_delayed_kill_identity(self):
+        for name in ('Ural-4320T', 'Ural-4320-31', 'Ural truck'):
+            self.assertEqual(eye_module.spoken_type(name), 'Ural truck')
+        pic = deepcopy(LATE['21:38:43']['picture'])
+        original = deepcopy(pic['my_kills_this_mission'])
+        for row in pic['my_kills_this_mission']:
+            row['target'] = eye_module.spoken_type(row['target'])
+        c, _ = controller(pic, Stub())
+        frames, _ = say(c, 'tally')
+        self.assertIn('four Ural truck', frames[0]['speech'])
+        for old, new in zip(original, pic['my_kills_this_mission']):
+            self.assertEqual({k: v for k, v in old.items() if k != 'target'}, {k: v for k, v in new.items() if k != 'target'})
+
+
+class PartABoundaryTests(unittest.TestCase):
+    def test_tracking_launch_empty_scan_keeps_limitation_and_no_double_alert(self):
+        pic = deepcopy(LATE['21:19:37']['picture'])
+        call = pic['threats']['sam_in_range'][0]['call']
+        pic.update(rwr_alert_to_announce=[call], _rwr_keys=['tracking'])
+        c, eye = controller(pic, Stub())
+        frames, _ = say(c, 'SAM launch')
+        self.assertEqual(frames[0]['speech'].count('SA-2'), 1)
+        self.assertIn('No missile seen;', frames[0]['speech'])
+        self.assertIn('tracking', eye.announced)
+        pic['threats']['missile_scan'] = 'off: missile scan is not answering'
+        c, _ = controller(pic, Stub())
+        frames, _ = say(c, 'SAM launch')
+        self.assertIn('Missile tracking limited.', frames[0]['speech'])
+
+    def test_referent_uses_immediate_athena_reply_only_and_still_live(self):
+        pic = deepcopy(LATE['21:41:00']['picture'])
+        eye = Eye('Prometheus')
+        for unit in PART_A['missions']['17']['units']:
+            eye.on_units_message(unit)
+        pic, _ = amended_picture(LATE['21:41:00'], eye)
+        for phrase in ('Roger, headed towards it.', "I'm going in."):
+            for previous, live, expected in [('SA-13 site, ten miles.', True, True),
+                    ('Creech, ten miles.', True, False), ('copy.', True, False),
+                    ('SA-13 site, ten miles.', False, False)]:
+                with self.subTest(phrase=phrase, previous=previous, live=live):
+                    p = deepcopy(pic)
+                    if not live:
+                        p['threats']['sam_sites'] = []
+                    stub = Stub(answer=sc.ADDRESS + previous)
+                    c, _ = controller(p, stub)
+                    say(c, 'radio check', 'first')
+                    stub.answer_text = sc.ADDRESS + 'copy.'
+                    frames, _ = say(c, phrase, 'next')
+                    self.assertEqual('Negative, SA-13 is alive' in frames[0]['speech'], expected)
+        for phrase in ("I'm going in on the convoy.", "I'm not going in.", 'Going towards Creech.'):
+            c, _ = controller(pic, Stub(answer=sc.ADDRESS + 'SA-13 site, ten miles.'))
+            say(c, 'radio check', 'one')
+            frames, _ = say(c, phrase, 'two')
+            self.assertNotIn('Negative, SA-13 is alive', frames[0]['speech'])
+
+    def test_loss_precedes_debrief_and_does_not_repeat_after_sent(self):
+        eye = Eye('Prometheus')
+        eye.on_units_message(fx.units_message(fx.PROMETHEUS))
+        eye.on_event({'pilot_dead': {'initiator': {'unit': fx.PROMETHEUS}}})
+        c, _ = controller({}, Stub(), eye=eye)
+        frames, _ = say(c, 'debrief', 'one')
+        self.assertTrue(frames[0]['speech'].startswith(sc.ADDRESS + "you're down."))
+        frames, _ = say(c, 'debrief', 'two')
+        self.assertNotIn("you're down", frames[0]['speech'])
+
+    def test_explicit_loss_once_rearmed_on_failed_delivery_and_reset(self):
+        for kind in ('crash', 'pilot_dead', 'ejection'):
+            with self.subTest(kind=kind):
+                eye = Eye('Prometheus')
+                eye.on_units_message(fx.units_message(fx.PROMETHEUS))
+                eye.set_connected(True)
+                eye.on_event({'time': 10, kind: {'initiator': {'unit': fx.PROMETHEUS}}})
+                pic = eye.picture()
+                self.assertEqual(pic['own_loss_to_announce'], "you're down.")
+                key = pic['_own_loss_key']
+                c, _ = controller({}, Stub(answer="You're not down."), eye=eye)
+                first, _ = say(c, 'request permission to take off', 'one')
+                self.assertEqual(first[0]['speech'], sc.ADDRESS + "you're down.")
+                self.assertNotIn('own_loss_to_announce', eye.picture())
+                c.transcript.outcome_of = lambda tid: 'expired'
+                again, _ = say(c, 'radio check', 'two')
+                self.assertEqual(again[0]['speech'], first[0]['speech'])
+                c.transcript.outcome_of = lambda tid: 'sent'
+                eye.on_event({'time': 11, 'pilot_dead': {'initiator': {'unit': fx.PROMETHEUS}}})
+                last, _ = say(c, 'radio check', 'three')
+                self.assertNotRegex(last[0]['speech'], r"you're (?:not )?down")
+                self.assertEqual(eye.picture()['own_loss']['key'], key)
+                eye.reset('next mission')
+                self.assertNotIn('own_loss', eye.picture())
+
+    def test_missing_ownship_does_not_create_loss_or_model_diagnosis(self):
+        for answer in ("You're down.", "You are not down.", "Your aircraft is destroyed.", "You're still alive."):
+            stub = Stub(answer=sc.ADDRESS + answer)
+            c, _ = controller({'ownship': None}, stub)
+            frames, _ = say(c, 'radio check')
+            self.assertEqual(frames[0]['speech'], sc.ADDRESS + sc.NO_POSITION)
+        eye = Eye('Prometheus')
+        self.assertNotIn('own_loss_to_announce', eye.picture())
+        c, _ = controller({}, Stub(), eye=eye)
+        frames, _ = say(c, 'I lost all.')
+        self.assertTrue(frames[0]['speech'].endswith(sc.NO_POSITION))
+        self.assertNotIn("you're down", frames[0]['speech'])
+
+    def test_other_pilot_loss_not_ours_and_birth_rearms(self):
+        eye = Eye('Prometheus')
+        eye.on_units_message(fx.units_message(fx.PROMETHEUS))
+        other = deepcopy(fx.PROMETHEUS)
+        other.update(id=9999, player_name='Other')
+        eye.on_event({'pilot_dead': {'initiator': {'unit': other}}})
+        self.assertNotIn('own_loss', eye.picture())
+        for kind in ('ejection', 'birth', 'crash'):
+            eye.on_event({kind: {'initiator': {'unit': fx.PROMETHEUS}}})
+            if kind == 'birth':
+                self.assertNotIn('own_loss', eye.picture())
+            else:
+                self.assertIn('own_loss_to_announce', eye.picture())
+
+    def test_flight_units_references_staleness_and_narrow_identity_transition(self):
+        pic = deepcopy(LATE['21:33:07']['picture'])
+        self.assertEqual(sc.flight_calls('my altitude', pic), ['11920 feet MSL.'])
+        self.assertEqual(sc.flight_calls('my altitude AGL', pic), ['8070 feet above ground.'])
+        self.assertEqual(sc.flight_calls('my heading', pic), ['Heading zero zero seven magnetic.'])
+        self.assertEqual(sc.flight_calls('my true heading', pic), ['Heading zero one eight true.'])
+        self.assertEqual(sc.flight_calls('groundspeed', pic), ['Five hundred eighty nine knots groundspeed.'])
+        pic['cockpit']['fresh'] = False
+        self.assertIn('DCS velocity; indicated airspeed unavailable.', sc.flight_calls('my speed', pic)[0])
+        self.assertEqual(sc.flight_calls('indicated airspeed', pic), ['Indicated unavailable.'])
+        self.assertEqual(sc.flight_calls('my heading', pic), ['Heading zero one nine true.'])
+        self.assertNotEqual(sc.call_class('heading zero two zero', pic), 'flight')
+        mismatch = deepcopy(LATE['21:06:00']['picture'])
+        self.assertEqual(sc.call_class('what am I flying?', mismatch), 'identity_refresh')
+        mismatch['cockpit']['aircraft'] = mismatch['ownship']['type']
+        self.assertNotEqual(sc.call_class('what am I flying?', mismatch), 'identity_refresh')
+
+    def test_raw_model_launch_omitted_only_when_controller_carries_launch(self):
+        for entry in (LIVE['20:34:31'], LATE['21:42:06']):
+            eye = Eye('Prometheus')
+            pic, _ = amended_picture(entry, eye)
+            stub = Stub(answer=sc.ADDRESS + 'Missile launch, SA9M333, two miles. No RWR feed from this jet.')
+            c, _ = controller(pic, stub)
+            frames, _ = say(c, entry['text'])
+            speech = frames[0]['speech']
+            self.assertEqual(stub.calls, 1)
+            self.assertNotIn('SA9M333', speech)
+            self.assertEqual(speech.lower().count('missile launch'), 1)
+            self.assertIn('SA-13', speech)
+            self.assertLessEqual(len(speech), 280)

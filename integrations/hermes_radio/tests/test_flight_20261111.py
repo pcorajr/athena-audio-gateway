@@ -80,14 +80,14 @@ FRIENDLY_HITS = ("Athena, are there any friendlies in the air?", "any friendlies
                  "friendly air traffic", "any friendlies airborne", "where are the friendlies at",
                  "any friendly aircraft", "friendlies airborne?", "show me the friendlies", "any blue aircraft",
                  "Athena, are there friendlies up", "where are the friendly aircraft", "where's the friendly flight",
-                 "see any friendlies", "any blue traffic near me")
+                 "see any friendlies", "any blue traffic near me", "friendly aircraft nearby", "any friendly jets nearby")
 FRIENDLY_MISSES = ("tally one friendly", "friendly fire", "any friendly kills", "did any friendlies get killed",
                    "any friendlies destroyed?", "friendlies on the ground", "any friendly armor nearby",
                    "how many friendly aircraft are airborne", "is that a friendly?", "confirm friendly kills",
                    "any friendly ground units", "friendly trucks", "Athena, wingman splash",
                    "how many friendlies left", "friendly vehicles nearby",
                    # re-review AB2: a friendlies-near-a-place ask is never the air-traffic list
-                   "friendly aircraft nearby", "Athena, any friendlies around?", "any friendly jets nearby",
+                   "Athena, any friendlies around?",
                    "Athena, friendly air near me?", "any friendlies near the convoy")
 
 

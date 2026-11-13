@@ -55,6 +55,7 @@ SPOKEN_NAMES = {
     "zu23emplacementclosed": "ZU-23", "zu23emplacement": "ZU-23", "zu23closed": "ZU-23", "zu23": "ZU-23",
     "container40ft": "container", "container20ft": "container",
     "ural4320apa5d": "Ural power truck", "ural4320t": "Ural truck", "ural4320": "Ural truck",
+    "ural432031": "Ural truck",
     "zil131kung": "ZIL-131 truck", "zil131": "ZIL truck", "lazbus": "bus", "atmz5": "fuel truck",
     "invisiblefarp": "FARP", "sa18iglacomm": "SA-18 command post", "sa18iglas": "SA-18",
     "unit": "unit",

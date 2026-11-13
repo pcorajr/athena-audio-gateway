@@ -365,8 +365,7 @@ class GrpcThreatTests(unittest.TestCase):
         self.assertNotIn("SA-10 Far", [s["group"] for s in sams])        # 60 nm > 40 nm
         self.assertNotIn("AAA", [s["group"] for s in sams])              # Shilka 20 nm > 1.5 nm
         self.assertTrue(any(s["ewr"] for s in sams))                     # EWR listed, last
-        self.assertEqual(pic["rwr_alert_to_announce"], [sams[0]["call"],
-            "Caution, SA-10, radar, your nine o'clock, sixty miles, lethal inside forty."])  # approach, not EWR
+        self.assertEqual(pic["rwr_alert_to_announce"], [sams[0]["call"]])  # SA-10 slant > 60 nm (1.5 x nominal)
         eye.mark_announced(pic["_rwr_keys"])
         self.assertNotIn("rwr_alert_to_announce", eye.picture())         # once per SAM group
 

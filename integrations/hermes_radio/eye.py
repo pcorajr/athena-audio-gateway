@@ -792,6 +792,7 @@ class Eye:
             self.weapons_asked_at = None  # when the last completed scan was SENT (a scan sent after a shot sees it)
             self.missiles_near = {}  # weapon id -> row: every hostile missile within MISSILE_PICTURE_NM or aimed at me
             self.missile_shots = {}  # weapon id -> bridge row from the shot event (until the live scan sees it)
+            self.own_loss = None  # explicit own crash/pilot_dead/ejection; never inferred from missing units
             self.threat_alerts = deque(maxlen=50)
             self._sam_alerted = {}  # SAM group -> t called (re-armed after SAM_REARM_S out of range / not tracking)
             self._sam_inside = {}  # SAM group -> last t listed (re-arm timing; written by tick only)
@@ -1221,8 +1222,12 @@ class Eye:
     def _apply(self, ev):
         """Apply one event; returns True when a player fired (stores refresh wanted)."""
         kind, ini, tgt = ev["kind"], ev["initiator"], ev["target"]
+        if kind in ("crash", "pilot_dead", "ejection") and self._is_me(ini) and self.own_loss is None:
+            self.own_loss = {"key": "own-loss-%s" % ev["seq"], "kind": kind, "t": ev["t"],
+                             "unit_id": ini.get("id"), "call": "you're down."}
         if kind == "birth" and ini and ini.get("kind") == "unit":
             if self._is_me(ini):
+                self.own_loss = None
                 self.life = None
                 self.damage_events.clear()
             u = dict(ini, seen=ev["t"])
@@ -1904,7 +1909,7 @@ class Eye:
                    "nominal_range_nm": nominal, "clock": hour, "call": call, "confidence": confidence}
             if all_sites:
                 row["sam"] = label or "SAM site"
-                row["caution_range_nm"] = min(LONG_RANGE_NM, max(3 * nominal, 8.0))
+                row["caution_range_nm"] = min(LONG_RANGE_NM, max(1.5 * nominal, 8.0))
                 row["outside_weapon_range"] = slant > nominal
                 row["inside_caution_range"] = slant <= row["caution_range_nm"]
                 guidance = SAM_GUIDANCE.get(label)
@@ -2553,6 +2558,11 @@ class Eye:
             self._own_cache = (own,)
             try:
                 pic = self._picture_locked(own)
+                if self.own_loss:
+                    pic["own_loss"] = dict(self.own_loss)
+                    if self.own_loss["key"] not in self.announced:
+                        pic["own_loss_to_announce"] = self.own_loss["call"]
+                        pic["_own_loss_key"] = self.own_loss["key"]
                 if self.memory is not None:
                     pic["_memory_generation"] = self.memory.generation if self.memory.identity is not None else -1
                 return pic

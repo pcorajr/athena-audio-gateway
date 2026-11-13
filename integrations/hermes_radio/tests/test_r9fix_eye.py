@@ -74,8 +74,8 @@ class MissileIdentityTests(unittest.TestCase):
         flight = pic["threats"]["missiles_in_flight"]
         self.assertEqual(len(flight), 1)
         m = flight[0]
-        self.assertEqual((m["id"], m["spoken_name"], m["raw_type"]), ("777", "SA-2", "SA2V755"))
-        self.assertEqual(m["call"], "Missile launch, SA-2, your twelve o'clock, ten miles.")
+        self.assertEqual((m["id"], m["spoken_name"], m["raw_type"]), ("777", "SA-11", "SA2V755"))
+        self.assertEqual(m["call"], "Missile launch, SA-11, your twelve o'clock, ten miles.")
         for k in ("bearing", "range_nm", "clock", "first_seen"):
             self.assertIn(k, m)
         self.assertEqual(pic["threats"]["missiles_inbound"][0]["id"], "777")
@@ -135,7 +135,7 @@ class MissileIdentityTests(unittest.TestCase):
         flight = eye.picture()["threats"]["missiles_in_flight"]
         self.assertEqual([m["id"] for m in flight], ["5100"])
         self.assertFalse(flight[0]["targeting_me"])
-        self.assertEqual(flight[0]["spoken_name"], "SA-2")
+        self.assertEqual(flight[0]["spoken_name"], "missile")  # unknown shooter, opaque weapon ID
 
 
 class GroundMergeTests(unittest.TestCase):

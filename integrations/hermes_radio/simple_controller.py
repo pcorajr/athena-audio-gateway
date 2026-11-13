@@ -6,6 +6,7 @@ the model's judgement. With an Athena Eye attached (ATHENA_EYE_HOST), the pictur
 in-memory DCS-gRPC tracker in eye.py; otherwise from the Athena state service (legacy path).
 """
 from collections import Counter, deque
+from math import ceil
 import http.client
 import json
 import re
@@ -16,7 +17,7 @@ import unicodedata
 from .contract import MAX_SPEECH_CHARS, response, speaker_matches
 from .cockpit import spoken_name
 from .codex_llm import read_chunks
-from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words, pilot_identity
+from .eye import KILL_REPORT, NO_POSITION, _QUESTION, domain, words, pilot_identity, missile_spoken_name, range_words
 
 PROMPT = """GROUNDING (most important):
 - The PICTURE (JSON) is your only source of facts. Say only names, numbers, bearings and ranges that are in it.
@@ -44,7 +45,7 @@ Facts that matter:
 - cockpit is live aircraft data: config, flight, payload, rwr, locked_target and warning_lights. Prefer it when cockpit.fresh is true; if unavailable or stale and needed for the question, say "no cockpit data". Gear / configuration: cockpit.config (gear down, up or in transit; flaps percent; speedbrake).
 - RWR ("what's painting me", "RWR", "spike", "am I locked"): give each cockpit.rwr threat with its type, what it is doing (searching, tracking, locked, missile launch) and its clock, locks and launches first, e.g. "SA-11 locked on you at your three o'clock." Empty threats with a fresh cockpit = "RWR is clean, nothing painting you." If threats.rwr_source is grpc_inferred (this jet exports no RWR, e.g. the F-4E), answer from threats.missiles_in_flight (one row per missile; threats.missiles_inbound only if that is absent) and threats.sam_in_range calls verbatim ("tracking" only when its confidence is DCS radar, else "could be"); nothing listed = "no RWR feed from this jet, no SAM in range and no missile inbound that I can see. missile_scan not on: say missile tracking is limited and why."
 - "What am I locked on" / "what's my target": read cockpit.locked_target.call (and the unit type and side if present). locked_target null = "nothing locked".
-- The controller speaks rwr_alert_to_announce and splash_to_announce BEFORE your text. Do NOT mention these alerts at all: no repetition, paraphrase or contradiction.
+- The controller speaks rwr_alert_to_announce and splash_to_announce BEFORE your text. Do NOT mention these alerts at all: no repetition, paraphrase or contradiction. Name missiles by spoken_name, never type or raw_type.
 
 How to talk:
 - Answer ONLY what was asked. Acknowledgements, intent calls, radio checks, readbacks and pilot reports ("acknowledge my last transmission", "copy", "egressing", "going to investigate", "eyes on target", "wheels up", "airborne", "weapons hot", "target destroyed") get ONE short sentence: acknowledge, plus at most the ONE target being worked (working_target.call) when it helps. Never a picture, never other groups. Radio checks and chit-chat: answer naturally ("Prometheus, Athena, loud and clear.").
@@ -86,7 +87,7 @@ FALLBACK = "Prometheus, Athena, say again."
 # Missing-data/link statements become false after connecting or spawning (11-11 preflight).
 STALE_CHAT = re.compile(r"unknown|unavailable|not available|not connected|disconnected|"
                         r"no (?:connected )?picture|no cockpit|don['’]t (?:have|know)|do not (?:have|know)|"
-                        r"no position|not (?:showing )?in an aircraft|last known picture|say again|ask again for|"
+                        r"no position|not (?:showing )?in an aircraft|last known picture|waiting for current mission picture|say again|ask again for|"
                         r"no (?:fuel|loadout|position|friendly airfield|friendly aircraft).{0,40}(?:data|reading|showing)", re.I)
 REPEAT_ASK = re.compile(r"^\W*(?:athena[ ,]+)?(?:say again(?: your last)?|repeat(?: your last)?|say that again|say your last again|repeat last)[.!? ]*$", re.I)
 
@@ -406,6 +407,19 @@ def _landing_class(t, pic, recent):
     return "ack"
 
 
+SAM_SUBJECT = re.compile(r"\b(?:sams?|sa[- ]?\d+|strela)(?:\s+site)?\b", re.I)
+SAM_QUIET = re.compile(r"\b(?:dormant|quiet|silent|not (?:shooting|firing)|(?:looks?|seems?|appears?)(?: to be)? (?:dead|inactive))\b", re.I)
+SAM_CLOSING = re.compile(r"\b(?:going (?:in |to get )?closer|getting closer|closing (?:in|on)|pressing|running in|run in)\b", re.I)
+PERMISSION_ASK = re.compile(r"\b(?:permission|clearance|request\w*|can i|clear(?:ed)?)\b", re.I)
+
+
+def sam_statement(text, recent=()):
+    """11-12 20:33:44/57: only SAM complacency/approach, not a general reply filter or kill report."""
+    named = bool(SAM_SUBJECT.search(text))
+    context = bool(recent and SAM_SUBJECT.search(recent[-1]))
+    return (named and bool(SAM_QUIET.search(text))) or (bool(SAM_CLOSING.search(text)) and (named or context))
+
+
 def call_class(text, pic=None, recent=()):
     """dev_note | kill_report | ack | picture | kill_confirm | ... | None for one pilot transmission.
     recent = the pilot's previous transmissions (newest last), for a bare 'starting approach'."""
@@ -416,6 +430,8 @@ def call_class(text, pic=None, recent=()):
         return "kill_confirm"  # TOTAL_ASK (tally) makes it the mission total
     if KILL_REPORT.search(t) and not _QUESTION.search(t):
         return "kill_report"
+    if pic is not None and sam_statement(t, recent):
+        return "sam_caution" if (pic.get("threats") or {}).get("sam_sites") else None
     target_damage = re.search(r"\bdamag\w*\b", t, re.I) and (
         re.search(r"\b(targets?|enemy|hostiles?|bandits?)\b", t, re.I) or GROUND_ASK.search(t))
     if DAMAGE_ASK.search(t) and not target_damage:
@@ -908,6 +924,10 @@ def requested_calls(klass, text, pic):
             (coal + " ") if coal else "", words(pic.get("contacts_within_nm", 80)))]
     if klass == "intent":
         return [intent_ack(text) or "copy."]
+    if klass == "sam_caution":
+        site = min(pic["threats"]["sam_sites"], key=lambda r: r["range_nm"])
+        return ["Negative, %s is alive, your %s o'clock, %s, lethal inside %s." % (
+            site["sam"], words(site["clock"]), range_words(site["range_nm"]), words(ceil(site["nominal_range_nm"])))]
     if klass == "fuel":
         lines = fuel_calls(pic["ownship"].get("fuel"))
         if lines and WEAPON_WORD.search(text):  # "fuel and weapons": both halves
@@ -1061,7 +1081,7 @@ def _fit_calls(klass, calls, room):
 IMPACT_KILL_LINES = ("Good hit, splash", "Likely kill on")  # impact_calls lines that report a kill
 
 
-def _alert_rows(alerts, keys, field):
+def _alert_rows(alerts, keys, field, compact=True):
     """[(alert ending in '.', [keys])] in order. Identical splash calls are merged with their count
     ('Splash two Container 40Ft.'): two kills of one type are two kills, never one call (live 11-09 20:09)."""
     texts, keyed, counts = [], {}, Counter()
@@ -1083,6 +1103,13 @@ def _alert_rows(alerts, keys, field):
         if field == "splash_to_announce" and counts[alert] > 1:
             said = re.sub(r"^splash one\b", "Splash " + words(counts[alert]), alert, flags=re.I)
         rows.append((said, keyed[alert]))
+    if compact and field == "rwr_alert_to_announce":
+        extra = [r for r in rows if r[0].lower().startswith("missile launch,")][2:]
+        if extra:
+            summary = "%s more in the air." % words(sum(counts[r[0]] for r in extra)).capitalize()
+            at = rows.index(extra[0])
+            rows = [r for r in rows if r not in extra]
+            rows.insert(at, (summary, [key for _, keys in extra for key in keys]))
     return rows
 
 
@@ -1102,10 +1129,8 @@ def _named_missile(text):
     if m.group(2):
         return "SA-%s" % m.group(2)
     return {"stinger": "Stinger", "sam": None, "manpad": "MANPADS", "manpads": "MANPADS"}.get(word, word.capitalize())
-def _missile_name(kind):
-    kind = str(kind or "").strip()
-    m = re.match(r"SA-?(\d+)", kind, re.I)
-    return "SA-%s" % m.group(1) if m else (kind or "missile")
+def _missile_name(kind, launcher=None):
+    return missile_spoken_name(kind, launcher)
 UNITS = {w: i for i, w in enumerate("zero one two three four five six seven eight nine ten eleven twelve thirteen "
                                     "fourteen fifteen sixteen seventeen eighteen nineteen".split())}
 TENS = {w: 10 * i for i, w in enumerate("_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()) if w != "_"}
@@ -1186,6 +1211,11 @@ def announcement_echo(sentence, alerts, pic):
                 if re.search(r"\b" + re.escape(target[1]) + r"\b", text):
                     return True
         elif not call.startswith("splash ") and re.search(r"\b(?:radar|tracking|launch|sees you)\b", text):
+            # Launcher and missile now share a designation (11-12 SA-13). A site
+            # warning must not swallow the distinct launch from that same site.
+            launch = r"\b(?:launch|missile|missiles|in air|inbound)\b"
+            if bool(re.search(launch, text)) != bool(re.search(launch, call)):
+                continue
             # Only the designation before the alert's action/geometry is a name.
             header = re.split(r"\b(?:radar|could|is|tracking|sees|your|at)\b", call, maxsplit=1)[0]
             names = set(re.findall(r"\b[a-z]+ \d+\b", header))
@@ -1231,6 +1261,7 @@ class SimpleController:
         self._reported_missiles = {}  # round 9: missile key -> (range_nm, time) already called to the pilot
         self._last_launch_reply = 0.0
         self._last_exchange = None  # phase 1: what the previous reply marked said, undone if it was not sent
+        self._last_clearance = None
         self._mission = None  # phase 1: (eye reset time, DCS session); a change clears the controller's memory
         self.transmissions = 0
 
@@ -1559,7 +1590,7 @@ class SimpleController:
             ident = m.get("id", m.get("missile_id", m.get("weapon_id")))
             return ("id", str(ident)) if ident is not None else (m.get("type"), m.get("launcher"))
         def name_of(m):
-            return _missile_name(m.get("spoken_name") or m.get("type"))
+            return _missile_name(m.get("spoken_name") or m.get("type"), m.get("launcher_type") or m.get("launcher"))
         def where(m):
             bits = []
             if m.get("clock") is not None:
@@ -1573,7 +1604,7 @@ class SimpleController:
             r = m.get("range_nm")
             return old is not None and (key(m)[0] == "id" or not isinstance(r, (int, float)) or old[0] is None
                                         or r <= old[0] + 2)
-        shown = missiles[:3]
+        shown = missiles[:2]
         asked_another = bool(ANOTHER_ASK.search(text or ""))
         had_before = bool(self._reported_missiles)
         was_seen = [seen(m) for m in shown]
@@ -1601,8 +1632,11 @@ class SimpleController:
                 lines.append("Also %s%s." % (names[i], tail))
             if shown[i].get("call"):  # its pending launch alert is this line: one sentence per missile (11-11)
                 self._launch_covered.setdefault(shown[i]["call"].strip(), lines[-1])
-        if len(missiles) > 3:
-            lines.append("Plus %s more." % words(len(missiles) - 3))
+        if len(missiles) > 2:
+            lines.append("%s more in the air." % words(len(missiles) - 2).capitalize())
+            for m in missiles[2:]:
+                if m.get("call"):
+                    self._launch_covered[m["call"].strip()] = lines[-1]
         return lines
     @staticmethod
     def remaining_line(pic, cats, short=False):
@@ -1754,6 +1788,8 @@ class SimpleController:
         if outcome is None or outcome == "sent":
             if last.get("delivery"):
                 self._last_delivered = last["delivery"]
+            if last.get("clearance") is not None:
+                self._last_clearance = last["clearance"]
             return
         if last["keys"]:
             self._rearm(last["keys"])
@@ -1778,6 +1814,7 @@ class SimpleController:
             self._reported_missiles = {}
             self._last_launch_reply = 0.0
             self._last_exchange = None
+            self._last_clearance = None
             self._log(request, "route", route="reset", outcome="new_mission_controller_memory_cleared")
         self._mission = marker
 
@@ -1868,7 +1905,8 @@ class SimpleController:
         test = bool(isinstance(pic, dict) and pic.get("test_ownship"))
         prefix = ADDRESS + (TEST_PILOT + " " if test else "")  # fixed replies budget their room after the marker
         age = (pic.get("data_age_s") or {}).get("units")
-        stale = ["Tracking disconnected; last known picture."] if not pic.get("connected", True) else []
+        stale = (["Tracking disconnected; last known picture." if age is not None else
+                  "Waiting for current mission picture."] if not pic.get("connected", True) else [])
         if age is not None and age > 60:
             stale.append("Contact data is %s seconds old." % words(age))
         if repeat_answer is not None:
@@ -1882,6 +1920,20 @@ class SimpleController:
             calls = self.kill_confirm_calls(text, pic, pic_time, commit=False, room=room)
         else:
             calls = requested_calls(klass, text, pic if airfields is None else dict(pic, _airfields=airfields))
+        clearance = bool(klass in ("landing", "atc") and PERMISSION_ASK.search(text)
+                         and re.search(r"\b(?:land(?:ing)?|take ?off|depart\w*)\b", text, re.I))
+        if clearance and calls is not None:
+            if self._last_clearance is not None and time.monotonic() - self._last_clearance < 60:
+                # Never replace real traffic with a canned all-clear.
+                traffic = calls[1:] if len(calls) > 1 else calls
+                calls = ["No clearance from me."] + traffic
+            else:
+                calls = ["no tower: I can't give clearances."] + calls
+        if klass == "sam_caution" and calls:
+            site = min(pic["threats"]["sam_sites"], key=lambda r: r["range_nm"])
+            for field in ("caution_call", "call"):
+                if site.get(field):
+                    self._launch_covered[site[field]] = calls[0]
         route = "fixed" if calls is not None else "llm"
         result = {"summary": self.picture_summary(pic), "picture": pic,
                   "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""}
@@ -1912,7 +1964,7 @@ class SimpleController:
             # (re-review AB2: the alerts leave room for the "Ask again for ..." line; a further alert waits)
             reserve = 0
             defer = DEFER.get(klass, ASK_REST)
-            for alert, _ in _alert_rows(pic.get("rwr_alert_to_announce"), rwr_keys, "rwr_alert_to_announce"):
+            for alert, _ in _alert_rows(pic.get("rwr_alert_to_announce"), rwr_keys, "rwr_alert_to_announce", compact=klass != "launch"):
                 if (alert not in self._launch_covered and alert not in " ".join(calls)
                         and reserve + len(alert) + 1 <= room - len(defer) - 1):
                     reserve += len(alert) + 1
@@ -1931,7 +1983,7 @@ class SimpleController:
                 alerts = []
                 remaining = MAX_REPLY_CHARS - len(answer)
                 for field, keys in (("rwr_alert_to_announce", rwr_keys), ("splash_to_announce", splash_keys)):
-                    rows = _alert_rows(pic.get(field), keys, field)
+                    rows = _alert_rows(pic.get(field), keys, field, compact=klass != "launch")
                     for alert, key in rows:
                         if field == "splash_to_announce" and klass == "kill_confirm" and self._pending_ack and (
                                 self._confirm_covers_own_splashes
@@ -2046,6 +2098,7 @@ class SimpleController:
             self.history.append(said)
         self._last_exchange = {"id": request.transmission_id, "keys": keys, "kills": kills, "history": said,
                                "missiles": self._launch_undo,
+                               "clearance": time.monotonic() if clearance and any(s in answer for s in ("No clearance from me.", "I can't give clearances.")) else None,
                                "delivery": (self._last_delivered[0] if repeat_answer is not None and self._last_delivered else text,
                                             answer, time.monotonic())}
         if memory is not None:  # memory6: generated radio reply, not a claim of SRS delivery

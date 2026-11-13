@@ -320,6 +320,15 @@ SAM_RANGES = (
     (re.compile(r"gepard|shilka|zsu-23-4|zsu_23_4|vulcan|m163", re.I), 1.5, "radar triple A"),
     (re.compile(r"1l13|55g6|ewr|fps-117|dog ear|9s80|rls_19j6|st-68", re.I), 80.0, "EWR"),
 )
+# Guidance describes the weapon, not whether a radar is emitting right now.
+SAM_GUIDANCE = {
+    "SA-13": "heat seeker", "SA-9": "heat seeker",
+    "SA-2": "radar", "SA-3": "radar", "SA-5": "radar", "SA-6": "radar",
+    "SA-10": "radar", "SA-11": "radar", "Patriot": "radar", "Hawk": "radar", "NASAMS": "radar",
+    "SA-8": "command guided", "SA-15": "command guided", "SA-19": "command guided",
+    "SA-22": "command guided", "HQ-7": "command guided", "Roland": "command guided", "Rapier": "command guided",
+    "radar triple A": "radar",
+}
 SAM_DEFAULT_NM = 2.5  # unknown SAM-category unit (MANPADS, IR SAM): close range only
 # Air-defence support vehicles that neither emit nor launch: no range-table SAM warning while DCS has not described
 # the type (live 2026-11-09: "SAM SA-18 Igla comm could be tracking you" 13 times in one F-4E flight).
@@ -349,6 +358,22 @@ def sam_profile(type_name):
         if pattern.search(type_name or ""):
             return rng, label, label == "EWR"
     return SAM_DEFAULT_NM, None, False
+
+
+def missile_spoken_name(weapon, launcher=None):
+    """The shooter owns the SAM designation; never parse SA9M333 as SA-9."""
+    if launcher:
+        label = sam_profile(launcher)[1]
+        if label and label not in ("EWR", "radar triple A"):
+            return label
+        return "missile"  # a known but unclassified shooter does not license a guessed SAM designation
+    name = str(weapon or "").strip()
+    # Only already-spoken designations are safe fallbacks, not arbitrary DCS IDs.
+    if re.fullmatch(r"SA-?\d+", name, re.I):
+        return "SA-" + re.sub(r"\D", "", name)
+    if re.fullmatch(r"(?:AIM|R|AA|PL)-\d+[A-Z0-9-]*|Stinger|Igla|Strela|MANPADS|Patriot|Hawk|NASAMS|Roland|Rapier|HQ-7", name, re.I):
+        return name
+    return "missile"
 
 
 # DCS attributes of air-defence support vehicles (command post, comm, auxiliaries): no range warning on their own.
@@ -546,7 +571,8 @@ def _merge_ground_rows(rows):
         count = sum(m["_g"]["count"] for m in mates)
         same = len({m["category"] for m in mates}) == 1
         air_def = same and row.get("category") in AIR_DEFENCE
-        label = AIR_DEFENCE_WORDS[row["category"]] if air_def else a["label"] if same else "enemy vehicles"
+        labels = list(dict.fromkeys(m["_g"]["label"] for m in mates))
+        label = (labels[0] if len(labels) == 1 else AIR_DEFENCE_WORDS[row["category"]]) if air_def else a["label"] if same else "enemy vehicles"
         label += ", %s contacts" % words(count)
         call = call_line(label, a.get("bearing_mag") or a.get("bearing_true"), a["range_nm"], a_hour, "ground")
         out.append({"call": call, "category": a["category"] if same else "ground vehicle", "member_categories": cats,
@@ -739,9 +765,11 @@ class Eye:
             self._real_seen = self._stand_used = False  # test stand-in safety flags: per mission
             if self.memory is not None:
                 self.memory.invalidate()
-                self.cockpit = CockpitState(clock=self.clock)
-                self.fuel = self.fuel_at = None
-                self._own_cache = None
+            self.cockpit = CockpitState(clock=self.clock)
+            self.fuel = self.fuel_at = None
+            self._own_cache = None
+            self.connected, self.streams, self.last_error = False, {}, None
+            self.heartbeat_at = self.events_rx_at = self.mission_events_at = None
             self.units = {}
             self.last_known = OrderedDict()
             self.events = deque()
@@ -769,6 +797,8 @@ class Eye:
             self._sam_inside = {}  # SAM group -> last t listed (re-arm timing; written by tick only)
             self._sam_listed = set()  # SAM groups listed at the last tick (range hysteresis; tick only)
             self._sam_arm = Counter()  # SAM group -> alert generation (new key after a re-arm)
+            self._sam_cautioned = set()  # re-arm only on an observed exit, not a missing site/feed
+            self._sam_caution_arm = Counter()
             self.radars = {}  # unit name -> latest Eval radar row {on, tracking_me, detected, has_radar}
             self.radars_at = None
             self.unit_sync = {}  # group category -> {"since", "window", "stream"}: sweep units not re-sent
@@ -1056,7 +1086,7 @@ class Eye:
         now = self.clock()
         kind = next((k for k in msg if k != "time"), None)
         with self.lock:
-            if kind == "mission_start" and self.memory is not None:
+            if kind == "mission_start":
                 # Fence before raw-debug or any derived publication. A full reset
                 # prevents old units/cockpit data being sampled under the next identity.
                 self.reset("mission_start")
@@ -1106,30 +1136,7 @@ class Eye:
                 return None  # normalized across a reset: the mission is ambiguous
             self.events_at = now
             if kind == "mission_start":
-                # Without memory retain the early unit snapshot; with memory the
-                # full reset above fences old state. The feeder requests a full resend.
-                self.events.clear()
-                self._real_seen = self._stand_used = False
-                self.shots.clear()
-                self.vanished.clear()
-                self.stores.clear()
-                self.consumption.clear()
-                self.used_session.clear()
-                self.fired_events.clear()
-                self.my_kills = []
-                self.other_kills = []
-                self.known_objects.clear()
-                self.weapon_types.clear()
-                self.announced = set()
-                self.life = None
-                self.damage_events.clear()
-                self.weapons_in_flight = {}
-                self.missiles_near, self.missile_shots = {}, {}
-                self.threat_alerts.clear()
-                self._sam_alerted = {}
-                self._sam_inside, self._sam_listed = {}, set()
-                self.radars, self.radars_at = {}, None
-                self.reset_reason, self.reset_at = "mission_start", now  # the controller's new-mission marker
+                # Full reset above; request a current-session unit snapshot.
                 if self.on_mission_start is not None:
                     self.on_mission_start()
             ev["initiator"] = self._enrich_object(ev["initiator"])
@@ -1231,8 +1238,11 @@ class Eye:
         me = self._is_me(ini)
         if kind == "hit" and self._is_me(tgt):
             weapon = ev.get("weapon") or (ini or {}).get("type") or "unknown weapon"
-            self._record_damage("hit event", "You were hit by %s." % spoken_type(weapon),
+            name = missile_spoken_name(weapon, (ini or {}).get("type")) if weapon_kind(weapon) not in ("gun", "bomb", "rocket") else spoken_type(weapon)
+            self._record_damage("hit event", "You were hit by %s." % name,
                                 ev["t"], weapon=weapon, attacker=_brief(ini))
+        if kind == "human_failure" and me:
+            self._record_damage("human_failure", "Systems damage reported.", ev["t"])
         if kind == "shot" and not me and ini:
             self._hostile_shot(ev)
         if kind == "shot" and me:
@@ -1619,14 +1629,15 @@ class Eye:
             return None
         hour = clock_of(brg - (own.get("heading") or 0.0))
         wtype = weapon_name(ev["weapon"] or "missile")
+        spoken = missile_spoken_name(ev["weapon"], ini.get("type"))
         # The overlay's shot-event weapon id is invented per event (R3 T1): never equal to the scan's real id.
         wid = str(ev["weapon_id"]) if ev.get("weapon_id") else "shot-%s" % ev["seq"]
-        call = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
+        call = "Missile launch, %s, your %s o'clock, %s." % (spoken, words(hour), range_words(rng))
         hdg = (ev.get("weapon_pos") or {}).get("heading")
         closing = hdg is None or abs(((brg + 180.0 - hdg) + 180.0) % 360.0 - 180.0) <= 45.0
         if rng <= MISSILE_PICTURE_NM or closing:
             self.missile_shots[wid] = {
-                "id": wid, "type": wtype, "raw_type": ev["weapon"], "spoken_name": wtype,
+                "id": wid, "type": wtype, "raw_type": ev["weapon"], "spoken_name": spoken,
                 "bearing": where.get("bearing_mag") or where.get("bearing_true"), "range_nm": round(rng, 1),
                 "clock": hour, "call": call, "launcher": spoken_type(ini.get("type")), "first_seen": ev["t"],
                 "from": "shot event", "closing": closing, "targeting_me": False,
@@ -1719,25 +1730,31 @@ class Eye:
                 hour = clock_of(brg - (own.get("heading") or 0.0))
                 wid = str(r.get("id") or "%s-%s" % (r.get("type"), r.get("launcher")))
                 wtype = weapon_name(r.get("type") or "missile")
-                row = {"id": wid, "type": wtype, "raw_type": r.get("type"), "spoken_name": wtype,
+                if by_name is None:
+                    by_name = {u.get("name"): u for u in self.units.values()}
+                launcher_type = r.get("launcher_type") or (by_name.get(r.get("launcher")) or {}).get("type")
+                spoken = missile_spoken_name(r.get("type"), launcher_type)
+                row = {"id": wid, "type": wtype, "raw_type": r.get("type"), "spoken_name": spoken,
                        "bearing": where.get("bearing_mag") or where.get("bearing_true"),
                        "range_nm": round(rng, 1), "clock": hour, "targeting_me": at_me,
-                       "closing": closing, "launcher": spoken_type(r.get("launcher_type")) if r.get("launcher_type")
-                       else None, "speed_kt": int(round(speed * MS_TO_KT))}
-                row["call"] = "Missile launch, %s, your %s o'clock, %s." % (wtype, words(hour), range_words(rng))
+                       "closing": closing, "launcher": launcher_type,
+                       "speed_kt": int(round(speed * MS_TO_KT))}
                 alertable = at_me or (closing and rng <= MISSILE_ALERT_NM)
                 prior = self.missiles_near.get(wid)
                 if prior is None and (alertable or rng <= max(MISSILE_PICTURE_NM, MISSILE_ALERT_NM)):
-                    if by_name is None:
-                        by_name = {u.get("name"): u for u in self.units.values()}
                     bridge = self._match_bridge(r, now, (by_name.get(r.get("launcher")) or {}).get("group"))
                     prior = {"first_seen": bridge["first_seen"], "_alert": bridge.get("_alert"),
+                             "spoken_name": bridge["spoken_name"], "launcher": bridge["launcher"],
                              "_shot_closing": bool(bridge.get("closing"))} if bridge else None
                     if bridge and bridge.get("_alert"):
                         for a in self.threat_alerts:  # the shot-event alert now follows the live missile
                             if a["key"] == bridge["_alert"]:
                                 a["id"] = wid
                 prior = prior or {}
+                if not launcher_type and prior.get("launcher"):
+                    row["launcher"] = prior["launcher"]
+                    row["spoken_name"] = missile_spoken_name(r.get("type"), prior["launcher"])
+                row["call"] = "Missile launch, %s, your %s o'clock, %s." % (row["spoken_name"], words(hour), range_words(rng))
                 # Never worse than r11 (review P1b): r11 called a launch whose shot event pointed at the pilot (+-45
                 # deg, within MISSILE_ALERT_NM). The scan's own rule (target / +-30 deg) may not take that call
                 # away from a missile with no DCS target, so a shot-event "closing" missile stays alertable.
@@ -1826,13 +1843,14 @@ class Eye:
                 out[r["group"]] = state
         return out
 
-    def _sam_threats(self, own, now):
+    def _sam_threats(self, own, now, all_sites=False):
         """Hostile SAM/AAA/EWR threats, one row per group, nearest first. Never hides a site (review P1): every
         live air-defence group inside its nominal range is listed with the range-table "could be tracking" call
         (RANGE_HYST_NM hysteresis), whatever DCS says about its radar -- a radar reported off or only searching can
         light up seconds before a launch. DCS radar data only ADDS: "sees you" / "tracking you" upgrade the call,
         and "tracking you" lists the group at any polled range. Only non-air-defence types (labels), dead units
-        and command/comm vehicles are left out. Pure read."""
+        and command/comm vehicles are left out. all_sites also returns sites outside weapon range,
+        with factual site geometry for approach cautions and pilot statements. Pure read."""
         best = {}
         own_alt = own.get("alt_m") or 0.0
         radar = self._radar_groups(now)
@@ -1851,7 +1869,7 @@ class Eye:
             limit = nominal + (RANGE_HYST_NM if key in self._sam_listed else 0.0)
             _, rng = bearing_range(own["lat"], own["lon"], u["lat"], u["lon"])
             slant = math.hypot(rng, (own_alt - (u.get("alt_m") or 0.0)) / NM)
-            if state != "tracking you" and (rng > limit + 1 or slant > limit):
+            if not all_sites and state != "tracking you" and (rng > limit + 1 or slant > limit):
                 continue
             prev = best.get(key)
             if prev is None or (nominal, -slant) > (prev[0], -prev[1]):
@@ -1884,6 +1902,18 @@ class Eye:
                 confidence = "range only: could be tracking"
             row = {"group": key, "type": u["type"], "sam": name, "ewr": ewr, "range_nm": round(slant, 1),
                    "nominal_range_nm": nominal, "clock": hour, "call": call, "confidence": confidence}
+            if all_sites:
+                row["sam"] = label or "SAM site"
+                row["caution_range_nm"] = min(LONG_RANGE_NM, max(3 * nominal, 8.0))
+                row["outside_weapon_range"] = slant > nominal
+                row["inside_caution_range"] = slant <= row["caution_range_nm"]
+                guidance = SAM_GUIDANCE.get(label)
+                row["caution_call"] = "Caution, %s%s, your %s o'clock, %s, lethal inside %s." % (
+                    label or "SAM site", ", " + guidance if guidance else "", words(hour), range_words(slant),
+                    words(math.ceil(nominal)))
+                if slant > nominal and state is None:
+                    row["call"] = "%s site, %s Lethal inside %s." % (label or "SAM", where, words(math.ceil(nominal)))
+                    row["confidence"] = "live site; outside nominal weapon range, not evidence of tracking"
             if radar_state in ("off", "searching"):
                 row["radar"] = radar_state  # DCS's word, shown; a dark radar can still ambush
             rows.append(row)
@@ -1893,6 +1923,19 @@ class Eye:
     def _update_sam_state(self, own, now):
         """tick(): range hysteresis memory + SAM alerts (once per group; again after SAM_REARM_S away, and once
         more when DCS says the radar went from anything else to tracking you)."""
+        for r in self._sam_threats(own, now, all_sites=True):
+            if r["ewr"]:
+                continue
+            g = r["group"]
+            if not r["inside_caution_range"]:
+                if g in self._sam_cautioned:
+                    self._sam_cautioned.remove(g)
+                    self._sam_caution_arm[g] += 1
+            elif g not in self._sam_cautioned:
+                self._sam_cautioned.add(g)
+                if r["outside_weapon_range"]:
+                    self._threat_alert("approach-%s-%d" % (g, self._sam_caution_arm[g]), r["caution_call"],
+                                       "SAM approach", now, group=g, source="DCS-gRPC SAM range")
         rows = self._sam_threats(own, now)
         listed = set()
         for r in rows:
@@ -1955,6 +1998,9 @@ class Eye:
         out["missile_scan"] = "on" if self._eval_scan_on(now) else (
             "off: DCS Eval is off" if str(self.stores_status).startswith("unavailable") else "off: missile scan is not answering")
         sams = self._sam_threats(own, now)
+        sites = [r for r in self._sam_threats(own, now, all_sites=True) if not r["ewr"] and r["range_nm"] <= LONG_RANGE_NM]
+        sites.sort(key=lambda r: r["range_nm"])
+        out["sam_sites"] = sites[:PICTURE_TOP]
         out["sam_in_range"] = sams[:PICTURE_TOP]
         if len(sams) > PICTURE_TOP:
             out["more_sam_groups_in_range"] = len(sams) - PICTURE_TOP
@@ -1964,7 +2010,7 @@ class Eye:
         if source != "cockpit":
             out["note"] = ("no RWR feed from this aircraft. sam_in_range confidence 'DCS radar: ...' is DCS's own radar "
                            "state; 'range only' rows are inferred from nominal range: say 'could be' for those")
-        return out, sams, flight
+        return out, sams + sites, flight
 
     def _missiles_in_flight(self, now, fresh_weapons=None):
         """One row per missile: the live scan's rows (real DCS weapon ids), plus shot-event rows while they bridge
@@ -1986,12 +2032,18 @@ class Eye:
         re-worded from the live row (R3 T5); a SAM alert only while that group is still listed."""
         cockpit_launch = any(a["signal"] == "launch" and now - a["t"] <= 15 for a in self.cockpit.alerts)
         live = {m["id"]: m for m in (flight or [])}
-        groups = {r["group"]: r for r in (sams or [])}
+        groups = {r["group"]: r for r in (sams or []) if "caution_range_nm" not in r}
+        approaches = {r["group"]: r for r in (sams or []) if r.get("inside_caution_range") and r.get("outside_weapon_range")}
         out = []
         for a in self.threat_alerts:
-            if a["key"] in self.announced or now - a["t"] > THREAT_ANNOUNCE_S:
+            if a["key"] in self.announced or (a["kind"] != "SAM approach" and now - a["t"] > THREAT_ANNOUNCE_S):
                 continue
-            if a["kind"] == "missile launch":
+            if a["kind"] == "SAM approach":
+                r = approaches.get(a.get("group"))
+                if r is None or a["key"] != "approach-%s-%d" % (r["group"], self._sam_caution_arm[r["group"]]):
+                    continue
+                a = dict(a, call=r["caution_call"])
+            elif a["kind"] == "missile launch":
                 if cockpit_launch:
                     continue  # the cockpit RWR already called the launch
                 m = live.get(a.get("id"))
@@ -2003,7 +2055,7 @@ class Eye:
                     continue
                 a = dict(a, call=groups[a["group"]]["call"])
             out.append(a)
-        out.sort(key=lambda a: a["kind"] != "missile launch")
+        out.sort(key=lambda a: (a["kind"] != "missile launch", a["kind"] == "SAM approach"))
         return out
 
     # -- stores / loadout (Unit:getAmmo() via DCS-gRPC Eval)
@@ -2028,7 +2080,7 @@ class Eye:
             pct = int(round(100 * life / maximum))
             self.life = {"unit_id": unit["id"], "life": life, "life0": maximum, "percent": pct, "t": now}
             if prev and prev["unit_id"] == unit["id"] and prev["life0"] == maximum and life < prev["life"]:
-                self._record_damage("DCS-gRPC getLife", "You took damage, life down to %s percent." % words(pct),
+                self._record_damage("DCS-gRPC getLife", "You're hit, airframe at %s percent." % words(pct),
                                     now, life_percent=pct, life_drop=prev["life"] - life)
 
     def _damage_json(self, own, now, cockpit):
@@ -2319,6 +2371,10 @@ class Eye:
             g["label"] = ("bandit" if dom == "air" else
                           {"SAM": "SAM site", "AAA": "triple A", "armor": "enemy armor", "ship": "enemy ship",
                            "carrier": "enemy carrier"}.get(cat, "enemy " + cat))
+            if cat in AIR_DEFENCE:
+                labels = list(dict.fromkeys(label for t in types if (label := sam_profile(t)[1])))
+                if labels:
+                    g["label"] = " and ".join(labels) + " site"
         if dom == "air":
             alts = [m[2]["alt_m"] or 0 for m in members]
             alt_ft = sum(alts) / len(alts) * M_TO_FT

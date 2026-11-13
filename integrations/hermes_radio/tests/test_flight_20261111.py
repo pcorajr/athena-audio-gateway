@@ -21,6 +21,7 @@ LIVE = {e["time"]: e for e in json.loads((FIXTURES / "flight_20261111.json").rea
 NO_OWN = json.loads((FIXTURES / "no_ownship_live_20261111.json").read_text())["picture"]
 NEVADA = LIVE["19:00:12"]["picture"]  # Creech 7.5 nm, North Las Vegas, Nellis, McCarran, Henderson listed
 MODEL = "Prometheus, Athena, MODEL ANSWER."
+NO_TOWER = "no tower: I can't give clearances. "
 
 # Each wrong live answer (and the double launch call and the split tally) -> the fixed reply now given.
 EXPECTED = {
@@ -35,7 +36,7 @@ EXPECTED = {
     "18:59:55": "Prometheus, Athena, Nellis, bearing one three four, twenty nine miles, at your seven o'clock.",
     "19:00:12": "Prometheus, Athena, Creech, bearing three three seven, seven miles, at your two o'clock.",
     "19:00:43": "Prometheus, Athena, Creech, bearing zero zero nine, six miles, at your three o'clock. No traffic.",
-    "19:01:46": "Prometheus, Athena, SAM SA-2 radar sees you, your twelve o'clock, eighteen miles. Creech, bearing "
+    "19:01:46": "Prometheus, Athena, SAM SA-2 radar sees you, your twelve o'clock, eighteen miles. " + NO_TOWER + "Creech, bearing "
                 "zero six nine, five miles, at your three o'clock. No traffic.",
 }
 
@@ -113,7 +114,7 @@ class LiveMissTests(unittest.TestCase):
                 self.assertEqual(reply["route"], "fixed")
                 self.assertEqual(stub.calls, 0)
                 self.assertLessEqual(len(spoken), MAX_REPLY_CHARS)
-                self.assertNotRegex(spoken.lower(), r"clear|runway|wind|altimeter|permission")
+                self.assertNotRegex(spoken.replace(NO_TOWER, "").lower(), r"clear|runway|wind|altimeter|permission")
 
     def test_launch_reply_says_each_missile_once_and_marks_both_alerts_delivered(self):
         pic = live("18:30:45")
@@ -124,20 +125,21 @@ class LiveMissTests(unittest.TestCase):
         self.assertNotIn("Missile launch", spoken)
         self.assertEqual(eye.announced, {"missile-16865792", "missile-16935936"})
 
-    def test_a_launch_line_trimmed_away_keeps_its_alert_pending(self):
+    def test_opaque_missile_names_cannot_expand_the_reply_budget(self):
         pic = live("18:30:45")
         pic["_rwr_keys"] = ["missile-16865792", "missile-16935936"]
-        pic["threats"]["missiles_in_flight"][1]["spoken_name"] = "Stinger " + "x" * 260  # the second line cannot fit
+        pic["threats"]["missiles_in_flight"][1]["spoken_name"] = "Stinger " + "x" * 260
         spoken, _, _, eye, _ = answer(pic, "Launch, launch, launch.")
         self.assertIn("SA-2 in the air, your three o'clock, thirteen miles.", spoken)
-        self.assertEqual(eye.announced, {"missile-16865792"})
+        self.assertNotIn("xxx", spoken)
+        self.assertEqual(eye.announced, {"missile-16865792", "missile-16935936"})
 
     def test_no_position_still_wins(self):
         for text in ("Athena, vector to nearest air base.", "Athena, requesting permission in land.",
                      "vectors to Nellis", "Athena, home plate", "any friendlies in the air"):
             with self.subTest(text=text):
                 spoken, reply, stub, _, _ = answer(NO_OWN, text)
-                self.assertEqual(spoken, "Prometheus, Athena, " + NO_POSITION)
+                self.assertEqual(spoken, "Prometheus, Athena, " + (NO_TOWER if "permission" in text else "") + NO_POSITION)
                 self.assertEqual(stub.calls, 0)
 
 
@@ -255,7 +257,7 @@ class NamedFieldTests(unittest.TestCase):
         spoken = say(c, "vectors to Fooville Air Force Base", tid="t3")[0][0]["speech"]
         self.assertRegex(spoken, r"^Prometheus, Athena, I don't have that field\. Nearest friendly, Creech, bearing")
         landing = say(c, "request landing at Creech", tid="t4")[0][0]["speech"]
-        self.assertRegex(landing, r"^Prometheus, Athena, Creech, bearing .*\. No traffic\.$")
+        self.assertRegex(landing, r"^Prometheus, Athena, no tower: I can't give clearances\. Creech, bearing .*\. No traffic\.$")
 
     def test_no_friendly_field_known(self):
         pic = deepcopy(NEVADA)
@@ -263,7 +265,7 @@ class NamedFieldTests(unittest.TestCase):
                            "nearest_friendly_note": "no friendly airfield known; do not offer one"}
         self.assertEqual(answer(pic, "Athena, vector to nearest air base.")[0],
                          "Prometheus, Athena, No friendly airfield known.")
-        self.assertEqual(answer(pic, "request landing")[0], "Prometheus, Athena, No friendly airfield known.")
+        self.assertEqual(answer(pic, "request landing")[0], "Prometheus, Athena, " + NO_TOWER + "No friendly airfield known.")
 
     def test_landing_calls_the_field_traffic(self):
         pic = live("19:01:46")
@@ -273,7 +275,7 @@ class NamedFieldTests(unittest.TestCase):
             {"call": "Friendly A-10C, zero seven zero, five miles, angels two, three o'clock low."},
             {"call": "Friendly A-10C, zero six eight, six miles, angels one, three o'clock low."}]}
         spoken = answer(pic, "Athena, requesting permission to land")[0]
-        self.assertEqual(spoken, "Prometheus, Athena, Creech, bearing zero six nine, five miles, at your three o'clock. "
+        self.assertEqual(spoken, "Prometheus, Athena, " + NO_TOWER + "Creech, bearing zero six nine, five miles, at your three o'clock. "
                                  "Traffic, two aircraft. Friendly A-10C, zero seven zero, five miles, angels two, "
                                  "three o'clock low.")
 

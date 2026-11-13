@@ -94,11 +94,12 @@ class AtcTests(unittest.TestCase):
                     spoken, reply, _, _, _ = answer(deepcopy(pic), ask, stub)
                     self.assertEqual(stub.calls, 0)
                     self.assertEqual(reply["route"], "fixed")
-                    self.assertTrue(spoken.startswith(ADDRESS + "Creech, bearing zero six nine, five miles"), spoken)
+                    disclaimer = "no tower: I can't give clearances. "
+                    self.assertTrue(spoken.replace(disclaimer, "").startswith(ADDRESS + "Creech, bearing zero six nine, five miles"), spoken)
                     self.assertIn("No traffic.", spoken)
                     info = bool(re.search(r"runway|wind|altimeter", ask, re.I))
                     self.assertEqual(spoken.endswith("I have no runway, wind or altimeter data."), info, spoken)
-                    self.assertNotRegex(spoken.lower(), r"clear|approv|discretion|granted|yours")
+                    self.assertNotRegex(spoken.replace(disclaimer, "").lower(), r"clear|approv|discretion|granted|yours")
 
     def test_landing_gear_and_lights_are_no_atc_ask(self):
         for text in ("Athena, landing gear damaged", "Athena, I think my landing gear is damaged", "Athena, landing light on"):

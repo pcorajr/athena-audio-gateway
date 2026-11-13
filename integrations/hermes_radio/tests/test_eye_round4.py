@@ -365,7 +365,8 @@ class GrpcThreatTests(unittest.TestCase):
         self.assertNotIn("SA-10 Far", [s["group"] for s in sams])        # 60 nm > 40 nm
         self.assertNotIn("AAA", [s["group"] for s in sams])              # Shilka 20 nm > 1.5 nm
         self.assertTrue(any(s["ewr"] for s in sams))                     # EWR listed, last
-        self.assertEqual(pic["rwr_alert_to_announce"], [sams[0]["call"]])  # SAM announced, EWR not
+        self.assertEqual(pic["rwr_alert_to_announce"], [sams[0]["call"],
+            "Caution, SA-10, radar, your nine o'clock, sixty miles, lethal inside forty."])  # approach, not EWR
         eye.mark_announced(pic["_rwr_keys"])
         self.assertNotIn("rwr_alert_to_announce", eye.picture())         # once per SAM group
 
@@ -392,7 +393,7 @@ class GrpcThreatTests(unittest.TestCase):
         eye.on_cockpit_packet(f4e_packet())
         eye.on_event(self.hostile_shot(heading=281.0))  # towards Prometheus (reciprocal of 101)
         pic = eye.picture()
-        self.assertEqual(pic["rwr_alert_to_announce"][0], "Missile launch, SA9M38M1, your twelve o'clock, ten miles.")
+        self.assertEqual(pic["rwr_alert_to_announce"][0], "Missile launch, SA-11, your twelve o'clock, ten miles.")
         self.assertEqual(pic["threats"]["missiles_inbound"][0]["from"], "shot event")
 
     def test_hostile_missile_flying_away_or_bomb_is_no_alert(self):
@@ -411,7 +412,7 @@ class GrpcThreatTests(unittest.TestCase):
                 {"id": 5003, "type": "R-27R", "lat": lat, "lon": lon, "alt": 2000, "vn": -600, "ve": 0,
                  "coal": 1, "target": "Someone else"}]                                 # going away, not at me
         new = eye.on_weapons(rows)
-        self.assertEqual([a["call"] for a in new], ["Missile launch, SA9M38M1, your three o'clock, eight miles."])
+        self.assertEqual([a["call"] for a in new], ["Missile launch, SA-11, your three o'clock, eight miles."])
         self.assertEqual(eye.on_weapons(rows), [])  # same missile: no second alert
         pic = eye.picture()
         inbound = pic["threats"]["missiles_inbound"]

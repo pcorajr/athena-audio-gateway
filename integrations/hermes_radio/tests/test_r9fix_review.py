@@ -96,7 +96,7 @@ class GroundMergeAirDefence(unittest.TestCase):
                           contact(2, "Ural-4320T", "red", "GROUND", distance=11.8, bearing=5),
                           contact(3, "T-55", "red", "GROUND", distance=11.9, bearing=5))
         self.assertEqual(len(rows), 2, [r["call"] for r in rows])
-        self.assertTrue(rows[0]["call"].startswith("SAM site"), rows[0]["call"])
+        self.assertTrue(rows[0]["call"].startswith("SA-2 site"), rows[0]["call"])
         self.assertTrue("two contacts" in rows[1]["call"] and "SAM" not in rows[1]["call"], rows[1]["call"])
 
     def test_vehicles_still_merge_but_without_sam(self):
@@ -111,7 +111,7 @@ class GroundMergeAirDefence(unittest.TestCase):
         rows = self.calls(contact(1, "S_75M_Volhov", "red", "GROUND", distance=10, bearing=5),
                           contact(2, "SNR_75V", "red", "GROUND", distance=10.4, bearing=5))
         self.assertEqual(len(rows), 1, [r["call"] for r in rows])
-        self.assertTrue(rows[0]["call"].startswith("SAM site, two contacts"), rows[0]["call"])
+        self.assertTrue(rows[0]["call"].startswith("SA-2 site, two contacts"), rows[0]["call"])
         self.assertEqual(rows[0]["category"], "SAM")
 
     def test_any_sams_still_produces_sam_calls(self):

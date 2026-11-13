@@ -134,7 +134,7 @@ class LaunchWithoutScanTests(Isolated):
         self.assertEqual(alerts[0]["source"], "shot event")
         pic = eye.picture()
         self.assertEqual([m["id"] for m in pic["threats"]["missiles_in_flight"]], ["4294967001"])
-        self.assertIn("Missile launch, SA-2, your twelve o'clock, ten miles.", pic["rwr_alert_to_announce"])
+        self.assertIn("Missile launch, SA-11, your twelve o'clock, ten miles.", pic["rwr_alert_to_announce"])
         for _ in range(40):
             clock.t += 1
             eye.tick()

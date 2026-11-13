@@ -344,6 +344,7 @@ SAM_SUPPORT_PAT = re.compile(r"(\bcomm\b|command|\bpcp\b|\bcp\b|generator)", re.
 MISSILE_PICTURE_NM = 20.0  # missiles_in_flight lists every hostile missile this close, aimed at Prometheus or not
 MISSILE_SHOT_KEEP_S = 60.0  # kept for compatibility; shot rows now live BRIDGE_S (scan on) or EVAL_OFF_KEEP_S (scan off)
 BRIDGE_S = 2.5  # a shot-event row bridges only the first ~2 s before the 1 Hz Eval scan sees the missile
+LAUNCH_GRACE_S = 3.0  # recent launch fact, not a claim that a vanished missile remains in flight
 EVAL_OFF_KEEP_S = 20.0  # no live scan (Eval disabled): a shot-event row is all we have, about one SAM flight time
 WEAPONS_FRESH_S = 10.0  # the live scan counts as "on" while its last reply is this recent
 WEAPONS_SCAN_CAP = 20  # WEAPONS_LUA returns at most this many missiles (a full reply may have missed one)
@@ -827,7 +828,7 @@ class Eye:
             self.weapons_asked_at = None  # when the last completed scan was SENT (a scan sent after a shot sees it)
             self.missiles_near = {}  # weapon id -> row: every hostile missile within MISSILE_PICTURE_NM or aimed at me
             self.missile_shots = {}  # weapon id -> bridge row from the shot event (until the live scan sees it)
-            self.own_loss = None  # explicit own crash/pilot_dead/ejection; never inferred from missing units
+
             self.threat_alerts = deque(maxlen=50)
             self._sam_alerted = {}  # SAM group -> t called (re-armed after SAM_REARM_S out of range / not tracking)
             self._sam_inside = {}  # SAM group -> last t listed (re-arm timing; written by tick only)
@@ -1257,14 +1258,8 @@ class Eye:
     def _apply(self, ev):
         """Apply one event; returns True when a player fired (stores refresh wanted)."""
         kind, ini, tgt = ev["kind"], ev["initiator"], ev["target"]
-        own = self._own_locked()
-        current_unit = not own or (ini and ini.get("id") == own.get("id"))
-        if kind in ("crash", "pilot_dead", "ejection") and current_unit and self._is_me(ini) and self.own_loss is None:
-            self.own_loss = {"key": "own-loss-%s" % ev["seq"], "kind": kind, "t": ev["t"],
-                             "unit_id": ini.get("id"), "call": "you're down."}
         if kind == "birth" and ini and ini.get("kind") == "unit":
             if self._is_me(ini):
-                self.own_loss = None
                 self.life = None
                 self.damage_events.clear()
             u = dict(ini, seen=ev["t"])
@@ -2073,13 +2068,15 @@ class Eye:
                                  scan="not yet in the live scan" if scan else "no live scan (Eval off)")
         for wid, row in rows.items():
             original = self.missile_shots.get(wid) or self.missiles_near.get(wid) or {}
+            row['alert_key'] = original.get('_alert')
             row['announced'] = original.get('_alert') in self.announced
         return sorted(rows.values(), key=lambda m: (not m.get("targeting_me"), m.get("range_nm") or 0))
 
     def _pending_threat_alerts(self, now, sams=None, flight=None, include_announced=False):
         """Alerts not yet announced. Pure read. A missile alert whose missile is gone is dropped and a live one is
         re-worded from the live row (R3 T5); a SAM alert only while that group is still listed."""
-        cockpit_launch = any(a["signal"] == "launch" and now - a["t"] <= 15 for a in self.cockpit.alerts)
+        cockpit_launch = any(a["signal"] == "launch" and a["key"] not in self.announced
+                             and 0 <= now - a["t"] <= LAUNCH_GRACE_S for a in self.cockpit.alerts)
         live = {m["id"]: m for m in (flight or [])}
         groups = {r["group"]: r for r in (sams or []) if "caution_range_nm" not in r}
         approaches = {r["group"]: r for r in (sams or []) if r.get("inside_caution_range") and r.get("outside_weapon_range")}
@@ -2536,9 +2533,8 @@ class Eye:
     def unprompted_events(self, include_announced=False):
         """Eligible event facts before presentation caps, also for pre-send revalidation.
 
-        Shot-only/RWR evidence expires after BRIDGE_S (2.5 s), enough for the
-        1 Hz scan handoff, not a twenty-second inferred missile. A newer empty
-        scan revokes immediately through _pending_threat_alerts.
+        A positive launch stays callable for three seconds after launch, even
+        after scan loss. This does not add it back to the in-flight picture.
         """
         with self.lock:
             own, now = self._own_locked(), self.clock()
@@ -2546,13 +2542,16 @@ class Eye:
                 return []
             _, sams, flight = self._threats_json(own, now)
             missiles = {m["id"]: m for m in flight}
+            missiles.update((a['id'], dict(a, spoken_name=missile_spoken_name(a.get('raw_type') or a.get('type'), a.get('launcher'))))
+                            for a in self.threat_alerts if a['kind'] == 'missile launch'
+                            and a['id'] not in missiles and 0 <= now - a['t'] <= LAUNCH_GRACE_S)
             tracks = {s["group"]: s for s in sams if s["confidence"] == "DCS radar: tracking you"}
             armed = {s["group"] for s in sams if "caution_range_nm" in s}
             rows = []
-            for a in self._pending_threat_alerts(now, sams, flight, include_announced):
+            for a in self._pending_threat_alerts(now, sams, list(missiles.values()), include_announced):
                 if a["kind"] == "missile launch":
                     m = missiles.get(a.get("id"))
-                    if m is None or (m.get("from") == "shot event" and now - m["first_seen"] > BRIDGE_S):
+                    if m is None or (m.get("from") == "shot event" and now - m["first_seen"] > LAUNCH_GRACE_S):
                         continue
                     rows.append(dict(a, spoken_name=m.get("spoken_name") or missile_spoken_name(m.get("type"), m.get("launcher_type")), clock=m.get("clock")))
                 elif a["kind"] == "SAM tracking" and a.get("group") in tracks:
@@ -2571,11 +2570,9 @@ class Eye:
                     rows.append(dict(key=key, kind="SAM approach", call=s["caution_call"], group=s["group"]))
             if self.cockpit.fresh(now):
                 for a in self.cockpit.pending_alerts(set() if include_announced else self.announced, now):
-                    if a["signal"] == "launch" and 0 <= now - a["t"] <= BRIDGE_S:
+                    if a["signal"] == "launch" and 0 <= now - a["t"] <= LAUNCH_GRACE_S:
                         rows.append(dict(a, kind="missile launch", spoken_name=missile_spoken_name(a["type"])))
-            if self.own_loss and self.own_loss["unit_id"] == own["id"]:
-                if include_announced or self.own_loss["key"] not in self.announced:
-                    rows.append(dict(self.own_loss, kind="own loss", call="Prometheus, Athena, you're down."))
+
             return rows
 
     def _loadout_json(self, own, now):
@@ -2647,11 +2644,7 @@ class Eye:
             self._own_cache = (own,)
             try:
                 pic = self._picture_locked(own)
-                if self.own_loss and (own is None or self.own_loss["unit_id"] == own["id"]):
-                    pic["own_loss"] = dict(self.own_loss)
-                    if self.own_loss["key"] not in self.announced:
-                        pic["own_loss_to_announce"] = self.own_loss["call"]
-                        pic["_own_loss_key"] = self.own_loss["key"]
+
                 if self.memory is not None:
                     pic["_memory_generation"] = self.memory.generation if self.memory.identity is not None else -1
                 return pic

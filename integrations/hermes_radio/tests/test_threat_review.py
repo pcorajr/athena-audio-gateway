@@ -119,18 +119,10 @@ class ThreatReviewTests(unittest.TestCase):
         self.assertTrue(u.receipt('shot', 'check'))
         clock.t += 1
         e.on_weapons([])
+        self.assertTrue(u.receipt('shot', 'check'))  # recent launch fact survives scan loss
+        clock.t += 1.01
         self.assertFalse(u.receipt('shot', 'check'))
         self.assertFalse(e.announced)
-
-    def test_old_airframe_loss_is_not_current_loss(self):
-        _, e, c, _, old = fixture()
-        e.on_gone(100)
-        new = fx.unit(101, 'new-plane', 'F-16C_50', 'blue', 'Viper2', 'AIRPLANE',
-                      42., 42., 1000, 90., 200., player='Prometheus')
-        e.on_event({'time': 11, 'birth': {'initiator': {'unit': new}}})
-        e.on_event({'time': 12, 'crash': {'initiator': {'unit': old}}})
-        self.assertIsNone(e.own_loss)
-        self.assertNotIn("you're down", say(c, 'Athena, radio check', 'new')[0][0]['speech'])
 
     def test_kill_confirmation_and_pending_splash_are_protected(self):
         for text in ('Athena, confirm kill', 'Athena, radio check', 'Athena, explain the weather'):
@@ -214,11 +206,11 @@ class ThreatReviewTests(unittest.TestCase):
         e.on_event(MissileTests().shot(13))
         self.assertIsNotNone(u.poll('new-launch', 'pilot'))
 
-    def test_shot_only_evidence_expires_in_two_and_half_seconds(self):
+    def test_shot_only_evidence_expires_after_three_seconds(self):
         e, clock, _, u = self.missile_fixture()
         e.on_event(MissileTests().shot(12))
         self.assertIsNotNone(u.poll('shot', 'pilot'))
-        clock.t += 2.6
+        clock.t += 3.01
         self.assertFalse(u.receipt('shot', 'check'))
 
     def test_sixty_sites_cover_all_grouped_keys_without_deque_loss(self):

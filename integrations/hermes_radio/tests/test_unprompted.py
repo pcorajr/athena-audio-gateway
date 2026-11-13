@@ -25,9 +25,7 @@ class FakeEye:
                  'launch': 'missile launch', 'radar': 'SAM tracking'}
         rows = [dict(call=a, key=k, kind=kinds[k], spoken_name='SA-13', clock={'l1': 7, 'l2': 3}.get(k, 5))
                 for a, k in self.rows if k in kinds and (include_announced or k not in self.announced)]
-        key = self.pic.get('_own_loss_key')
-        if key and (include_announced or key not in self.announced):
-            rows.append(dict(key=key, kind='own loss', call="Prometheus, Athena, you're down."))
+
         return rows
 
     def picture(self):
@@ -35,8 +33,7 @@ class FakeEye:
         rows = [(a, k) for a, k in self.rows if k not in self.announced]
         pic['rwr_alert_to_announce'] = [a for a, _ in rows]
         pic['_rwr_keys'] = [k for _, k in rows]
-        if pic.get('_own_loss_key') in self.announced:
-            pic.pop('_own_loss_key')
+
         return pic
 
     def mark_announced(self, keys):
@@ -119,13 +116,11 @@ class UnpromptedTests(unittest.TestCase):
         self.eye.session_id = 'next'
         self.assertFalse(self.u.receipt('alert', 'check'))
 
-    def test_loss_and_tracking_allowed_not_other_alerts(self):
+    def test_tracking_allowed_not_other_alerts(self):
         self.u.remember(self.req)
         self.eye.rows = [('Bandit, twelve miles.', 'bandit'), ('Systems damage reported.', 'damage')]
         self.assertIsNone(self.poll())
-        self.eye.pic['_own_loss_key'] = 'loss'
-        self.assertEqual(self.poll()['speech'], "Prometheus, Athena, you're down.")
-        self.u.receipt('alert', 'sent')
+
         self.eye.rows.append(("SAM SA-2 tracking you, your three o'clock, four miles.", 'radar'))
         self.now = 5
         self.assertIn('tracking you', self.poll('radar')['speech'])

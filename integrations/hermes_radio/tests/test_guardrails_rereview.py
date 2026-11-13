@@ -21,7 +21,9 @@ class ReReviewTests(unittest.TestCase):
             alert = sc.clean(pic[field][0]).rstrip('. ') + '.'
             with self.subTest(id=row['id']):
                 result = self.make(pic, row['raw_reply']).exchange(_request(row['ask']))['speech']
-                self.assertIn(alert, result)  # model echoes are no longer sentence-filtered
+                self.assertEqual(result.count(alert), 1)
+                tail = result.replace(alert, '')
+                self.assertNotRegex(tail.lower(), r'sa[- ]2 radar sees|splash one t fifty|destroyed a t[- ]|kills, including one t')
                 self.assertLessEqual(len(result), 280)
 
     def test_alert_specific_not_other_alert(self):
@@ -30,7 +32,7 @@ class ReReviewTests(unittest.TestCase):
         for echo in ('An SA two radar sees you.', 'The SA-2 is tracking you.', 'Splash one T fifty-five.'):
             with self.subTest(echo=echo):
                 result = self.make(pic, echo + ' SA-6 radar sees you. Splash one Ural-375.').exchange(_request('give me your assessment'))['speech']
-                self.assertIn(echo, result)
+                self.assertNotIn(echo, result)
                 self.assertIn('SA-6 radar sees you.', result)
                 self.assertIn('Splash one Ural-375.', result)
         # Geometry shared by different threats is not an alert identity.
@@ -39,7 +41,7 @@ class ReReviewTests(unittest.TestCase):
         self.assertIn("SA-6 radar sees you, your twelve o'clock, eighteen miles.", result)
         pic['threats'] = {'sam_in_range': [{'sam': 'SA-2', 'type': 'S_75M_Volhov'}]}
         result = self.make(pic, 'S-75 radar sees you.').exchange(_request('give me your assessment'))['speech']
-        self.assertIn('S-75 radar sees you.', result)
+        self.assertNotIn('S-75 radar sees you.', result)
         self.assertLessEqual(len(sc.PROMPT), 9686)
 
 

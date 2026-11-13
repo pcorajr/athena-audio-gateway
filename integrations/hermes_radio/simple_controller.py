@@ -411,7 +411,7 @@ SAM_SUBJECT = re.compile(r"\b(?:sams?|sa[- ]?\d+|strela)(?:\s+site)?\b", re.I)
 SAM_QUIET = re.compile(r"\b(?:dormant|quiet|silent|not (?:shooting|firing)|(?:looks?|seems?|appears?)(?: to be)? (?:dead|inactive))\b", re.I)
 SAM_CLOSING = re.compile(r"\b(?:going (?:in |to get )?closer|getting closer|closing (?:in|on)|pressing|running in|run in)\b", re.I)
 SAM_REFERENT = re.compile(r"\b(?:headed? (?:towards?|for) it|going in|going (?:towards?|for) it)\s*[.!]?$", re.I)
-LOSS_ASK = re.compile(r"\b(?:i (?:lost all|crashed|ejected)|(?:am i|are we) (?:down|dead|alive)|(?:i'm|i am|we're|we are) (?:down|dead))\b", re.I)
+
 PERMISSION_ASK = re.compile(r"\b(?:permission|clearance|request\w*|can i|clear(?:ed)?)\b", re.I)
 
 
@@ -434,8 +434,7 @@ def call_class(text, pic=None, recent=()):
         return "dev_note"
     if TALLY_ASK.search(t):
         return "kill_confirm"  # TOTAL_ASK (tally) makes it the mission total
-    if LOSS_ASK.search(t):
-        return "own_loss"
+
 
     if KILL_REPORT.search(t) and not _QUESTION.search(t):
         return "kill_report"
@@ -901,9 +900,7 @@ NEEDS_POSITION = re.compile(r"\b(threats?|sams?|nearest|closest|nearby|near me|a
 def requested_calls(klass, text, pic):
     """Render fixed-format air calls directly: a model/speech cap must not drop their second sentence."""
 
-    if klass == "own_loss":
-        return ["Own-aircraft loss recorded." if pic.get("own_loss") else
-                NO_POSITION if not pic.get("ownship") else "No own-aircraft loss event recorded."]
+
 
     if not pic.get("ownship"):
         totals = bool(TOTALS_ASK.search(text) or (REPORT_ASK.search(text) and not RANGE_ASK.search(text)))  # kills / counts / reports need no position
@@ -1636,16 +1633,20 @@ class SimpleController:
         had_before = bool(self._reported_missiles)
         was_seen = [seen(m) for m in shown]
         same = len(missiles) == 1 and asked_another and was_seen[0]
-        for m in shown:
+        for m in missiles:
             self._reported_missiles[key(m)] = (m.get("range_nm") if isinstance(m.get("range_nm"), (int, float)) else None, now)
         names = [name_of(m) for m in shown]
         if len(missiles) >= 2:
             call = short_launch_call([dict(m, spoken_name=name_of(m)) for m in shown])
             for m in shown:
+                if m.get('alert_key'):
+                    self._launch_covered[m['alert_key']] = call
                 if m.get("call"):
                     self._launch_covered[m["call"].strip()] = call
             rest = ["%s more in the air." % words(len(missiles) - 2).capitalize()] if len(missiles) > 2 else []
             for m in missiles[2:]:
+                if m.get('alert_key'):
+                    self._launch_covered[m['alert_key']] = rest[0]
                 if m.get("call"):
                     self._launch_covered[m["call"].strip()] = rest[0]
             return [call] + rest
@@ -1791,7 +1792,7 @@ class SimpleController:
         if getattr(self.eye, "test_ownship", None):
             stand_in = answer[len(ADDRESS):].startswith(TEST_PILOT)  # the marker is on every stand-in reply
         protected = getattr(self, '_current_threat', True) or bool(re.search(
-            r"\b(?:missile|launch|caution|SAM|SA-\d+|tracking you|you're down)\b", answer, re.I))
+            r"\b(?:missile|launch|caution|SAM|SA-\d+|tracking you)\b", answer, re.I))
         priority = ('threat' if protected else 'normal') if getattr(self, '_wire_priority', False) else None
         return response(request, speech=answer, state="ok", route=route, model=model, test_pilot=stand_in, priority=priority)
 
@@ -1896,11 +1897,7 @@ class SimpleController:
                 ("Prometheus, Athena, debrief unavailable. " + summary).strip())
             answer, trimmed = fit_reply(answer, DEBRIEF_CHARS)
             marks = []  # a close bandit still goes first; the debrief tail is trimmed to make room
-            if (dpic or {}).get("own_loss_to_announce"):
-                answer = ADDRESS + dpic["own_loss_to_announce"] + " " + answer.removeprefix(ADDRESS)
-                marks.append((dpic.get("_own_loss_key"), dpic["own_loss_to_announce"]))
-            else:
-                answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), marks, MAX_SPEECH_CHARS)
+            answer = self._with_close_bandits(answer, (dpic or {}).get("_close_bandits"), marks, MAX_SPEECH_CHARS)
             answer, net_trimmed = fit_marked(answer, isinstance(dpic, dict) and dpic.get("test_ownship"))
             trimmed = trimmed or net_trimmed
             if trimmed:
@@ -1946,7 +1943,7 @@ class SimpleController:
         rwr_keys = pic.pop("_rwr_keys", None) if isinstance(pic, dict) else None
         close_bandits = pic.pop("_close_bandits", None) if isinstance(pic, dict) else None
         airfields = pic.pop("_airfields", None) if isinstance(pic, dict) else None  # resolved here, never in the prompt
-        loss_key = pic.pop("_own_loss_key", None)
+
         # Phase 0: the deterministic answer comes FIRST; the model is called only when there is none.
         self._pending_ack = None
         self._launch_undo = None
@@ -1960,12 +1957,7 @@ class SimpleController:
                   "Waiting for current mission picture."] if not pic.get("connected", True) else [])
         if age is not None and age > 60:
             stale.append("Contact data is %s seconds old." % words(age))
-        if pic.get("own_loss_to_announce"):
-            klass = "own_loss"
-            calls = [pic["own_loss_to_announce"]]
-            stale, close_bandits, rwr_keys, splash_keys = [], [], None, None
-            pic["rwr_alert_to_announce"], pic["splash_to_announce"] = [], []
-        elif repeat_answer is not None:
+        if repeat_answer is not None:
             calls = [re.sub(r"^Prometheus,?\s*(Athena,?\s*)?", "", repeat_answer, flags=re.I)]
         elif klass == "launch" and pic.get("ownship"):
             calls = self.launch_calls(text, pic)
@@ -1992,7 +1984,7 @@ class SimpleController:
                 if site.get(field):
                     self._launch_covered[site[field]] = calls[0]
         route = "fixed" if calls is not None else "llm"
-        self._current_threat = bool(klass in ('launch', 'sam_caution', 'own_loss', 'kill_confirm') or rwr_keys or close_bandits or splash_keys)
+        self._current_threat = bool(klass in ('launch', 'sam_caution', 'kill_confirm') or rwr_keys or close_bandits or splash_keys)
         result = {"summary": self.picture_summary(pic), "picture": pic,
                   "error": (type(error).__name__ + ": " + str(error)[:200]) if error else ""}
         if klass:
@@ -2004,8 +1996,11 @@ class SimpleController:
                   counts={"empty_transcripts": self.empty_transcripts, "transmissions": self.transmissions},
                   timings_ms={"tool": round((time.monotonic() - start) * 1000)})
         marks = []  # (key, needle): announced only if the needle is in the final reply
-        if loss_key:
-            marks.append((loss_key, pic["own_loss_to_announce"]))
+        if klass == 'launch':
+            for missile in (pic.get('threats') or {}).get('missiles_in_flight') or []:
+                needle = self._launch_covered.get(missile.get('alert_key'))
+                if missile.get('alert_key') and not missile.get('announced') and needle:
+                    marks.append((missile['alert_key'], needle))
         trimmed = False
         llm_ms = 0
         meta = None
@@ -2132,7 +2127,7 @@ class SimpleController:
                         marks.append((key, alert))
             first = lead + alerts
             if first:
-
+                tail = [s for s in tail if not announcement_echo(s, first, pic)]
                 room = MAX_REPLY_CHARS - len(prefix + " ".join(first)) - 1
                 if len(" ".join(tail)) > room:
                     kept = []

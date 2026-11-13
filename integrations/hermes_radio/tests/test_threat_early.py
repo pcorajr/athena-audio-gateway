@@ -30,9 +30,7 @@ def stamp(value):
 
 def move_own(eye, picture):
     own = picture['ownship']
-    current = eye.ownship()
-    unit_id = current['id'] if current else getattr(eye, 'replay_own_id', 17096)
-    eye.on_units_message({'unit': fx.unit(unit_id, 'Prometheus', own['type'], 'blue', own['group'], 'AIRPLANE',
+    eye.on_units_message({'unit': fx.unit(17096, 'Prometheus', own['type'], 'blue', own['group'], 'AIRPLANE',
         own['lat'], own['lon'], own['alt_ft'] / eye_module.M_TO_FT,
         float(own['heading_true']), own['speed_kt'] / eye_module.MS_TO_KT, player='Prometheus')})
     eye.set_connected(True)
@@ -87,9 +85,7 @@ def amended_picture(entry, eye):
                 kill['splash_call'] = kill['splash_call'].replace('Ural-4320-31', eye_module.spoken_type('Ural-4320-31'))
     if pic.get('splash_to_announce'):
         pic['splash_to_announce'] = [s.replace('Ural-4320-31', eye_module.spoken_type('Ural-4320-31')) for s in pic['splash_to_announce']]
-    for field in ('own_loss', 'own_loss_to_announce', '_own_loss_key'):
-        if field in generated:
-            pic[field] = generated[field]
+
     return pic, replacements
 
 
@@ -102,14 +98,7 @@ def replay(data=DATA):
         now[0] = stamp(entry['picture_time'])
         if seq != mission:
             eye = Eye('Prometheus', clock=lambda: now[0])
-            # These single-sortie fixtures omit ownship IDs in picture rows.
-            # Preserve the recorded lifecycle ID rather than inventing a different
-            # aircraft ID that the production lifecycle fence must reject.
-            ids = {e['payload'][e['kind']]['initiator']['unit']['id']
-                   for e in data['missions'][seq]['events'] if e.get('kind') in ('pilot_dead', 'crash', 'ejection')
-                   and e['payload'][e['kind']]['initiator']['unit'].get('player_name') == 'Prometheus'}
-            if len(ids) == 1:
-                eye.replay_own_id = next(iter(ids))
+
             for unit in data['missions'][seq]['units']:
                 eye.on_units_message(unit)
             mission = seq
@@ -453,7 +442,7 @@ class PartARecordedTests(unittest.TestCase):
             '21:19:37': "No missile seen; SA-2 tracking you, your twelve o'clock, four miles.",
 
             '21:38:43': 'Confirmed, splash one Ural truck.',
-            '21:42:49': "you're down.", '21:24:06': "you're down.",
+
         }
         for t, body in expected.items():
             self.assertEqual(rows[t]['new'], sc.ADDRESS + body)
@@ -588,63 +577,6 @@ class PartABoundaryTests(unittest.TestCase):
             say(c, 'radio check', 'one')
             frames, _ = say(c, phrase, 'two')
             self.assertNotIn('Negative, SA-13 is alive', frames[0]['speech'])
-
-    def test_loss_precedes_debrief_and_does_not_repeat_after_sent(self):
-        eye = Eye('Prometheus')
-        eye.on_units_message(fx.units_message(fx.PROMETHEUS))
-        eye.on_event({'pilot_dead': {'initiator': {'unit': fx.PROMETHEUS}}})
-        c, _ = controller({}, Stub(), eye=eye)
-        frames, _ = say(c, 'debrief', 'one')
-        self.assertTrue(frames[0]['speech'].startswith(sc.ADDRESS + "you're down."))
-        frames, _ = say(c, 'debrief', 'two')
-        self.assertNotIn("you're down", frames[0]['speech'])
-
-    def test_explicit_loss_once_rearmed_on_failed_delivery_and_reset(self):
-        for kind in ('crash', 'pilot_dead', 'ejection'):
-            with self.subTest(kind=kind):
-                eye = Eye('Prometheus')
-                eye.on_units_message(fx.units_message(fx.PROMETHEUS))
-                eye.set_connected(True)
-                eye.on_event({'time': 10, kind: {'initiator': {'unit': fx.PROMETHEUS}}})
-                pic = eye.picture()
-                self.assertEqual(pic['own_loss_to_announce'], "you're down.")
-                key = pic['_own_loss_key']
-                c, _ = controller({}, Stub(answer="Prometheus, Athena, copy."), eye=eye)
-                first, _ = say(c, 'request permission to take off', 'one')
-                self.assertEqual(first[0]['speech'], sc.ADDRESS + "you're down.")
-                self.assertNotIn('own_loss_to_announce', eye.picture())
-                c.transcript.outcome_of = lambda tid: 'expired'
-                again, _ = say(c, 'radio check', 'two')
-                self.assertEqual(again[0]['speech'], first[0]['speech'])
-                c.transcript.outcome_of = lambda tid: 'sent'
-                eye.on_event({'time': 11, 'pilot_dead': {'initiator': {'unit': fx.PROMETHEUS}}})
-                last, _ = say(c, 'radio check', 'three')
-                self.assertNotRegex(last[0]['speech'], r"you're (?:not )?down")
-                self.assertEqual(eye.picture()['own_loss']['key'], key)
-                eye.reset('next mission')
-                self.assertNotIn('own_loss', eye.picture())
-
-    def test_missing_ownship_does_not_create_loss(self):
-        eye = Eye('Prometheus')
-        self.assertNotIn('own_loss_to_announce', eye.picture())
-        c, _ = controller({}, Stub(), eye=eye)
-        frames, _ = say(c, 'I lost all.')
-        self.assertTrue(frames[0]['speech'].endswith(sc.NO_POSITION))
-        self.assertNotIn("you're down", frames[0]['speech'])
-
-    def test_other_pilot_loss_not_ours_and_birth_rearms(self):
-        eye = Eye('Prometheus')
-        eye.on_units_message(fx.units_message(fx.PROMETHEUS))
-        other = deepcopy(fx.PROMETHEUS)
-        other.update(id=9999, player_name='Other')
-        eye.on_event({'pilot_dead': {'initiator': {'unit': other}}})
-        self.assertNotIn('own_loss', eye.picture())
-        for kind in ('ejection', 'birth', 'crash'):
-            eye.on_event({kind: {'initiator': {'unit': fx.PROMETHEUS}}})
-            if kind == 'birth':
-                self.assertNotIn('own_loss', eye.picture())
-            else:
-                self.assertIn('own_loss_to_announce', eye.picture())
 
 
     def test_model_launch_is_not_filtered_beside_controller_evidence(self):

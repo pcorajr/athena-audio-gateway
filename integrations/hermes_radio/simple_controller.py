@@ -557,6 +557,9 @@ def loadout_calls(own, text=""):
             pods.append(name)
     tail = (" Pods: %s." % _join_and(pods)) if pods else ""
     rounds = lo.get("gun_rounds")
+    if (not lead and re.search(r"\b(guns?|cannon|bullets|rounds)\b", text or "", re.I)
+            and not re.search(r"\b(loadout|weapons?|stores|missiles?|bombs?|rockets?|mavericks?|everything|all)\b", text or "", re.I)):
+        return ["Gun, %s rounds." % words(rounds)] if rounds else ["Gun empty."]
     if rounds:
         items.append("gun %s rounds" % words(rounds))
     return [lead + ("You have " + ", ".join(items) + "." if items else "Winchester, no weapons left.") + tail]
@@ -935,14 +938,14 @@ def requested_calls(klass, text, pic):
         groups = (pic["air_traffic"].get(coal, []) if coal else
                   [g for rows in pic["air_traffic"].values() for g in rows])
         groups = sorted(groups, key=lambda g: g["range_nm"])
-        return [g["call"] for g in groups[:3]] or ["No %saircraft showing within %s miles." % (
+        return [g["call"] for g in groups] or ["No %saircraft showing within %s miles." % (
             (coal + " ") if coal else "", words(pic.get("contacts_within_nm", 80)))]
     if klass == "intent":
         return [intent_ack(text) or "copy."]
     if klass == "sam_caution":
         site = min(pic["threats"]["sam_sites"], key=lambda r: r["range_nm"])
-        return ["Negative, %s is alive, your %s o'clock, %s, lethal inside %s." % (
-            site["sam"], words(site["clock"]), range_words(site["range_nm"]), words(ceil(site["nominal_range_nm"])))]
+        return ["%s, %s is alive, your %s o'clock, %s, lethal inside %s." % (
+            "Negative" if SAM_QUIET.search(text or "") else "Caution", site["sam"], words(site["clock"]), range_words(site["range_nm"]), words(ceil(site["nominal_range_nm"])))]
     if klass == "fuel":
         lines = fuel_calls(pic["ownship"].get("fuel"))
         if lines and WEAPON_WORD.search(text):  # "fuel and weapons": both halves
@@ -1066,7 +1069,7 @@ DEFER = {"airfield": "Ask again for the vector.", "landing": "Ask again for the 
          "loadout": "Ask again for weapons.", "traffic": "Ask again for traffic.", "picture": "Ask again for the picture.",
          "long_picture": "Ask again for the picture.", "ground_picture": "Ask again for ground targets.",
          "atc": "Ask again for the field.", "friendlies_near": "Ask again for friendlies."}
-LIST_CLASSES = {"picture": None, "long_picture": None, "traffic": None, "ground_picture": 3,
+LIST_CLASSES = {"picture": None, "long_picture": None, "traffic": 2, "ground_picture": 3,
                 "friendlies_near": 4}  # the first line ("I can't see your target.") always stays
 
 
@@ -1609,6 +1612,12 @@ class SimpleController:
             scan = str(threats.get("missile_scan"))
             if scan.startswith("off"):  # the scan cannot run: never an all-clear; the picture says why
                 return ["No launch seen; missile tracking is limited, %s." % (scan[5:] or "missile scan is not answering")]
+            past = [a for a in threats.get("launches_last_2_min") or [] if isinstance(a, dict)]
+            if past:  # 11-13 22:34:09 "was there SAM launch?" 20 s after two launches: both gone, she said only "none"
+                name = _missile_name(past[-1].get("type"), past[-1].get("launcher"))
+                n = len(past)
+                return ["%s %s launch%s in the last two minutes; none in the air now." % (
+                    words(n).capitalize(), name, "" if n == 1 else "es")]
             return ["No missile in the air that I can see."]
         def key(m):
             ident = m.get("id", m.get("missile_id", m.get("weapon_id")))
@@ -1937,6 +1946,9 @@ class SimpleController:
             sites = (pic.get("threats") or {}).get("sam_sites") or []
             if any(re.search(r"\b%s\b" % re.escape(s["sam"]), previous, re.I) for s in sites):
                 klass = "sam_caution"
+        if (klass == "sam_caution" and self._last_delivered and " is alive, " in self._last_delivered[1]
+                and time.monotonic() - self._last_delivered[2] <= 60 and not SAM_QUIET.search(text)):
+            klass = "ack"  # 11-13 22:39:25: "still running in" got the same "Negative, SA-13 is alive" twice
         if klass is None and time.time() - self._last_launch_reply <= 90 and LAUNCH_FOLLOWUP.search(text):
             klass = "launch"  # "do you see it?" right after a launch call
         splash_keys = pic.pop("_splash_keys", None) if isinstance(pic, dict) else None

@@ -27,7 +27,7 @@ NO_TOWER = "no tower: I can't give clearances. "
 EXPECTED = {
     "18:30:05": "Prometheus, Athena, SAM SA-2 tracking you, your eleven o'clock, nineteen miles. Friendly A-10C, two "
                 "five one, five miles, angels eight, nine o'clock level. Friendly A-10C, two seven eight, thirteen, "
-                "angels eight, ten o'clock level. Plus one more.",
+                "angels eight, ten o'clock level. Plus two more.",
     "18:30:45": "Prometheus, Athena, Two SA-2 missiles, three o'clock.",
     "18:32:05": "Prometheus, Athena, Fuel 3,640 pounds.",
     "18:35:00": "Prometheus, Athena, Creech, bearing two zero nine, twenty seven miles, at your six o'clock.",

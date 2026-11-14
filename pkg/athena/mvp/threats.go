@@ -221,11 +221,22 @@ func (r *Runner) playThreat(ctx context.Context, j threatJob) {
 	r.lastMu.RLock()
 	latest := r.lastRadio
 	r.lastMu.RUnlock()
+	// Every refusal is written down: on 2026-11-13 28 calls were dropped here without a trace.
 	if latest.TraceID != j.last.TraceID {
+		r.record(j.last, "unprompted_refused", frame.Speech, "route_superseded", "unprompted", 0, nil)
 		return
 	}
 	t, ok := radio.UnpromptedMVP(j.last, frame.TransmissionID)
 	if !ok {
+		reason := "radio_refused"
+		if why, has := r.Radio.(interface {
+			UnpromptedRejection(simpleradio.Transmission) string
+		}); has {
+			if s := why.UnpromptedRejection(j.last); s != "" {
+				reason = s
+			}
+		}
+		r.record(j.last, "unprompted_refused", frame.Speech, reason, "unprompted", 0, nil)
 		return
 	}
 	start := time.Now()

@@ -28,6 +28,18 @@ func (c *Client) UnpromptedMVP(last Transmission, id string) (Transmission, bool
 	return t, true
 }
 
+// UnpromptedRejection names why UnpromptedMVP refuses a route (transcript only).
+func (c *Client) UnpromptedRejection(last Transmission) string {
+	c.clientsLock.RLock()
+	defer c.clientsLock.RUnlock()
+	t := last
+	t.route.unprompted = true
+	if reason := c.mvpRejectionLocked(t); reason != "" {
+		return reason
+	}
+	return c.mvpInterlockReason()
+}
+
 // BeginMVPReply consumes the reception token ONCE. The returned private sender
 // has a two-part lifetime and permanently closes on error. No new route token
 // is minted and no transmitted part can be replayed via TransmitMVP.

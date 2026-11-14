@@ -136,9 +136,10 @@ class FlightReplayTests(unittest.TestCase):
         self.assertIn('Caution, SA-13, heat seeker', by_time['20:32:08']['new'])
         self.assertIn('eight miles, lethal inside three', by_time['20:32:08']['new'])
         self.assertIn('SA-13 site, bearing two two two, eleven miles', by_time['20:31:30']['new'])
-        for t in ('20:33:44', '20:33:57'):
-            self.assertIn('Negative, SA-13 is alive', by_time[t]['new'])
-            self.assertEqual(by_time[t]['stub_calls'], 0)
+        self.assertIn('Negative, SA-13 is alive', by_time['20:33:44']['new'])
+        self.assertEqual(by_time['20:33:44']['stub_calls'], 0)
+        # r12.10: said once; "I'm going to get closer" 13 s later is not contradicted a second time
+        self.assertNotIn('is alive', by_time['20:33:57']['new'])
         for t in ('20:34:31', '20:34:37', '20:34:45'):
             self.assertIn('SA-13', by_time[t]['new'])
             if by_time[t]['route'] == 'fixed':
@@ -447,7 +448,7 @@ class PartARecordedTests(unittest.TestCase):
         for t, body in expected.items():
             self.assertEqual(rows[t]['new'], sc.ADDRESS + body)
             self.assertEqual(rows[t]['stub_calls'], 0)
-        self.assertIn('Negative, SA-13 is alive', rows['21:41:00']['new'])
+        self.assertIn('Caution, SA-13 is alive', rows['21:41:00']['new'])
         self.assertEqual(rows['21:41:00']['stub_calls'], 0)
         for t in ('21:35:44', '21:35:58'):
             self.assertEqual(rows[t]['route'], 'fixed')
@@ -571,12 +572,12 @@ class PartABoundaryTests(unittest.TestCase):
                     say(c, 'radio check', 'first')
                     stub.answer_text = sc.ADDRESS + 'copy.'
                     frames, _ = say(c, phrase, 'next')
-                    self.assertEqual('Negative, SA-13 is alive' in frames[0]['speech'], expected)
+                    self.assertEqual('Caution, SA-13 is alive' in frames[0]['speech'], expected)
         for phrase in ("I'm going in on the convoy.", "I'm not going in.", 'Going towards Creech.'):
             c, _ = controller(pic, Stub(answer=sc.ADDRESS + 'SA-13 site, ten miles.'))
             say(c, 'radio check', 'one')
             frames, _ = say(c, phrase, 'two')
-            self.assertNotIn('Negative, SA-13 is alive', frames[0]['speech'])
+            self.assertNotIn('SA-13 is alive', frames[0]['speech'])
 
 
     def test_model_launch_is_not_filtered_beside_controller_evidence(self):

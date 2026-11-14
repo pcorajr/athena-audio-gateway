@@ -160,6 +160,24 @@ func (c *Client) mvpIdentityReasonLocked() (mvpIdentity, string) {
 	return mvpIdentity{guid: pilot.GUID, unitID: pilot.RadioInfo.UnitID, unit: pilot.RadioInfo.Unit, seat: pilot.Seat}, ""
 }
 
+// keepKnownRadios: live SRS sends client updates that carry no radio list
+// (flight 2026-11-13: the list was only present right after the pilot keyed
+// the mic). Such an update must not erase the list we already know.
+func keepKnownRadios(peer, old types.ClientInfo) types.ClientInfo {
+	if len(peer.RadioInfo.Radios) == 0 {
+		peer.RadioInfo.Radios = old.RadioInfo.Radios
+	}
+	return peer
+}
+
+// pilotOnChannel compares our channel with one of the pilot's reported radios.
+// SRS clients report frequencies with small offsets: 500 Hz either way is the
+// same channel (as types.Radio.IsSameFrequency).
+func pilotOnChannel(ours, pilot types.Radio) bool {
+	d := ours.Frequency - pilot.Frequency
+	return d >= -500 && d <= 500 && ours.Modulation == pilot.Modulation && !pilot.IsEncrypted
+}
+
 func exactMVPRadio(a, b types.Radio) bool {
 	return a.Frequency == b.Frequency && a.Modulation == b.Modulation && !a.IsEncrypted && !b.IsEncrypted
 }
@@ -181,10 +199,11 @@ func (c *Client) mvpRekeyLocked(before mvpIdentity) bool {
 func (c *Client) syncMVPClients(peers []types.ClientInfo) {
 	c.clientsLock.Lock()
 	before := c.mvpIdentityLocked()
+	old := c.clients
 	c.clients = make(map[types.GUID]types.ClientInfo, len(peers))
 	for _, peer := range peers {
 		if peer.GUID != c.clientInfo.GUID {
-			c.clients[peer.GUID] = peer
+			c.clients[peer.GUID] = keepKnownRadios(peer, old[peer.GUID])
 		}
 	}
 	c.mvpRekeyLocked(before)
@@ -198,7 +217,7 @@ func (c *Client) syncMVPClient(peer types.ClientInfo) {
 	before := c.mvpIdentityLocked()
 	beforeReason := c.mvpReadinessLocked().Outcome
 	if peer.GUID != c.clientInfo.GUID {
-		c.clients[peer.GUID] = peer
+		c.clients[peer.GUID] = keepKnownRadios(peer, c.clients[peer.GUID])
 	}
 	changed := c.mvpRekeyLocked(before)
 	record := c.mvpReadinessLocked()
@@ -335,8 +354,14 @@ func (c *Client) mvpRejectionLocked(t Transmission) string {
 		return "radio_channel_mismatch"
 	}
 	if t.route.unprompted {
-		for _, radio := range c.clients[identity.guid].RadioInfo.Radios {
-			if exactMVPRadio(t.Radio, radio) {
+		// The pilot was heard on this channel (the route proves it). Refuse only
+		// when SRS has told us his radios and none of them is on it any more.
+		radios := c.clients[identity.guid].RadioInfo.Radios
+		if len(radios) == 0 {
+			return ""
+		}
+		for _, radio := range radios {
+			if pilotOnChannel(t.Radio, radio) {
 				return ""
 			}
 		}

@@ -2048,6 +2048,8 @@ class Eye:
         flight = self._missiles_in_flight(now)
         out["missiles_inbound"] = [m for m in flight if m.get("targeting_me") or m.get("closing")][:PICTURE_TOP]
         out["missiles_in_flight"] = flight[:PICTURE_TOP + 2]
+        out["launches_last_2_min"] = [{"type": a.get("type"), "launcher": a.get("launcher"), "age_s": int(now - a["t"])}
+                                      for a in self.threat_alerts if a["kind"] == "missile launch" and now - a["t"] <= 120]
         if source != "cockpit":
             out["note"] = ("no RWR feed from this aircraft. sam_in_range confidence 'DCS radar: ...' is DCS's own radar "
                            "state; 'range only' rows are inferred from nominal range: say 'could be' for those")
